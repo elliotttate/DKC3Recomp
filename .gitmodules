@@ -1,0 +1,7 @@
+[submodule "snesrecomp"]
+	path = snesrecomp
+	url = https://github.com/elliotttate/snesrecomp.git
+	branch = dkc3-bringup
+[submodule "recomp-ui"]
+	path = recomp-ui
+	url = https://github.com/mstan/recomp-ui.git

@@ -1,0 +1,1395 @@
+#ifndef SDL_MAIN_HANDLED
+#define SDL_MAIN_HANDLED
+#endif
+#include <SDL.h>
+
+#include "dkc3_game.h"
+#include "dkc3_video.h"
+#include "diagnostics.h"
+#include "desktop_filter.h"
+#include "desktop_audio_rate.h"
+#include "desktop_fps.h"
+#include "desktop_pacer.h"
+#include "desktop_input.h"
+#include "desktop_launcher.h"
+#include "desktop_overlay.h"
+#include "desktop_paths.h"
+#include "desktop_present_sdl.h"
+#include "desktop_rewind.h"
+#include "input_recording.h"
+#include "verified_rom.h"
+
+#ifdef __APPLE__
+#include "macos_display_link.h"
+#include "macos_host.h"
+#endif
+
+#include "common_rtl.h"
+#include "host_report.h"
+#include "launcher.h"
+#include "snes/snes.h"
+
+#include <errno.h>
+#include <limits.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+
+#ifdef _WIN32
+#include <direct.h>
+#define DKC3_MKDIR(path) _mkdir(path)
+#else
+#define DKC3_MKDIR(path) mkdir(path, 0755)
+#endif
+
+#ifndef DKC3_RELEASE_VERSION
+#define DKC3_RELEASE_VERSION "dev"
+#endif
+
+enum {
+  kFrameBufferWidth = kDkc3VideoWidescreenWidth,
+  kFrameHeight = kDkc3VideoHeight,
+  kBytesPerPixel = 4,
+  kAudioRate = 32040,
+  kAudioChannels = 2,
+  kMaximumFrameAudio = 534,
+  /* Rate control stretches a frame's audio by at most half a percent, so
+   * the stretched frame needs a few frames of slack. */
+  kAudioStretchSlack = 16,
+  kHostSpeedMultiplier = 3,
+  kRewindSnapshotInterval = 3,
+  kRewindSnapshotCapacity = 300,
+  kMaximumControllers = 2,
+  kPathCapacity = 4096,
+};
+
+static const double kVideoRate = 60.098811862;
+/* Audio rate control: the queue is held near a target by stretching each
+ * frame's samples within this deviation, reaching the full deviation when
+ * the average fill is a quarter of the target away (gain 4). */
+static const double kAudioRateDeviation = 0.005;
+static const double kAudioRateGain = 4.0;
+static const double kAudioFillWeight = 0.02;
+/* A display lock is accepted when the display's frame cadence is within
+ * this fraction of the cartridge's rate; ticks stalled this long release
+ * the lock to the host clock. */
+static const double kDisplayLockTolerance = 0.02;
+static const double kDisplayTickTimeoutSeconds = 0.05;
+
+typedef struct SdlHost {
+  Dkc3SdlPresenter presenter;
+  Dkc3DesktopColorFilter color_filter;
+  SDL_AudioDeviceID audio_device;
+  SDL_GameController *controllers[kMaximumControllers];
+  uint8_t pixels[kFrameBufferWidth * kFrameHeight * kBytesPerPixel];
+  uint8_t filtered_pixels[
+      kFrameBufferWidth * kFrameHeight * kBytesPerPixel];
+  int16_t scaled_audio[(kMaximumFrameAudio + kAudioStretchSlack) *
+                       kAudioChannels];
+  int16_t stretched_audio[(kMaximumFrameAudio + kAudioStretchSlack) *
+                          kAudioChannels];
+  Dkc3AudioStretch audio_stretch;
+  double audio_fill_average; /* queued frames, negative until measured */
+  int audio_device_frames;   /* frames the device takes per pull */
+  int player_source[kDkc3DesktopPlayerCount];
+  int player_deadzone[kDkc3DesktopPlayerCount];
+  int player_key_bind[kDkc3DesktopPlayerCount]
+                     [RECOMP_LAUNCHER_MAX_BINDINGS];
+  int player_pad_bind[kDkc3DesktopPlayerCount]
+                     [RECOMP_LAUNCHER_MAX_BINDINGS];
+  int assist_key_bind[RECOMP_LAUNCHER_MAX_ASSIST_BINDINGS];
+  int assist_pad_bind[RECOMP_LAUNCHER_MAX_ASSIST_BINDINGS];
+  int audio_volume;
+  Dkc3DesktopOverlay *overlay;
+  bool audio_available;
+  bool audio_primed;
+  bool running;
+  bool hidden;
+  bool menu_chord_previous;
+  bool escaped_fullscreen;
+} SdlHost;
+
+typedef struct SdlControls {
+  uint32_t controller;
+  uint32_t host_actions;
+} SdlControls;
+
+typedef enum SdlSpeedMode {
+  kSdlSpeedNormal,
+  kSdlSpeedRewind,
+  kSdlSpeedFastForward,
+} SdlSpeedMode;
+
+#ifdef __APPLE__
+static bool EnvironmentDisabled(const char *name) {
+  const char *value = getenv(name);
+  if (!value || !*value) return false;
+  return strcmp(value, "0") == 0 || strcmp(value, "false") == 0 ||
+         strcmp(value, "off") == 0 || strcmp(value, "no") == 0;
+}
+#endif
+
+static bool EnvironmentEnabled(const char *name) {
+  const char *value = getenv(name);
+  return value && *value && *value != '0';
+}
+
+static int ClampInt(int value, int minimum, int maximum) {
+  if (value < minimum) return minimum;
+  if (value > maximum) return maximum;
+  return value;
+}
+
+static bool EnsureSaveDirectory(void) {
+  if (DKC3_MKDIR("saves") == 0) return true;
+  return errno == EEXIST;
+}
+
+static void ShowError(const char *message) {
+  fprintf(stderr, "%s\n", message ? message : "Unknown error");
+  if (SDL_WasInit(SDL_INIT_VIDEO))
+    (void)SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
+                                   "Unable to start DKC3",
+                                   message ? message : "Unknown error", NULL);
+}
+
+static bool WriteFramePpm(const char *path, const uint8_t *pixels) {
+  const int frame_width = Dkc3VideoWidth();
+  FILE *stream = fopen(path, "wb");
+  if (!stream) return false;
+  bool ok = fprintf(stream, "P6\n%d %d\n255\n", frame_width,
+                    kFrameHeight) > 0;
+  for (int y = 0; ok && y < kFrameHeight; y++) {
+    const uint8_t *row =
+        pixels + (size_t)y * frame_width * kBytesPerPixel;
+    for (int x = 0; ok && x < frame_width; x++) {
+      const uint8_t rgb[3] = {row[x * 4 + 2], row[x * 4 + 1], row[x * 4]};
+      ok = fwrite(rgb, 1, sizeof rgb, stream) == sizeof rgb;
+    }
+  }
+  if (fclose(stream) != 0) ok = false;
+  return ok;
+}
+
+static void CloseControllers(SdlHost *host) {
+  for (int i = 0; i < kMaximumControllers; i++) {
+    if (host->controllers[i]) SDL_GameControllerClose(host->controllers[i]);
+    host->controllers[i] = NULL;
+  }
+}
+
+static void RefreshControllers(SdlHost *host) {
+  CloseControllers(host);
+  int opened = 0;
+  for (int device = 0;
+       device < SDL_NumJoysticks() && opened < kMaximumControllers;
+       device++) {
+    if (!SDL_IsGameController(device)) continue;
+    SDL_GameController *controller = SDL_GameControllerOpen(device);
+    if (controller) host->controllers[opened++] = controller;
+  }
+}
+
+static void PumpEvents(SdlHost *host) {
+  SDL_Event event;
+  while (SDL_PollEvent(&event)) {
+    if (event.type == SDL_KEYDOWN && event.key.repeat == 0 &&
+        event.key.keysym.scancode == SDL_SCANCODE_ESCAPE &&
+        Dkc3DesktopEscapeExitsFullscreen(
+            Dkc3SdlPresenterIsFullscreen(&host->presenter),
+            Dkc3DesktopOverlayIsOpen(host->overlay))) {
+      if (Dkc3SdlPresenterSetFullscreen(&host->presenter, false)) {
+        host->escaped_fullscreen = true;
+        continue;
+      }
+    }
+    bool consumed =
+        Dkc3DesktopOverlayProcessSdlEvent(host->overlay, &event);
+    if (consumed) continue;
+    if (event.type == SDL_QUIT) host->running = false;
+    if (event.type == SDL_CONTROLLERDEVICEADDED ||
+        event.type == SDL_CONTROLLERDEVICEREMOVED)
+      RefreshControllers(host);
+  }
+}
+
+static uint32_t ReadGamepadButtons(SDL_GameController *controller) {
+  uint32_t buttons = 0;
+#define MAP_SDL_BUTTON(sdl_button, dkc3_button)                            \
+  do {                                                                     \
+    if (SDL_GameControllerGetButton(controller, (sdl_button)))             \
+      buttons |= (dkc3_button);                                            \
+  } while (0)
+  MAP_SDL_BUTTON(SDL_CONTROLLER_BUTTON_DPAD_UP, kDkc3GamepadDpadUp);
+  MAP_SDL_BUTTON(SDL_CONTROLLER_BUTTON_DPAD_DOWN, kDkc3GamepadDpadDown);
+  MAP_SDL_BUTTON(SDL_CONTROLLER_BUTTON_DPAD_LEFT, kDkc3GamepadDpadLeft);
+  MAP_SDL_BUTTON(SDL_CONTROLLER_BUTTON_DPAD_RIGHT, kDkc3GamepadDpadRight);
+  MAP_SDL_BUTTON(SDL_CONTROLLER_BUTTON_START, kDkc3GamepadStart);
+  MAP_SDL_BUTTON(SDL_CONTROLLER_BUTTON_BACK, kDkc3GamepadBack);
+  MAP_SDL_BUTTON(SDL_CONTROLLER_BUTTON_LEFTSHOULDER,
+                 kDkc3GamepadLeftShoulder);
+  MAP_SDL_BUTTON(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER,
+                 kDkc3GamepadRightShoulder);
+  MAP_SDL_BUTTON(SDL_CONTROLLER_BUTTON_A, kDkc3GamepadA);
+  MAP_SDL_BUTTON(SDL_CONTROLLER_BUTTON_B, kDkc3GamepadB);
+  MAP_SDL_BUTTON(SDL_CONTROLLER_BUTTON_X, kDkc3GamepadX);
+  MAP_SDL_BUTTON(SDL_CONTROLLER_BUTTON_Y, kDkc3GamepadY);
+  MAP_SDL_BUTTON(SDL_CONTROLLER_BUTTON_GUIDE, kDkc3GamepadGuide);
+  MAP_SDL_BUTTON(SDL_CONTROLLER_BUTTON_LEFTSTICK, kDkc3GamepadLeftStick);
+  MAP_SDL_BUTTON(SDL_CONTROLLER_BUTTON_RIGHTSTICK, kDkc3GamepadRightStick);
+#undef MAP_SDL_BUTTON
+  return buttons;
+}
+
+static uint8_t ReadTrigger(SDL_GameController *controller,
+                           SDL_GameControllerAxis axis) {
+  Sint16 value = SDL_GameControllerGetAxis(controller, axis);
+  if (value <= 0) return 0;
+  return (uint8_t)(((uint32_t)(uint16_t)value * 255u) / 32767u);
+}
+
+static bool IsSdlScancodePressed(int scancode, void *context) {
+  const Uint8 *keys = (const Uint8 *)context;
+  return keys && scancode > SDL_SCANCODE_UNKNOWN &&
+         scancode < SDL_NUM_SCANCODES && keys[scancode] != 0;
+}
+
+static SdlControls ReadControls(SdlHost *host) {
+  SdlControls controls = {0, 0};
+  SDL_Window *window = (SDL_Window *)host->presenter.window;
+  if (!host->hidden && !(SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS))
+    return controls;
+  const Uint8 *keys = SDL_GetKeyboardState(NULL);
+  uint32_t keyboard[kDkc3DesktopPlayerCount];
+  for (int player = 0; player < kDkc3DesktopPlayerCount; player++)
+    keyboard[player] = Dkc3MapKeyboardBindings(
+        host->player_key_bind[player], IsSdlScancodePressed, (void *)keys);
+
+  Dkc3GamepadState gamepads[kMaximumControllers];
+  size_t gamepad_count = 0;
+  for (int i = 0; i < kMaximumControllers; i++) {
+    SDL_GameController *controller = host->controllers[i];
+    if (!controller || !SDL_GameControllerGetAttached(controller)) continue;
+    Dkc3GamepadState *gamepad = &gamepads[gamepad_count++];
+    gamepad->buttons = ReadGamepadButtons(controller);
+    gamepad->left_x = SDL_GameControllerGetAxis(
+        controller, SDL_CONTROLLER_AXIS_LEFTX);
+    Sint16 vertical = SDL_GameControllerGetAxis(
+        controller, SDL_CONTROLLER_AXIS_LEFTY);
+    gamepad->left_y = vertical == INT16_MIN ? INT16_MAX : (int16_t)-vertical;
+    gamepad->right_x = SDL_GameControllerGetAxis(
+        controller, SDL_CONTROLLER_AXIS_RIGHTX);
+    vertical = SDL_GameControllerGetAxis(
+        controller, SDL_CONTROLLER_AXIS_RIGHTY);
+    gamepad->right_y =
+        vertical == INT16_MIN ? INT16_MAX : (int16_t)-vertical;
+    gamepad->left_trigger = ReadTrigger(
+        controller, SDL_CONTROLLER_AXIS_TRIGGERLEFT);
+    gamepad->right_trigger = ReadTrigger(
+        controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
+  }
+  controls.controller = Dkc3RoutePlayerInputsWithBindings(
+      keyboard, gamepads, gamepad_count, host->player_source,
+      host->player_deadzone, host->player_pad_bind);
+  controls.host_actions = Dkc3MapAssistBindings(
+      host->assist_key_bind, host->assist_pad_bind, IsSdlScancodePressed,
+      (void *)keys, gamepads, gamepad_count, 30);
+  uint32_t menu_buttons = gamepad_count ? gamepads[0].buttons : 0;
+  Dkc3DesktopOverlaySetGamepad(
+      host->overlay, gamepad_count ? &gamepads[0] : NULL);
+  bool menu_chord =
+      (menu_buttons & (kDkc3GamepadStart | kDkc3GamepadBack)) ==
+      (kDkc3GamepadStart | kDkc3GamepadBack);
+  if (menu_chord && !host->menu_chord_previous)
+    Dkc3DesktopOverlayToggle(host->overlay);
+  host->menu_chord_previous = menu_chord;
+  if (Dkc3DesktopOverlayIsOpen(host->overlay)) {
+    controls.controller = 0;
+    controls.host_actions = 0;
+  }
+  return controls;
+}
+
+static bool InitializeAudio(SdlHost *host) {
+  SDL_AudioSpec desired;
+  SDL_AudioSpec obtained;
+  SDL_zero(desired);
+  SDL_zero(obtained);
+  desired.freq = kAudioRate;
+  desired.format = AUDIO_S16SYS;
+  desired.channels = kAudioChannels;
+  /* 1024 frames is 32 ms at the cartridge's rate: a pull the queue can
+   * always cover with two frames of margin, at half the latency of the
+   * earlier 2048. */
+  desired.samples = 1024;
+  host->audio_device = SDL_OpenAudioDevice(NULL, 0, &desired, &obtained, 0);
+  if (!host->audio_device) return false;
+  if (obtained.freq != desired.freq || obtained.format != desired.format ||
+      obtained.channels != desired.channels) {
+    SDL_CloseAudioDevice(host->audio_device);
+    host->audio_device = 0;
+    return false;
+  }
+  SDL_PauseAudioDevice(host->audio_device, 0);
+  host->audio_available = true;
+  host->audio_device_frames = (int)obtained.samples;
+  host->audio_fill_average = -1.0;
+  host->audio_primed = false;
+  Dkc3AudioStretchReset(&host->audio_stretch);
+  return true;
+}
+
+static double AudioQueuedFrames(const SdlHost *host) {
+  if (!host->audio_available) return 0.0;
+  return (double)(SDL_GetQueuedAudioSize(host->audio_device) /
+                  (kAudioChannels * sizeof(int16_t)));
+}
+
+/* The queue fill rate control aims for: half a device pull, so the queue
+ * can always cover the next pull, plus two frames of margin against host
+ * stalls. The average fill sits here; the low point before a pull is the
+ * two frames. */
+static double AudioTargetFrames(const SdlHost *host) {
+  return (double)host->audio_device_frames / 2.0 + 2.0 * kMaximumFrameAudio;
+}
+
+static bool QueueAudio(SdlHost *host, const int16_t *samples, int frames,
+                       double ratio) {
+  if (!host->audio_available || frames <= 0) return true;
+  frames = Dkc3AudioStretchProcess(&host->audio_stretch, ratio, samples,
+                                   frames, host->stretched_audio,
+                                   kMaximumFrameAudio + kAudioStretchSlack);
+  if (frames <= 0) return true;
+  size_t sample_count = (size_t)frames * kAudioChannels;
+  const int16_t *output = host->stretched_audio;
+  if (host->audio_volume != 100) {
+    for (size_t i = 0; i < sample_count; i++)
+      host->scaled_audio[i] =
+          (int16_t)(((int)output[i] * host->audio_volume) / 100);
+    output = host->scaled_audio;
+  }
+  return SDL_QueueAudio(host->audio_device, output,
+                        (Uint32)(sample_count * sizeof output[0])) == 0;
+}
+
+static void ResetAudio(SdlHost *host) {
+  if (host->audio_device) SDL_ClearQueuedAudio(host->audio_device);
+  host->audio_fill_average = -1.0;
+  host->audio_primed = false;
+  Dkc3AudioStretchReset(&host->audio_stretch);
+}
+
+static void ShutdownHost(SdlHost *host) {
+  CloseControllers(host);
+  if (host->audio_device) SDL_CloseAudioDevice(host->audio_device);
+  Dkc3DesktopOverlayDestroy(host->overlay);
+  host->overlay = NULL;
+  Dkc3SdlPresenterDestroy(&host->presenter);
+  Dkc3DesktopColorFilterDestroy(&host->color_filter);
+  SDL_Quit();
+}
+
+static void PaceFrame(SdlHost *host, uint64_t *deadline,
+                      double *deadline_fraction) {
+  uint64_t frequency = SDL_GetPerformanceFrequency();
+  double ticks = (double)frequency / kVideoRate;
+  *deadline_fraction += ticks;
+  uint64_t whole_ticks = (uint64_t)*deadline_fraction;
+  *deadline_fraction -= (double)whole_ticks;
+  *deadline += whole_ticks;
+  while (host->running) {
+    uint64_t now = SDL_GetPerformanceCounter();
+    if (now >= *deadline) {
+      /* Do not repay a visible host stall with a short catch-up frame. The
+       * accepted DKC1 pacer reanchors after a two-millisecond miss; use the
+       * same recovery threshold while preserving DKC3's exact 60.0988-Hz
+       * fractional cadence. */
+      if (now - *deadline > frequency / 500u) {
+        *deadline = now;
+        *deadline_fraction = 0.0;
+      }
+      return;
+    }
+    uint64_t remaining = *deadline - now;
+    Uint32 milliseconds = (Uint32)(remaining * 1000 / frequency);
+#ifdef __APPLE__
+    if (milliseconds > 1)
+      Dkc3MacWaitSeconds((double)remaining / (double)frequency);
+    else
+      SDL_Delay(0);
+#else
+    if (milliseconds > 1)
+      SDL_Delay(milliseconds - 1);
+    else
+      SDL_Delay(0);
+#endif
+    PumpEvents(host);
+  }
+}
+
+#ifdef __APPLE__
+/* Pace on the display's refresh ticks. Until the pacer has measured a
+ * refresh it can lock to, the latest tick is only observed and the caller
+ * keeps the host clock; once locked, the frame waits for the tick that is
+ * ticks_per_frame after the one the previous frame was presented on, so
+ * every frame lands on the same refresh phase. A late loop presents on the
+ * next tick without catching up, and ticks that stop arriving release the
+ * lock. Returns true when this frame is display paced. */
+static bool WaitForDisplayTick(bool link, Dkc3DesktopPacer *pacer,
+                               uint64_t *presented, uint64_t *seen,
+                               Dkc3MacDisplayTick *tick) {
+  memset(tick, 0, sizeof *tick);
+  if (!link) return false;
+  if (!Dkc3DesktopPacerLocked(pacer)) {
+    if (!Dkc3MacDisplayLinkLatest(tick)) return false;
+    if (tick->sequence > *seen) {
+      if (tick->interval > 0.0) (void)Dkc3DesktopPacerObserve(pacer, tick->interval);
+      *seen = tick->sequence;
+    }
+    *presented = tick->sequence;
+    return false;
+  }
+  const uint64_t wanted = *presented + pacer->ticks_per_frame;
+  if (!Dkc3MacDisplayLinkWait(wanted, kDisplayTickTimeoutSeconds, tick)) {
+    Dkc3DesktopPacerReset(pacer);
+    *presented = tick->sequence;
+    *seen = tick->sequence;
+    return false;
+  }
+  if (tick->interval > 0.0) (void)Dkc3DesktopPacerObserve(pacer, tick->interval);
+  *presented = tick->sequence;
+  *seen = tick->sequence;
+  return true;
+}
+
+static uint32_t ApplyMacCommands(SdlHost *host,
+                                 RecompLauncherCSettings *settings) {
+  uint32_t commands = Dkc3MacTakeCommands();
+  uint32_t host_actions = 0;
+  bool settings_changed = false;
+  if (commands & kDkc3MacCommandQuit)
+    host->running = false;
+  if (commands & kDkc3MacCommandToggleOverlay)
+    Dkc3DesktopOverlayToggle(host->overlay);
+  if (commands & kDkc3MacCommandQuickSave)
+    host_actions |= kDkc3HostSaveState;
+  if (commands & kDkc3MacCommandQuickLoad)
+    host_actions |= kDkc3HostLoadState;
+  if (commands & kDkc3MacCommandToggleFullscreen) {
+    bool fullscreen = !Dkc3SdlPresenterIsFullscreen(&host->presenter);
+    if (Dkc3SdlPresenterSetFullscreen(&host->presenter, fullscreen)) {
+      settings->fullscreen = fullscreen ? 1 : 0;
+      settings_changed = true;
+    }
+  }
+  if (commands & kDkc3MacCommandFilterNearest) {
+    settings->texture_filter = 0;
+    Dkc3LauncherSetUpscaler(kDkc3UpscalerNearest);
+    settings_changed = true;
+  }
+  if (commands & kDkc3MacCommandFilterBilinear) {
+    settings->texture_filter = 1;
+    Dkc3LauncherSetUpscaler(kDkc3UpscalerBilinear);
+    settings_changed = true;
+  }
+  if (commands & kDkc3MacCommandAspectNative) {
+    settings->aspect_index = kDkc3VideoAspectNative;
+    settings_changed = true;
+  }
+  if (commands & kDkc3MacCommandAspect16x10) {
+    settings->aspect_index = kDkc3VideoAspect16x10;
+    settings_changed = true;
+  }
+  if (commands & kDkc3MacCommandAspect16x9) {
+    settings->aspect_index = kDkc3VideoAspect16x9;
+    settings_changed = true;
+  }
+  if (settings_changed) {
+    settings->widescreen =
+        settings->aspect_index != kDkc3VideoAspectNative;
+    Dkc3DesktopOverlaySetSettings(host->overlay, settings);
+  }
+  return host_actions;
+}
+#endif
+
+static void ApplyOverlaySettings(SdlHost *host,
+                                 RecompLauncherCSettings *settings,
+                                 int *screen_filter) {
+  if (!host || !host->overlay || !settings || !screen_filter) return;
+  RecompLauncherCSettings updated;
+  Dkc3DesktopOverlayGetSettings(host->overlay, &updated);
+  updated.volume = ClampInt(updated.volume, 0, 100);
+  updated.texture_filter = updated.texture_filter != 0;
+  updated.aspect_index =
+      ClampInt(updated.aspect_index, kDkc3VideoAspectNative,
+               kDkc3VideoAspectCount - 1);
+  updated.widescreen =
+      updated.aspect_index != kDkc3VideoAspectNative;
+  if (!Dkc3DesktopScreenFilterValid(updated.screen_kind))
+    updated.screen_kind = kDkc3ScreenRaw;
+  if (updated.screen_kind != *screen_filter) {
+    int previous_filter = *screen_filter;
+    Dkc3DesktopColorFilterDestroy(&host->color_filter);
+    if (Dkc3DesktopColorFilterInit(&host->color_filter,
+                                   updated.screen_kind)) {
+      *screen_filter = updated.screen_kind;
+    } else {
+      updated.screen_kind = previous_filter;
+      (void)Dkc3DesktopColorFilterInit(&host->color_filter,
+                                       previous_filter);
+    }
+  }
+  host->presenter.linear_filter = updated.texture_filter != 0;
+  (void)Dkc3SdlPresenterSetUpscaler(
+      &host->presenter,
+      Dkc3LauncherUpscaler() == kDkc3UpscalerReconstruct
+          ? kDkc3UpscalerReconstruct
+          : (updated.texture_filter ? kDkc3UpscalerBilinear
+                                    : kDkc3UpscalerNearest),
+      Dkc3LauncherReconstructMode(),
+      (float)Dkc3LauncherReconstructStrength() / 100.0f,
+      (float)Dkc3LauncherReconstructSoftness() / 100.0f,
+      (float)Dkc3LauncherReconstructShading() / 100.0f);
+  host->audio_volume = updated.volume;
+  for (int player = 0; player < kDkc3DesktopPlayerCount; player++) {
+    host->player_source[player] =
+        ClampInt(updated.player_src[player], 0, 2);
+    host->player_deadzone[player] =
+        ClampInt(updated.deadzone[player], 0, 100);
+    updated.player_src[player] = host->player_source[player];
+    updated.deadzone[player] = host->player_deadzone[player];
+  }
+  memcpy(host->player_key_bind, updated.player_key_bind,
+         sizeof host->player_key_bind);
+  memcpy(host->player_pad_bind, updated.player_pad_bind,
+         sizeof host->player_pad_bind);
+  memcpy(host->assist_key_bind, updated.assist_key_bind,
+         sizeof host->assist_key_bind);
+  memcpy(host->assist_pad_bind, updated.assist_pad_bind,
+         sizeof host->assist_pad_bind);
+  if (Dkc3VideoGetAspect() != (Dkc3VideoAspect)updated.aspect_index) {
+    Dkc3VideoSetAspect((Dkc3VideoAspect)updated.aspect_index);
+    memset(host->pixels, 0, sizeof host->pixels);
+    memset(host->filtered_pixels, 0, sizeof host->filtered_pixels);
+    Dkc3BeginDrawing(
+        host->pixels, (size_t)Dkc3VideoWidth() * kBytesPerPixel);
+  }
+  *settings = updated;
+}
+
+static int RunGame(const char *rom_path,
+                   RecompLauncherCSettings *settings) {
+  SdlHost host;
+  memset(&host, 0, sizeof host);
+  host.running = true;
+  host.hidden = EnvironmentEnabled("DKC3_DESKTOP_TEST_HIDDEN");
+  host.audio_volume = ClampInt(settings->volume, 0, 100);
+  for (int player = 0; player < kDkc3DesktopPlayerCount; player++) {
+    host.player_source[player] = ClampInt(settings->player_src[player], 0, 2);
+    host.player_deadzone[player] = ClampInt(settings->deadzone[player], 0, 100);
+  }
+  memcpy(host.player_key_bind, settings->player_key_bind,
+         sizeof host.player_key_bind);
+  memcpy(host.player_pad_bind, settings->player_pad_bind,
+         sizeof host.player_pad_bind);
+  memcpy(host.assist_key_bind, settings->assist_key_bind,
+         sizeof host.assist_key_bind);
+  memcpy(host.assist_pad_bind, settings->assist_pad_bind,
+         sizeof host.assist_pad_bind);
+
+  unsigned long long test_frame_limit = 0;
+  const char *test_frames = getenv("DKC3_DESKTOP_TEST_FRAMES");
+  if (test_frames && *test_frames) {
+    char *end = NULL;
+    test_frame_limit = strtoull(test_frames, &end, 10);
+    if (!end || *end != '\0' || test_frame_limit == 0 ||
+        test_frame_limit > 1000000) {
+      ShowError("DKC3_DESKTOP_TEST_FRAMES must be between 1 and 1000000");
+      return 2;
+    }
+  }
+  bool test_rewind_requested = EnvironmentEnabled("DKC3_DESKTOP_TEST_REWIND");
+  bool test_fast_forward_requested =
+      EnvironmentEnabled("DKC3_DESKTOP_TEST_FASTFORWARD");
+  bool test_overlay_requested =
+      EnvironmentEnabled("DKC3_DESKTOP_TEST_OVERLAY");
+  bool test_save_load_requested =
+      EnvironmentEnabled("DKC3_DESKTOP_TEST_SAVELOAD");
+  bool test_save_injected = false;
+  bool test_save_completed = false;
+  bool test_load_injected = false;
+  bool test_load_completed = false;
+  bool sram_enabled = !EnvironmentEnabled("DKC3_DESKTOP_DISABLE_SRAM");
+  int persisted_aspect =
+      ClampInt(settings->aspect_index, kDkc3VideoAspectNative,
+               kDkc3VideoAspectCount - 1);
+  Dkc3VideoAspect aspect = (Dkc3VideoAspect)persisted_aspect;
+  const char *aspect_override = getenv("DKC3_ASPECT");
+  bool aspect_override_active = aspect_override && *aspect_override;
+  if (aspect_override_active &&
+      !Dkc3VideoAspectFromName(aspect_override, &aspect)) {
+    ShowError("DKC3_ASPECT must be 4:3, 16:10, or 16:9");
+    return 2;
+  }
+  const char *widescreen_override = getenv("DKC3_WIDESCREEN");
+  bool widescreen_override_active = !aspect_override_active &&
+      widescreen_override && *widescreen_override;
+  if (widescreen_override_active)
+    aspect = *widescreen_override != '0'
+        ? kDkc3VideoAspect16x9 : kDkc3VideoAspectNative;
+  settings->aspect_index = (int)aspect;
+  settings->widescreen = aspect != kDkc3VideoAspectNative;
+  Dkc3VideoSetAspect(aspect);
+  Dkc3VideoSetEdgePolicy((Dkc3VideoEdgePolicy)Dkc3LauncherWidescreenEdge());
+  {
+    const char *edge_text = getenv("DKC3_WIDESCREEN_EDGE");
+    Dkc3VideoEdgePolicy edge_policy = kDkc3VideoEdgeGlide;
+    if (edge_text && *edge_text) {
+      if (!Dkc3VideoEdgePolicyFromName(edge_text, &edge_policy)) {
+        ShowError("DKC3_WIDESCREEN_EDGE must be reflect, bars, shift, or glide");
+        return 2;
+      }
+      Dkc3VideoSetEdgePolicy(edge_policy);
+    }
+  }
+  int screen_filter = ClampInt(settings->screen_kind, 0, 3);
+  const char *screen_override = getenv("DKC3_SCREEN");
+  if (screen_override && *screen_override &&
+      !Dkc3DesktopScreenFilterFromName(screen_override, &screen_filter)) {
+    ShowError("DKC3_SCREEN must be raw, crt, composite, or trinitron");
+    return 2;
+  }
+
+  size_t rom_size = 0;
+  char rom_error[160];
+  uint8_t *rom =
+      Dkc3ReadVerifiedRom(rom_path, &rom_size, rom_error, sizeof rom_error);
+  if (!rom) {
+    ShowError(rom_error);
+    return 2;
+  }
+  RtlRegisterGame(Dkc3GameInfo());
+  if (!SnesInit(rom, (int)rom_size)) {
+    free(rom);
+    ShowError("snesrecomp rejected the verified ROM");
+    return 3;
+  }
+  if (sram_enabled) {
+    if (EnsureSaveDirectory()) RtlReadSram();
+    else sram_enabled = false;
+  }
+  if (!Dkc3DesktopColorFilterInit(&host.color_filter, screen_filter)) {
+    free(rom);
+    ShowError("Unable to initialize the selected screen-color filter");
+    return 4;
+  }
+  if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER |
+               SDL_INIT_TIMER) != 0) {
+    free(rom);
+    Dkc3DesktopColorFilterDestroy(&host.color_filter);
+    ShowError(SDL_GetError());
+    return 4;
+  }
+  char video_error[256] = {0};
+  if (!Dkc3SdlPresenterInit(
+          &host.presenter, ClampInt(settings->window_scale, 1, 4),
+          ClampInt(settings->fullscreen, 0, 2), host.hidden,
+          settings->texture_filter != 0, Dkc3VideoWidth(), kFrameHeight,
+          video_error, sizeof video_error)) {
+    free(rom);
+    ShutdownHost(&host);
+    ShowError(video_error);
+    return 4;
+  }
+  {
+    /* Upscaler: the launcher's remembered choice, overridable for one run
+     * with DKC3_UPSCALER=nearest|bilinear|reconstruct; DKC3_RECONSTRUCT_MODE
+     * (0..3) and DKC3_RECONSTRUCT_STRENGTH (0..100) tune the experiment. */
+    int upscaler = Dkc3LauncherUpscaler();
+    const char *upscaler_text = getenv("DKC3_UPSCALER");
+    if (upscaler_text && *upscaler_text &&
+        !Dkc3SdlPresenterUpscalerFromName(upscaler_text, &upscaler)) {
+      free(rom);
+      ShutdownHost(&host);
+      ShowError("DKC3_UPSCALER must be nearest, bilinear, or reconstruct");
+      return 2;
+    }
+    const char *mode_text = getenv("DKC3_RECONSTRUCT_MODE");
+    if (mode_text && *mode_text)
+      Dkc3LauncherSetReconstructMode(atoi(mode_text));
+    const char *strength_text = getenv("DKC3_RECONSTRUCT_STRENGTH");
+    if (strength_text && *strength_text)
+      Dkc3LauncherSetReconstructStrength(atoi(strength_text));
+    const char *softness_text = getenv("DKC3_RECONSTRUCT_SOFTNESS");
+    if (softness_text && *softness_text)
+      Dkc3LauncherSetReconstructSoftness(atoi(softness_text));
+    const char *shading_text = getenv("DKC3_RECONSTRUCT_SHADING");
+    if (shading_text && *shading_text)
+      Dkc3LauncherSetReconstructShading(atoi(shading_text));
+    if (upscaler == kDkc3UpscalerReconstruct) {
+      Dkc3LauncherSetUpscaler(kDkc3UpscalerReconstruct);
+    } else if (upscaler_text && *upscaler_text) {
+      Dkc3LauncherSetUpscaler(upscaler);
+      settings->texture_filter = upscaler == kDkc3UpscalerBilinear;
+    } else {
+      upscaler = settings->texture_filter ? kDkc3UpscalerBilinear
+                                          : kDkc3UpscalerNearest;
+    }
+    const int effective = Dkc3SdlPresenterSetUpscaler(
+        &host.presenter, upscaler, Dkc3LauncherReconstructMode(),
+        (float)Dkc3LauncherReconstructStrength() / 100.0f,
+        (float)Dkc3LauncherReconstructSoftness() / 100.0f,
+        (float)Dkc3LauncherReconstructShading() / 100.0f);
+    if (effective != upscaler && host.presenter.shader_error[0])
+      fprintf(stderr, "warning: %s; using %s\n", host.presenter.shader_error,
+              Dkc3SdlPresenterUpscalerName(effective));
+  }
+  host.overlay = Dkc3DesktopOverlayCreate(settings);
+  if (!host.overlay ||
+      !Dkc3DesktopOverlayInitSdl(
+          host.overlay, host.presenter.window, host.presenter.gl_context)) {
+    free(rom);
+    ShutdownHost(&host);
+    ShowError("Unable to initialize the in-game overlay");
+    return 4;
+  }
+#ifdef __APPLE__
+  if (!host.hidden) {
+    Dkc3MacInstallMenu();
+    Dkc3MacUpdateMenu(
+        Dkc3SdlPresenterIsFullscreen(&host.presenter),
+        settings->texture_filter != 0, settings->aspect_index);
+  }
+#endif
+  RefreshControllers(&host);
+  Dkc3BeginDrawing(
+      host.pixels, (size_t)Dkc3VideoWidth() * kBytesPerPixel);
+  if (settings->enable_audio && !InitializeAudio(&host)) {
+    if (test_frame_limit) {
+      free(rom);
+      ShutdownHost(&host);
+      ShowError("SDL audio could not be opened in the desktop test");
+      return 6;
+    }
+    fprintf(stderr, "warning: SDL audio unavailable; continuing silent\n");
+  }
+  Dkc3DiagnosticsSetPresentation(
+      Dkc3SdlPresenterBackend(&host.presenter),
+      Dkc3DesktopScreenFilterName(screen_filter), host.audio_available);
+  fprintf(stdout, "Video: %s, %s, %s sampling, aspect=%s (%dx%d)\n",
+          Dkc3SdlPresenterBackend(&host.presenter),
+          Dkc3DesktopScreenFilterName(screen_filter),
+          Dkc3SdlPresenterUpscalerName(host.presenter.upscaler),
+          Dkc3VideoAspectName(Dkc3VideoGetAspect()), Dkc3VideoWidth(),
+          kFrameHeight);
+  fprintf(stdout,
+          "Controls: gameplay and Assist bindings are configurable in the "
+          "pre-boot launcher. Escape=Exit Fullscreen/Overlay. "
+          "SDL game controllers are "
+          "detected automatically.\n");
+
+#ifdef __APPLE__
+  Dkc3DesktopPacer pacer;
+  Dkc3DesktopPacerInit(&pacer, kVideoRate, kDisplayLockTolerance);
+  bool display_link = false;
+  uint64_t presented_tick = 0;
+  uint64_t seen_tick = 0;
+  /* The link runs whenever the window has one, so a pacing log always has
+   * the display's ticks to measure against; DKC3_DISPLAY_LOCK=0 keeps the
+   * frames on the host clock while still recording them. */
+  const bool display_lock = !EnvironmentDisabled("DKC3_DISPLAY_LOCK");
+  if (Dkc3SdlPresenterUsesSoftwarePacing(&host.presenter)) {
+    char link_error[128] = {0};
+    display_link = Dkc3MacDisplayLinkStart(
+        Dkc3SdlPresenterNativeWindow(&host.presenter), 60.0, link_error,
+        sizeof link_error);
+    if (!display_link)
+      fprintf(stdout, "Display link unavailable (%s); pacing on the host "
+              "clock.\n", link_error);
+  }
+  fprintf(stdout, "Frame pacing: %s\n",
+          display_link && display_lock
+              ? "display link (DKC3_DISPLAY_LOCK=0 keeps the host clock)"
+              : "host clock");
+  /* DKC3_PACING_LOG: one line per presented frame with the pacing mode,
+   * the present time, the display tick it followed, the tick's target
+   * refresh time and interval, the emulation time, the audio queue's
+   * average fill and the stretch ratio, for measuring cadence offline. */
+  FILE *pacing_log = NULL;
+  {
+    const char *pacing_log_path = getenv("DKC3_PACING_LOG");
+    if (pacing_log_path && *pacing_log_path) {
+      pacing_log = fopen(pacing_log_path, "w");
+      if (pacing_log)
+        fprintf(pacing_log, "frame mode present_s tick target_s interval_s "
+                            "emulate_s fill_frames ratio pump_s work_s "
+                            "wait_s present_call_s\n");
+    }
+  }
+#endif
+  Dkc3DesktopFpsCounter fps_counter;
+  uint64_t deadline = SDL_GetPerformanceCounter();
+  uint64_t frequency = SDL_GetPerformanceFrequency();
+  Dkc3DesktopFpsInit(&fps_counter, deadline);
+  double deadline_fraction = 0.0;
+  double audio_fraction = 0.0;
+  unsigned long long host_frame = 0;
+  const char *screenshot_path = getenv("DKC3_DESKTOP_SCREENSHOT");
+  if (screenshot_path && !*screenshot_path) screenshot_path = NULL;
+  unsigned long long screenshot_frame = 60;
+  {
+    const char *frame_text = getenv("DKC3_DESKTOP_SCREENSHOT_FRAME");
+    if (frame_text && *frame_text)
+      screenshot_frame = strtoull(frame_text, NULL, 10);
+  }
+  uint8_t *screenshot_rgb = NULL;
+  bool screenshot_written = false;
+  const char *test_load_state_path = getenv("DKC3_DESKTOP_TEST_LOADSTATE");
+  if (test_load_state_path && !*test_load_state_path)
+    test_load_state_path = NULL;
+  bool test_load_state_done = false;
+  unsigned rewind_capture_counter = 0;
+  int16_t frame_audio[kMaximumFrameAudio * kAudioChannels];
+  Dkc3RewindHistory rewind_history;
+  memset(&rewind_history, 0, sizeof rewind_history);
+  size_t rewind_snapshot_size = RtlSaveSnapshotToMemory(NULL, 0);
+  uint8_t *rewind_scratch = rewind_snapshot_size
+      ? (uint8_t *)malloc(rewind_snapshot_size) : NULL;
+  bool rewind_available =
+      rewind_scratch &&
+      Dkc3RewindHistoryInit(&rewind_history, rewind_snapshot_size,
+                            kRewindSnapshotCapacity) &&
+      RtlSaveSnapshotToMemory(rewind_scratch, rewind_snapshot_size) ==
+          rewind_snapshot_size &&
+      Dkc3RewindHistoryPush(&rewind_history, rewind_scratch);
+  bool test_rewind_completed = false;
+  bool test_fast_forward_completed = false;
+  bool test_overlay_completed = false;
+  unsigned test_overlay_ticks = 0;
+  bool runtime_failure = false;
+  uint32_t previous_state_actions = 0;
+  SdlSpeedMode previous_mode = kSdlSpeedNormal;
+  bool previous_overlay_open = false;
+  Dkc3InputRecorder input_recorder = {0};
+  char input_recording_error[512] = {0};
+  const char *input_recording_path = getenv("SNESRECOMP_INPUT_REC");
+
+  if (input_recording_path && *input_recording_path) {
+    if (!Dkc3InputRecorderOpen(
+            &input_recorder, input_recording_path,
+            input_recording_error, sizeof input_recording_error)) {
+      fprintf(stderr, "Input recording failed: %s\n", input_recording_error);
+      ShowError(input_recording_error);
+      runtime_failure = true;
+      host.running = false;
+    } else {
+      fprintf(stdout, "Input recording enabled: %s\n", input_recording_path);
+      Dkc3SdlPresenterSetTitle(
+          &host.presenter, DKC3_PRODUCT_TITLE " (Recording Input)");
+    }
+  }
+
+  while (host.running) {
+#ifdef __APPLE__
+    const double stage_top = Dkc3MacHostSeconds();
+#endif
+    PumpEvents(&host);
+#ifdef __APPLE__
+    const double stage_pumped = Dkc3MacHostSeconds();
+    double stage_paced = stage_pumped;
+    double stage_before_pace = stage_pumped;
+#endif
+    if (host.escaped_fullscreen) {
+      settings->fullscreen = 0;
+      Dkc3DesktopOverlaySetSettings(host.overlay, settings);
+      host.escaped_fullscreen = false;
+    }
+    Dkc3DiagnosticsHeartbeat(host_frame, Dkc3ResumePc());
+    host_report_crash_test_tick();
+    uint32_t platform_host_actions = 0;
+#ifdef __APPLE__
+    platform_host_actions = ApplyMacCommands(&host, settings);
+    if (test_save_load_requested && !test_save_injected &&
+        host_frame >= 30) {
+      platform_host_actions |= kDkc3HostSaveState;
+      test_save_injected = true;
+    }
+    if (test_save_load_requested && test_save_completed &&
+        !test_load_injected && host_frame >= 60) {
+      platform_host_actions |= kDkc3HostLoadState;
+      test_load_injected = true;
+    }
+    /* DKC3_DESKTOP_TEST_LOADSTATE: start a hidden or visible run from a
+     * preserved snapshot once the host has settled, so presentation
+     * experiments can be captured on real gameplay. */
+    if (test_load_state_path && !test_load_state_done && host_frame >= 2) {
+      test_load_state_done = true;
+      if (RtlLoadSnapshot(test_load_state_path)) {
+        ResetAudio(&host);
+        audio_fraction = 0.0;
+        deadline = SDL_GetPerformanceCounter();
+        deadline_fraction = 0.0;
+        Dkc3DrawPpuFrame();
+      } else {
+        fprintf(stderr, "warning: DKC3_DESKTOP_TEST_LOADSTATE failed: %s\n",
+                test_load_state_path);
+      }
+    }
+#endif
+    SdlControls controls = ReadControls(&host);
+    if (test_overlay_requested && !test_overlay_completed &&
+        host_frame >= 30) {
+      if (test_overlay_ticks == 0) {
+        Dkc3DesktopOverlayToggle(host.overlay);
+        test_overlay_ticks = 1;
+      } else if (Dkc3DesktopOverlayIsOpen(host.overlay)) {
+        test_overlay_ticks++;
+        if (test_overlay_ticks >= 30) {
+          Dkc3DesktopOverlayToggle(host.overlay);
+          test_overlay_completed = true;
+        }
+      }
+    }
+    uint32_t overlay_actions =
+        Dkc3DesktopOverlayTakeActions(host.overlay);
+    if (overlay_actions & kDkc3OverlayActionQuit) {
+      host.running = false;
+      break;
+    }
+    if (overlay_actions & kDkc3OverlayActionSaveState)
+      controls.host_actions |= kDkc3HostSaveState;
+    if (overlay_actions & kDkc3OverlayActionLoadState)
+      controls.host_actions |= kDkc3HostLoadState;
+    ApplyOverlaySettings(&host, settings, &screen_filter);
+    bool overlay_open = Dkc3DesktopOverlayIsOpen(host.overlay);
+    if (overlay_open != previous_overlay_open) {
+      ResetAudio(&host);
+      if (host.audio_device)
+        SDL_PauseAudioDevice(host.audio_device, overlay_open ? 1 : 0);
+      audio_fraction = 0.0;
+      deadline = SDL_GetPerformanceCounter();
+      deadline_fraction = 0.0;
+      previous_overlay_open = overlay_open;
+    }
+    bool assist_tools = Dkc3DesktopOverlayAssistTools(host.overlay);
+#ifdef __APPLE__
+    if (!host.hidden)
+      Dkc3MacUpdateMenu(
+          Dkc3SdlPresenterIsFullscreen(&host.presenter),
+          host.presenter.linear_filter, settings->aspect_index);
+#endif
+    controls.host_actions = Dkc3ApplyAssistGate(
+        controls.host_actions, platform_host_actions, assist_tools);
+    uint32_t state_actions = controls.host_actions &
+        (kDkc3HostSaveState | kDkc3HostLoadState);
+    uint32_t pressed_state_actions = state_actions & ~previous_state_actions;
+    previous_state_actions = state_actions;
+    if (pressed_state_actions & kDkc3HostSaveState) {
+      int slot = Dkc3DesktopOverlaySelectedSlot(host.overlay);
+      char path[128];
+      RtlSaveSlotPath(slot, path, sizeof path);
+      bool saved = EnsureSaveDirectory() && RtlSaveSnapshot(path);
+      char status[80];
+      (void)snprintf(status, sizeof status,
+                     saved ? "Slot %d saved." : "Slot %d save failed.",
+                     slot + 1);
+      Dkc3DesktopOverlaySetStatus(
+          host.overlay, status, saved);
+      if (test_save_load_requested && test_save_injected)
+        test_save_completed = saved;
+      (void)snprintf(status, sizeof status,
+                     saved ? DKC3_PRODUCT_TITLE " - Slot %d saved"
+                           : DKC3_PRODUCT_TITLE " - Slot %d save failed",
+                     slot + 1);
+      Dkc3SdlPresenterSetTitle(&host.presenter, status);
+    }
+    if (pressed_state_actions & kDkc3HostLoadState) {
+      int slot = Dkc3DesktopOverlaySelectedSlot(host.overlay);
+      char path[128];
+      RtlSaveSlotPath(slot, path, sizeof path);
+      bool loaded = RtlLoadSnapshot(path);
+      if (!loaded && slot == 0)
+        loaded = RtlLoadSnapshot(DKC3_STATE_SLOT0_LEGACY_FILE);
+      if (loaded) {
+        char status[80];
+        (void)snprintf(status, sizeof status, "Slot %d loaded.", slot + 1);
+        Dkc3DesktopOverlaySetStatus(host.overlay, status, true);
+        ResetAudio(&host);
+        audio_fraction = 0.0;
+        deadline = SDL_GetPerformanceCounter();
+        deadline_fraction = 0.0;
+        rewind_history.count = 0;
+        rewind_history.write_index = 0;
+        rewind_capture_counter = 0;
+        if (rewind_available &&
+            RtlSaveSnapshotToMemory(rewind_scratch, rewind_snapshot_size) ==
+                rewind_snapshot_size)
+          (void)Dkc3RewindHistoryPush(&rewind_history, rewind_scratch);
+        Dkc3DrawPpuFrame();
+        if (test_save_load_requested && test_load_injected)
+          test_load_completed = true;
+      } else {
+        char status[80];
+        (void)snprintf(status, sizeof status,
+                       "Slot %d could not be loaded.", slot + 1);
+        Dkc3DesktopOverlaySetStatus(
+            host.overlay, status, false);
+      }
+    }
+    if (test_fast_forward_requested && !test_fast_forward_completed &&
+        host_frame >= 60)
+      controls.host_actions |= kDkc3HostFastForward;
+    if (test_rewind_requested && !test_rewind_completed && host_frame >= 120)
+      controls.host_actions |= kDkc3HostRewind;
+
+    SdlSpeedMode mode = kSdlSpeedNormal;
+    if (controls.host_actions & kDkc3HostRewind) mode = kSdlSpeedRewind;
+    else if (controls.host_actions & kDkc3HostFastForward)
+      mode = kSdlSpeedFastForward;
+    if (mode != previous_mode) {
+      ResetAudio(&host);
+      audio_fraction = 0.0;
+      deadline = SDL_GetPerformanceCounter();
+      deadline_fraction = 0.0;
+      previous_mode = mode;
+    }
+
+    bool frame_ready = overlay_open;
+    double audio_ratio = 1.0;
+#ifdef __APPLE__
+    double emulate_seconds = 0.0;
+#endif
+    if (overlay_open) {
+      mode = kSdlSpeedNormal;
+    } else if (mode == kSdlSpeedRewind) {
+      if (rewind_available &&
+          Dkc3RewindHistoryPop(&rewind_history, rewind_scratch)) {
+        if (!RtlLoadSnapshotFromMemory(rewind_scratch, rewind_snapshot_size)) {
+          runtime_failure = true;
+          break;
+        }
+        Dkc3DrawPpuFrame();
+        frame_ready = true;
+        if (test_rewind_requested) test_rewind_completed = true;
+      }
+    } else {
+      int frames_to_run = mode == kSdlSpeedFastForward
+          ? kHostSpeedMultiplier : 1;
+      unsigned long long iteration_start = host_frame;
+      for (int run = 0; run < frames_to_run && host.running; run++) {
+        if (Dkc3InputRecorderIsOpen(&input_recorder) &&
+            !Dkc3InputRecorderWrite(
+                &input_recorder, controls.controller,
+                input_recording_error, sizeof input_recording_error)) {
+          fprintf(stderr, "Input recording failed: %s\n",
+                  input_recording_error);
+          Dkc3DiagnosticsFatal(input_recording_error);
+          ShowError(input_recording_error);
+          runtime_failure = true;
+          host.running = false;
+          break;
+        }
+#ifdef __APPLE__
+        const uint64_t emulate_start = SDL_GetPerformanceCounter();
+#endif
+        (void)RtlRunFrame(controls.controller);
+        if (g_fail || !Dkc3LastLleResult()) {
+          fprintf(stderr, "Runtime stopped at frame %llu (resume PC $%06x).\n",
+                  host_frame + 1, (unsigned)Dkc3ResumePc());
+          Dkc3DiagnosticsFatal("native runtime stopped unexpectedly");
+          runtime_failure = true;
+          break;
+        }
+        host_frame++;
+        rewind_capture_counter++;
+        if (rewind_available &&
+            rewind_capture_counter >= kRewindSnapshotInterval) {
+          rewind_capture_counter = 0;
+          if (RtlSaveSnapshotToMemory(rewind_scratch, rewind_snapshot_size) !=
+                  rewind_snapshot_size ||
+              !Dkc3RewindHistoryPush(&rewind_history, rewind_scratch))
+            rewind_available = false;
+        }
+        Dkc3DrawPpuFrame();
+        frame_ready = true;
+#ifdef __APPLE__
+        emulate_seconds += (double)(SDL_GetPerformanceCounter() - emulate_start) /
+                           (double)frequency;
+#endif
+        audio_fraction += (double)kAudioRate / kVideoRate;
+        int audio_frames = (int)audio_fraction;
+        audio_fraction -= audio_frames;
+        RtlRenderAudio(frame_audio, audio_frames, kAudioChannels);
+        if (mode == kSdlSpeedNormal) {
+          host.audio_fill_average = Dkc3AudioFillAverage(
+              host.audio_fill_average, AudioQueuedFrames(&host),
+              kAudioFillWeight);
+          audio_ratio = host.audio_primed
+              ? Dkc3AudioRateRatio(host.audio_fill_average,
+                                   AudioTargetFrames(&host),
+                                   kAudioRateDeviation, kAudioRateGain)
+              : 1.0;
+          if (!QueueAudio(&host, frame_audio, audio_frames, audio_ratio)) {
+            fprintf(stderr, "warning: SDL audio queue stopped\n");
+            host.audio_available = false;
+          }
+        }
+        if (test_frame_limit && host_frame >= test_frame_limit) {
+          host.running = false;
+          break;
+        }
+      }
+      if (runtime_failure) break;
+      if (test_fast_forward_requested && mode == kSdlSpeedFastForward &&
+          host_frame - iteration_start == kHostSpeedMultiplier)
+        test_fast_forward_completed = true;
+    }
+
+    /* Until the queue is primed the loop runs unpaced to fill it to the
+     * rate-control target; once primed, rate control holds the fill there
+     * and only a queue that has all but drained after a host stall runs
+     * unpaced again. */
+    const double queued_frames = AudioQueuedFrames(&host);
+    if (!host.audio_primed && queued_frames >= AudioTargetFrames(&host))
+      host.audio_primed = true;
+    const bool should_pace =
+        overlay_open || mode != kSdlSpeedNormal || !host.audio_available ||
+        queued_frames >= (host.audio_primed ? (double)kMaximumFrameAudio
+                                            : AudioTargetFrames(&host));
+#ifdef __APPLE__
+    /* With OpenGL's second vsync gate disabled, the presentation lands
+     * either on the display's own refresh tick, when the display link has
+     * locked, or on the exact DKC3 deadline of the host clock. Startup may
+     * still run a few unpaced frames to establish the audio queue. */
+    bool display_paced = false;
+    Dkc3MacDisplayTick tick;
+    memset(&tick, 0, sizeof tick);
+    stage_before_pace = Dkc3MacHostSeconds();
+    if (frame_ready && should_pace &&
+        Dkc3SdlPresenterUsesSoftwarePacing(&host.presenter)) {
+      display_paced = WaitForDisplayTick(display_link && display_lock, &pacer,
+                                         &presented_tick, &seen_tick, &tick);
+      if (display_paced) {
+        deadline = SDL_GetPerformanceCounter();
+        deadline_fraction = 0.0;
+      } else {
+        PaceFrame(&host, &deadline, &deadline_fraction);
+      }
+    }
+    stage_paced = Dkc3MacHostSeconds();
+#endif
+    if (frame_ready) {
+      const uint8_t *present_pixels = Dkc3DesktopColorFilterApply(
+          &host.color_filter, host.pixels, host.filtered_pixels,
+          Dkc3VideoPixelCount());
+      /* DKC3_DESKTOP_SCREENSHOT: capture the presented drawable (after the
+       * upscaler and screen model, before the overlay is composited over it
+       * is not possible, so the overlay should be closed) at frame
+       * DKC3_DESKTOP_SCREENSHOT_FRAME as a binary PPM, for verifying what
+       * the GPU path draws without a visible window. */
+      if (screenshot_path && !screenshot_rgb &&
+          host_frame >= screenshot_frame) {
+        int dw = 0, dh = 0;
+        Dkc3SdlPresenterDrawableSize(&host.presenter, &dw, &dh);
+        if (dw > 0 && dh > 0) {
+          screenshot_rgb = (uint8_t *)malloc((size_t)dw * (size_t)dh * 3u);
+          if (screenshot_rgb)
+            Dkc3SdlPresenterArmCapture(&host.presenter, screenshot_rgb, dw,
+                                       dh);
+        }
+      }
+      if (!present_pixels ||
+          !Dkc3SdlPresenterPresent(&host.presenter, present_pixels,
+                                   Dkc3VideoWidth(), kFrameHeight,
+                                   Dkc3DesktopOverlayRenderOpenGl,
+                                   host.overlay)) {
+        fprintf(stderr, "SDL video presentation failed: %s\n", SDL_GetError());
+        Dkc3DiagnosticsFatal("SDL video presentation failed");
+        runtime_failure = true;
+        break;
+      }
+#ifdef __APPLE__
+      if (pacing_log) {
+        if (!display_paced) (void)Dkc3MacDisplayLinkLatest(&tick);
+        const double stage_presented = Dkc3MacHostSeconds();
+        fprintf(pacing_log,
+                "%llu %s %.6f %llu %.6f %.6f %.6f %.1f %.5f %.6f %.6f %.6f %.6f\n",
+                host_frame, display_paced ? "display" : "clock",
+                stage_presented, (unsigned long long)tick.sequence,
+                tick.target, tick.interval, emulate_seconds,
+                host.audio_fill_average, audio_ratio,
+                stage_pumped - stage_top, stage_before_pace - stage_pumped,
+                stage_paced - stage_before_pace, stage_presented - stage_paced);
+      }
+#endif
+      if (screenshot_rgb && host.presenter.capture_done &&
+          !screenshot_written) {
+        FILE *shot = fopen(screenshot_path, "wb");
+        if (shot) {
+          fprintf(shot, "P6\n%d %d\n255\n", host.presenter.capture_width,
+                  host.presenter.capture_height);
+          fwrite(screenshot_rgb, 1,
+                 (size_t)host.presenter.capture_width *
+                     (size_t)host.presenter.capture_height * 3u,
+                 shot);
+          fclose(shot);
+          fprintf(stdout, "screenshot: %s (%dx%d, %s)\n", screenshot_path,
+                  host.presenter.capture_width,
+                  host.presenter.capture_height,
+                  Dkc3SdlPresenterUpscalerName(host.presenter.upscaler));
+        }
+        screenshot_written = true;
+        Dkc3SdlPresenterArmCapture(&host.presenter, NULL, 0, 0);
+      }
+    }
+    if (should_pace &&
+        (!Dkc3SdlPresenterUsesSoftwarePacing(&host.presenter) ||
+         !frame_ready))
+      PaceFrame(&host, &deadline, &deadline_fraction);
+    else if (!should_pace) {
+      deadline = SDL_GetPerformanceCounter();
+      deadline_fraction = 0.0;
+    }
+    unsigned fps = 0;
+    uint64_t now = SDL_GetPerformanceCounter();
+    if (Dkc3DesktopFpsUpdate(&fps_counter, frame_ready, now, frequency, &fps)) {
+      char title[112];
+      (void)snprintf(title, sizeof title,
+                     DKC3_PRODUCT_TITLE " (FPS: %u)", fps);
+      if (assist_tools)
+        (void)snprintf(title, sizeof title,
+                       DKC3_PRODUCT_TITLE
+                       " (FPS: %u) (Assist Tools: On)",
+                       fps);
+      if (Dkc3InputRecorderIsOpen(&input_recorder)) {
+        size_t used = strlen(title);
+        (void)snprintf(
+            title + used, sizeof title - used, " (Recording Input)");
+      }
+      Dkc3SdlPresenterSetTitle(&host.presenter, title);
+    }
+  }
+
+#ifdef __APPLE__
+  Dkc3MacDisplayLinkStop();
+  if (pacing_log) fclose(pacing_log);
+#endif
+  if (test_rewind_requested && !test_rewind_completed) runtime_failure = true;
+  if (test_fast_forward_requested && !test_fast_forward_completed)
+    runtime_failure = true;
+  if (test_overlay_requested && !test_overlay_completed)
+    runtime_failure = true;
+  if (test_save_load_requested &&
+      (!test_save_completed || !test_load_completed))
+    runtime_failure = true;
+  unsigned long long recorded_frames = input_recorder.frames;
+  if (!Dkc3InputRecorderClose(
+          &input_recorder, input_recording_error,
+          sizeof input_recording_error)) {
+    fprintf(stderr, "Input recording failed: %s\n", input_recording_error);
+    runtime_failure = true;
+  } else if (input_recording_path && *input_recording_path) {
+    fprintf(stdout, "Input recording completed: %llu frames at %s\n",
+            recorded_frames, input_recording_path);
+  }
+  bool completed = !runtime_failure && !g_fail && Dkc3LastLleResult();
+  const char *frame_output = getenv("DKC3_FRAME_PPM");
+  if (frame_output && *frame_output &&
+      !WriteFramePpm(frame_output, host.pixels))
+    completed = false;
+  if (sram_enabled && completed) RtlWriteSram();
+  Dkc3DesktopOverlayGetSettings(host.overlay, settings);
+  if (aspect_override_active || widescreen_override_active) {
+    settings->aspect_index = persisted_aspect;
+    settings->widescreen =
+        persisted_aspect != kDkc3VideoAspectNative;
+  }
+  Dkc3DiagnosticsShutdown(completed ? "clean_exit" : "runtime_failure");
+  Dkc3RewindHistoryDestroy(&rewind_history);
+  free(rewind_scratch);
+  free(rom);
+  ShutdownHost(&host);
+  free(screenshot_rgb);
+  if (test_frame_limit) {
+    fprintf(stdout,
+            "result=desktop_completed frames=%llu rewind_restore=%s "
+            "fast_forward=%s save_load=%s host=sdl2\n",
+            host_frame,
+            test_rewind_requested
+                ? (test_rewind_completed ? "passed" : "failed")
+                : "not_requested",
+            test_fast_forward_requested
+                ? (test_fast_forward_completed ? "passed" : "failed")
+                : "not_requested",
+            test_save_load_requested
+                ? (test_save_completed && test_load_completed
+                       ? "passed" : "failed")
+                : "not_requested");
+  }
+  return completed ? 0 : 5;
+}
+
+int main(int argc, char **argv) {
+  SDL_SetMainReady();
+  bool force_launcher = false;
+  int rom_argument = 1;
+  if (argc >= 2 && strcmp(argv[1], "--launcher") == 0) {
+    force_launcher = true;
+    rom_argument++;
+  }
+  if (argc > rom_argument + 1) {
+    fprintf(stderr, "Usage: %s [--launcher] [ROM.smc]\n", argv[0]);
+    return 2;
+  }
+  char rom_path[kPathCapacity] = {0};
+  if (argc == rom_argument + 1) {
+    if (!snesrecomp_abspath(argv[rom_argument], rom_path, sizeof rom_path))
+      (void)snprintf(rom_path, sizeof rom_path, "%s", argv[rom_argument]);
+  }
+#ifdef __APPLE__
+  char assets_path[kPathCapacity] = {0};
+  char macos_error[256] = {0};
+  if (!Dkc3MacPrepareRuntimeDirectory(
+          assets_path, sizeof assets_path, macos_error,
+          sizeof macos_error)) {
+    fprintf(stderr, "Unable to prepare DKC3 user data: %s\n", macos_error);
+    return 2;
+  }
+  Dkc3LauncherSetAssetsPath(assets_path);
+#else
+  (void)snesrecomp_anchor_to_exe_dir();
+#endif
+  if (!Dkc3DiagnosticsInit("sdl2", DKC3_RELEASE_VERSION))
+    fprintf(stderr, "warning: diagnostics could not be initialized\n");
+
+  RecompLauncherCSettings settings;
+  Dkc3LauncherSettingsDefault(&settings);
+  Dkc3LauncherSettingsLoad(&settings);
+  if (!rom_path[0])
+    (void)Dkc3LauncherReadRomCache(rom_path, sizeof rom_path);
+  bool suppress_launcher = EnvironmentEnabled("SNESRECOMP_NO_LAUNCHER") ||
+                           EnvironmentEnabled("DKC3_DESKTOP_TEST_HIDDEN");
+  bool show_launcher = !suppress_launcher &&
+      (force_launcher || !settings.skip_launcher || !rom_path[0]);
+  if (show_launcher) {
+    char selected_rom[kPathCapacity] = {0};
+    int action = Dkc3LauncherRun(&settings, rom_path, selected_rom,
+                                 sizeof selected_rom, NULL, 0);
+    if (action == 1) return 0;
+    if (action == 0 && selected_rom[0])
+      (void)snprintf(rom_path, sizeof rom_path, "%s", selected_rom);
+    (void)Dkc3LauncherSettingsSave(&settings);
+  }
+  if (!rom_path[0]) {
+    fprintf(stderr, "No ROM was selected. Run with --launcher to choose one.\n");
+    return 0;
+  }
+  (void)Dkc3LauncherWriteRomCache(rom_path);
+  int result = RunGame(rom_path, &settings);
+  (void)Dkc3LauncherSettingsSave(&settings);
+  return result;
+}

@@ -109,3 +109,39 @@ carried-over launcher record still held DKC2's SHA-256 and CRC32 and its
 when the CRC matches and the hash is in the known list, so both were
 needed. The boxart card is the generated placeholder.
 
+## 2026-09-03 - lockup after Wrinkly: a number printer that rewrites its stack
+
+- **Symptom:** the app locked up or stopped after the first visit to
+  Wrinkly's Save Cave. Its report named the stop at frame 2385 with the
+  resume PC at `$80:FFC0`, the cartridge header, and its tier-2 manifest
+  showed the real event earlier: a call chain through `$80:9507`, `$80:953C`,
+  `$80:9F53`, `$80:A1AA`, `$80:A20A`, `$80:A2D1`, an RTS treated as a
+  dispatch at `$80:A696` to `$80:A64D`, then 19,002 hits of a jump from
+  `$00:0005` to `$00:0000`. Because DKC3's NMI is a non-returning frame
+  dispatcher, the game kept drawing frames while its main thread spun at
+  address zero, which is why it looked like a hang before the stop.
+- **Cause:** `CODE_80A65F`, the routine that prints a number as digits,
+  pops its own return address into `$22`, divides the value by ten in a
+  loop pushing each remainder, then re-pushes the address and returns to
+  `CODE_80A64A`, which pops the pushed digits into the tilemap. A
+  recompiled `CODE_80A64A` and an interpreted `CODE_80A65F` disagree
+  about that stack, and the caller's return address is gone. It is the
+  only `LDA/PHA/RTS` re-push in the game; 119 labels are followed by a
+  pull, but those are register restores and loop heads.
+- **Fix:** `tools/ingest_dkc3_disasm.py` now emits `force_lle` for both
+  routines with the reason beside each, so regeneration keeps them on the
+  interpreter and the whole stack dance is interpreted; the surrounding
+  recompiled code calls in and returns through the runtime's normal bridge.
+  The generation moved by one variant (3,033 proven, 1,722 interpreted).
+- **Verified:** a 6,401-frame scripted headless run with the user's SRAM
+  starts a file, enters the cave, presses through the dialogue, reaches the
+  save summary that prints the times and percentages, chooses from the
+  save menu, returns to the map, and re-enters, with 21 interpreted calls
+  into the printer and no address-zero or off-header site in the manifest.
+  The earlier headless boot never showed the fault because its script
+  stopped pressing at the first dialogue page. The same script against the
+  pre-fix configuration is recorded below when its build has run.
+- The SRAM the app wrote holds only the game's fill pattern; no file was
+  saved before the failure, and the pattern also selects French in the
+  file select, which is the game's reading of that SRAM, not a bug here.
+

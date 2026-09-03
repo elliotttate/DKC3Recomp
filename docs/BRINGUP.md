@@ -140,7 +140,11 @@ needed. The boxart card is the generated placeholder.
   into the printer and no address-zero or off-header site in the manifest.
   The earlier headless boot never showed the fault because its script
   stopped pressing at the first dialogue page. The same script against the
-  pre-fix configuration is recorded below when its build has run.
+  pre-fix configuration, built into a scratch directory, reproduces the
+  app's failure headlessly: the RTS at `$80:A696` taken as a dispatch at
+  host frame 3305, a call into address zero at frame 3313, and the
+  off-rails stop with the resume PC at `$80:FFC0` at frame 3439. The fix
+  removes all three.
 - The SRAM the app wrote holds only the game's fill pattern; no file was
   saved before the failure, and the pattern also selects French in the
   file select, which is the game's reading of that SRAM, not a bug here.

@@ -99,3 +99,13 @@ runs produced identical frame, WRAM, VRAM, CGRAM, OAM, and audio hashes.
   presentation, HDMA band classification, and level-map decoding are
   DKC2-specific and were deliberately not copied; DKC3 needs its own
   evidence before any of that is attempted.
+
+### Launcher recognition
+
+The first app build's launcher reported "ROM not recognized": the
+carried-over launcher record still held DKC2's SHA-256 and CRC32 and its
+"USA v1.0" label. The record now carries DKC3's SHA-256, CRC32
+`448EEC19`, and "USA (En,Fr)"; the recomp-ui model marks a ROM recognized
+when the CRC matches and the hash is in the known list, so both were
+needed. The boxart card is the generated placeholder.
+

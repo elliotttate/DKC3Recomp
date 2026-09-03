@@ -334,11 +334,12 @@ int Dkc3LauncherRun(RecompLauncherCSettings *settings,
                     size_t selected_capacity,
                     const char *const *renderer_labels,
                     size_t renderer_count) {
+  /* DKC3 USA (En,Fr), headerless. */
   static const uint8_t known_sha256[][32] = {{
-      0x35, 0x42, 0x1a, 0x9a, 0xf9, 0xdd, 0x01, 0x1b,
-      0x40, 0xb9, 0x1f, 0x79, 0x21, 0x92, 0xaf, 0x9f,
-      0x99, 0xc9, 0x32, 0x01, 0xd8, 0xd3, 0x94, 0x02,
-      0x6b, 0xdf, 0xb4, 0x2c, 0xbf, 0x2d, 0x86, 0x33,
+      0x22, 0x77, 0xa2, 0xd8, 0xdd, 0xdb, 0x01, 0xfe,
+      0x5c, 0xb0, 0xae, 0x9a, 0x0f, 0xa2, 0x25, 0xd4,
+      0x2b, 0x3a, 0x11, 0xad, 0xcc, 0xae, 0xaf, 0xa1,
+      0x8e, 0x3c, 0x33, 0x9b, 0x37, 0x94, 0xa3, 0x2b,
   }};
   if (!settings || !selected_rom || selected_capacity == 0) return 1;
   RecompLauncherCGameInfo game;
@@ -347,8 +348,8 @@ int Dkc3LauncherRun(RecompLauncherCSettings *settings,
   Dkc3LauncherSettingsDefault(&defaults);
   (void)launcher_profile_apply("snes", &game);
   game.name = "Donkey Kong Country 3: Dixie Kong's Double Trouble!";
-  game.region = "USA v1.0";
-  game.expected_crc = 0x006364DBu;
+  game.region = "USA (En,Fr)";
+  game.expected_crc = 0x448EEC19u;
   game.has_expected_crc = 1;
   game.known_sha256 = known_sha256;
   game.num_known_sha256 = sizeof known_sha256 / sizeof known_sha256[0];

@@ -5,6 +5,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Presentation geometry for the DKC3 hosts. The cartridge image is the
  * native 256x224 frame; the wider aspects present that frame centered
  * between black margins until a DKC3 terrain reconstruction is proven, so
@@ -60,5 +64,9 @@ Dkc3VideoEdgePolicy Dkc3VideoGetEdgePolicy(void);
 bool Dkc3VideoEdgePolicyFromName(const char *name,
                                  Dkc3VideoEdgePolicy *policy);
 const char *Dkc3VideoEdgePolicyName(Dkc3VideoEdgePolicy policy);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

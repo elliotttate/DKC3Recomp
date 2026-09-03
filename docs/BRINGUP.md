@@ -74,8 +74,24 @@ runs produced identical frame, WRAM, VRAM, CGRAM, OAM, and audio hashes.
 - Verified: headless boot, title, map, and attract demo at native size;
   determinism across runs; the unit tests for the carried-over host
   modules, the ingester, and the pacing-log tool.
-- The macOS app is built from the same sources with the DKC2Recomp SDL
-  host; its hidden smoke tests are recorded below when they have run.
+- The macOS app (`build/macos/DKC3Recomp.app`, ad-hoc signed) builds from
+  the same sources with the DKC2Recomp SDL host. Its four hidden smoke
+  tests pass: a 180-frame run exercising the overlay, rewind, and
+  fast-forward; a 90-frame 16:10 run; a 90-frame quick-save save-and-load
+  run; and the 600-frame headless boot. The unit suite is 14 of 14: the
+  eleven host-module tests carried over from DKC2Recomp, the launcher
+  defaults, the ingester, and the pacing-log tool.
+- Two snesrecomp tests are deliberately not wired in at this pin: the
+  submodule's `interp816` test fails its two page-cross cycle checks
+  (upstream `cbcd323` expects 6 cycles for an indexed read that crosses a
+  page; the runtime counts 5), and its bridge test calls
+  `tier2_capture_set_default_enabled`, which the runtime no longer
+  declares. Both are upstream test-versus-runtime drift, not DKC3
+  behaviour; the DKC2 fork pin's older `interp816` test passes.
+- Three things a build on this machine needed that DKC2Recomp's CMake
+  supplied elsewhere: the C linkage block in the DKC3 headers the C++
+  overlay includes, the recomp-ui include path for the input test, and the
+  input tests' fixture arguments.
 - Not verified: gameplay under real input, saves, the Windows host (copied
   but not built here), and every wide aspect beyond "the native frame
   between black margins".

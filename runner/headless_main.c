@@ -30,6 +30,7 @@
  *   DKC3_AUDIO_PCM=<file>           rendered audio as raw 16-bit stereo
  *   DKC3_WRAM_OUTPUT / DKC3_VRAM_OUTPUT / DKC3_OAM_OUTPUT  memory dumps
  *   DKC3_STATE_TRACE=1              print game-state transitions
+ *   DKC3_PREFILL_TRACE=1            print the widescreen prefill per frame
  *   DKC3_TRACE_PC=<hex pc24>        print CPU state at each hit of a PC
  */
 
@@ -246,6 +247,9 @@ int main(int argc, char **argv) {
     }
   }
 
+  const char *prefill_trace_text = getenv("DKC3_PREFILL_TRACE");
+  const int prefill_trace =
+      prefill_trace_text && *prefill_trace_text && *prefill_trace_text != '0';
   const char *savestate_input = getenv("DKC3_SAVESTATE_INPUT");
   bool savestate_pending = savestate_input && *savestate_input;
 
@@ -292,6 +296,17 @@ int main(int argc, char **argv) {
       return 5;
     }
     Dkc3DrawPpuFrame();
+    if (prefill_trace) {
+      Dkc3TerrainPrefillStats prefill;
+      Dkc3GetTerrainPrefillStats(&prefill);
+      fprintf(stderr,
+              "prefill frame=%ld camera=[%04x,%04x] ready=%d present=%u "
+              "matching=%u margin_present=%u margin_matching=%u\n",
+              frame, ReadWram16(0x196d), ReadWram16(0x1973),
+              Dkc3VideoTerrainReady() ? 1 : 0, prefill.present,
+              prefill.matching, prefill.margin_present,
+              prefill.margin_matching);
+    }
     if (frame_sequence_prefix && *frame_sequence_prefix &&
         frame >= frame_sequence_start && frame <= frame_sequence_end &&
         (frame - frame_sequence_start) % frame_sequence_step == 0) {
@@ -432,6 +447,20 @@ int main(int argc, char **argv) {
          snes_frame_counter, vram_words, cgram_words,
          ReadWram16(kDkc3FramePointer), ReadWram16(kDkc3FrameCounter),
          Dkc3VideoAspectName(aspect), frame_width);
+  printf("ppu_layers bgXsc=[%02x,%02x,%02x,%02x] bgTileAdr=$%04x "
+         "hscroll=[%04x,%04x,%04x,%04x] vscroll=[%04x,%04x,%04x,%04x]\n",
+         g_ppu->bgXsc[0], g_ppu->bgXsc[1], g_ppu->bgXsc[2], g_ppu->bgXsc[3],
+         g_ppu->bgTileAdr, g_ppu->hScroll[0], g_ppu->hScroll[1],
+         g_ppu->hScroll[2], g_ppu->hScroll[3], g_ppu->vScroll[0],
+         g_ppu->vScroll[1], g_ppu->vScroll[2], g_ppu->vScroll[3]);
+  {
+    Dkc3TerrainPrefillStats prefill;
+    Dkc3GetTerrainPrefillStats(&prefill);
+    printf("widescreen terrain_ready=%d prefill present=%u matching=%u "
+           "margin_present=%u margin_matching=%u\n",
+           Dkc3VideoTerrainReady() ? 1 : 0, prefill.present,
+           prefill.matching, prefill.margin_present, prefill.margin_matching);
+  }
   printf("frame_sha256=");
   PrintHash(stdout, frame_hash);
   printf("\nwram_sha256=");

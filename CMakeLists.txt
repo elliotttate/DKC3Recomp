@@ -93,6 +93,7 @@ if(DKC3_BUILD_SNESRECOMP)
         ${DKC3_SNESRECOMP_GEN_SOURCES}
         runner/dkc3_game.c
         runner/dkc3_video.c
+        runner/dkc3_hdma.c
         runner/headless_host.c
         runner/input_playback.c
         runner/verified_rom.c
@@ -140,6 +141,8 @@ if(DKC3_BUILD_SNESRECOMP)
             ${DKC3_SNESRECOMP_GEN_SOURCES}
             runner/dkc3_game.c
             runner/dkc3_video.c
+            runner/dkc3_hdma.c
+        runner/dkc3_hdma.c
             runner/diagnostics.c
             runner/headless_host.c
             runner/verified_rom.c
@@ -196,6 +199,7 @@ if(DKC3_BUILD_SNESRECOMP)
         ${DKC3_SNESRECOMP_GEN_SOURCES}
         runner/dkc3_game.c
         runner/dkc3_video.c
+        runner/dkc3_hdma.c
         runner/diagnostics.c
         runner/headless_host.c
         runner/verified_rom.c
@@ -416,6 +420,18 @@ if(BUILD_TESTING)
         set_tests_properties(desktop_${module} PROPERTIES
             LABELS "unit;desktop")
     endforeach()
+
+    add_executable(test_dkc3_video
+        tests/test_dkc3_video.c
+        runner/dkc3_video.c
+        runner/dkc3_hdma.c)
+    target_include_directories(test_dkc3_video PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/runner
+        ${CMAKE_CURRENT_SOURCE_DIR}/snesrecomp/runner/src)
+    dkc3_enable_project_warnings(test_dkc3_video)
+    add_test(NAME dkc3_video COMMAND test_dkc3_video)
+    set_tests_properties(dkc3_video PROPERTIES
+        LABELS "unit;desktop;video;widescreen")
 
     if(WIN32)
         add_executable(test_desktop_present

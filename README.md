@@ -16,10 +16,11 @@ data, generated code, or extracted assets are stored in this repository.
 ## Status
 
 Bring-up. See [docs/BRINGUP.md](docs/BRINGUP.md) for the dated record of
-what runs and what has been verified. The presentation is the native
-256x224 frame; the wider aspects center that frame between black margins.
-Widescreen terrain reconstruction of the kind DKC2Recomp has is later
-work with its own evidence gates.
+what runs and what has been verified. Levels present wide at 16:10 and
+16:9 with DKC2Recomp's terrain reconstruction driven by DKC3's own level
+map, verified on Lakeside Limbo; screens the map does not cover center the
+native frame between black margins. Placed objects still activate at the
+native screen's edge, which is the next piece of work.
 
 ## Building on macOS
 

@@ -1,7 +1,7 @@
 [submodule "snesrecomp"]
 	path = snesrecomp
 	url = https://github.com/elliotttate/snesrecomp.git
-	branch = dkc3-bringup
+	branch = dkc2-widescreen-presentation-v0.0.4
 [submodule "recomp-ui"]
 	path = recomp-ui
 	url = https://github.com/mstan/recomp-ui.git

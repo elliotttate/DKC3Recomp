@@ -149,3 +149,60 @@ needed. The boxart card is the generated placeholder.
   saved before the failure, and the pattern also selects French in the
   file select, which is the game's reading of that SRAM, not a bug here.
 
+
+## 2026-09-03 - widescreen: DKC2Recomp's presentation on DKC3's map
+
+The owner asked for the Lakeside Limbo spot to present wide, the way
+DKC2Recomp does. DKC2Recomp's presentation modules were copied under DKC3
+names (`runner/dkc3_video.c`, `dkc3_hdma.c`, and the widescreen game
+adapter in `dkc3_game.c`), their DKC2-only ship-rigging and lava-geyser
+paths removed, and every cartridge fact they key on replaced through
+`runner/dkc3_facts.h`. The facts came from the H4v0c21 disassembly and
+from live memory of the owner's Lakeside Limbo quick save:
+
+- DKC3 keeps no DKC2-style mode word; a level is recognised by the main
+  loop vector at direct-page `$4E` holding `$B3:8076` (`$80:84BA`).
+- The renderer's camera copies are `$196D`/`$1973` (from `$0493`/`$0497`);
+  the camera clamp is `$04BC`/`$04BE`, the running maximum of the level's
+  camera regions less one screen (`$B7:D71E`). The world begins one screen
+  in: a level's first map column sits at world x `$100`, as in DKC2.
+- Every level map is decompressed at `$7F:0000` (the long pointer at `$8C`,
+  set by `$B3:D917`); the metatile definitions follow it, at the offset in
+  `$1967` (`$B3:DAF7`), 32 bytes each in DKC2's four-rows-of-four-words
+  form; the terrain ring's VRAM base is the word at `$1969`
+  (`$B7:B8A0`). The map shape nibble at `$0470` (`$B3:DA62`) selects the
+  layout: 0 and 8 are column-major with sixteen metatile rows, DKC2's
+  horizontal layout; 4, 5, 6/9, and 7 are row-major with 64-, 32-, 192-,
+  and 160-byte rows, DKC2's vertical, narrow-vertical, square, and
+  ship-hold strides; shape 1, column-major with thirty-two rows, has no
+  decoder yet and stays black-margined.
+- The word at `$04F8` that read `$7800` at the level's start is a moving
+  upload pointer, not the ring base; it read `$E600` a few screens on and
+  briefly stopped the prefill before `$1969` replaced it.
+
+DKC2's map decoder was confirmed on DKC3 before any of that was wired:
+sixteen-tile blocks of the live ring each matched exactly one 32-byte
+definition in bank `$7F`, and the fourteen-block id pattern reproduced at
+exactly one map position with a sixteen-row column-major stride, at the
+level's start and again eleven screens in.
+
+**Result.** At the owner's spot the prefill decodes 1,260 of 1,271
+window cells and all 339 margin cells at 16:10 (461 of 461 at 16:9). A
+3,300-frame scripted run holding right through the pier, the barrel
+cannons, and the underwater stretch kept the terrain ready on 3,300 of
+3,302 frames with the margins matching the decode on every sampled frame,
+and the captures show the boardwalk, posts, mountains, water, and the
+water's HDMA split continuing through both margins. The Mac launcher now
+defaults to 16:10.
+
+**Open.** The prefill's native-window agreement drops to 60-90% under
+motion because the world store holds zero for many in-view cells (421 of
+480 disagreements at one frame were never-written entries); the margins
+are re-decoded every frame and are right, so this is a diagnostic, but it
+may mean the runtime's attribution of DKC3's DMA column uploads to world
+chunks differs from DKC2's, and it should be understood before the store
+is trusted for anything the prefill does not cover. Object activation at
+the wider view (placed objects appearing at the native edge) is the next
+domain and is not done. Shape-1 levels and every layout other than shape
+0 are unverified. `DKC3_PREFILL_TRACE=1` prints the prefill per frame and
+`DKC3_PREFILL_DUMP=<frame counter>` lists a frame's disagreeing cells.

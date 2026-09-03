@@ -30,9 +30,11 @@
 ## DKC2Recomp
 
 - Project: `elliotttate/DKC2Recomp` (a fork of `mstan/DKC2Recomp`). The
-  host modules under `runner/` other than the DKC3 adapter and the headless
-  main, the build script, the desktop unit tests, and the pacing-log tool
-  were copied from it with the game prefix renamed.
+  host modules under `runner/`, the widescreen presentation (video, HDMA,
+  and the game adapter's terrain reconstruction), the build script, the
+  desktop and video unit tests, and the pacing-log tool were copied from
+  it with the game prefix renamed; DKC3's cartridge facts replace DKC2's
+  in `runner/dkc3_facts.h`.
 - License: see `LICENSE`, which is carried over unchanged.
 
 ## Launcher artwork

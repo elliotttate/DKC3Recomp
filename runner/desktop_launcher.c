@@ -93,7 +93,13 @@ void Dkc3LauncherSettingsDefault(RecompLauncherCSettings *settings) {
   settings->texture_filter = 0;
   settings->screen_kind = 0;
   settings->widescreen = 0;
+#ifdef __APPLE__
+  /* The Mac's 16:10 panel; the native and 16:9 presentations stay a menu
+   * choice away. */
+  settings->aspect_index = kDkc3VideoAspect16x10;
+#else
   settings->aspect_index = kDkc3VideoAspectNative;
+#endif
   settings->enable_audio = 1;
   settings->audio_freq = kDkc3AudioRate;
   settings->volume = 100;

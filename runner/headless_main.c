@@ -300,10 +300,11 @@ int main(int argc, char **argv) {
       Dkc3TerrainPrefillStats prefill;
       Dkc3GetTerrainPrefillStats(&prefill);
       fprintf(stderr,
-              "prefill frame=%ld camera=[%04x,%04x] ready=%d present=%u "
-              "matching=%u margin_present=%u margin_matching=%u\n",
+              "prefill frame=%ld camera=[%04x,%04x] ready=%d bias=%d "
+              "present=%u matching=%u margin_present=%u margin_matching=%u\n",
               frame, ReadWram16(0x196d), ReadWram16(0x1973),
-              Dkc3VideoTerrainReady() ? 1 : 0, prefill.present,
+              Dkc3VideoTerrainReady() ? 1 : 0, Dkc3VideoPresentationBias(),
+              prefill.present,
               prefill.matching, prefill.margin_present,
               prefill.margin_matching);
     }

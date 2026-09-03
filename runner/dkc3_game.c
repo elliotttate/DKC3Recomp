@@ -468,21 +468,29 @@ static void Dkc3RecordTerrainPrefillTile(int layer,
   s_terrain_prefill_stats.present++;
   if (margin)
     s_terrain_prefill_stats.margin_present++;
-  if (actual != expected_entry) {
-    /* DKC3_PREFILL_DUMP=<frame>: print every cell the world store and the
-     * map decode disagree on for that host frame. */
+  {
+    /* DKC3_PREFILL_DUMP=<frame counter>: print every cell the world store
+     * and the map decode disagree on for that frame, and every margin cell
+     * with the store's own view of it (status 1 captured, 2 prefilled). */
     static long dump_frame = -2;
     if (dump_frame == -2) {
       const char *text = getenv("DKC3_PREFILL_DUMP");
       dump_frame = text && *text ? atol(text) : -1;
     }
-    if (dump_frame >= 0 && snes_frame_counter >= dump_frame &&
-        snes_frame_counter < dump_frame + 1)
-      fprintf(stderr, "prefill_mismatch layer=%d x=%u y=%u actual=%04x expected=%04x margin=%d\n",
+    if (dump_frame >= 0 && snes_frame_counter == dump_frame &&
+        (actual != expected_entry || margin)) {
+      uint16_t debug_entry = 0;
+      const int status = WsShadowDebugCell(layer, world_tile_x, world_tile_y,
+                                           &debug_entry);
+      fprintf(stderr,
+              "prefill_cell layer=%d x=%u y=%u actual=%04x expected=%04x "
+              "margin=%d status=%d debug=%04x\n",
               layer, (unsigned)world_tile_x, (unsigned)world_tile_y, actual,
-              expected_entry, margin ? 1 : 0);
-    return;
+              expected_entry, margin ? 1 : 0, status, debug_entry);
+    }
   }
+  if (actual != expected_entry)
+    return;
   s_terrain_prefill_stats.matching++;
   if (margin)
     s_terrain_prefill_stats.margin_matching++;

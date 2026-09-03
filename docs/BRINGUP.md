@@ -195,14 +195,51 @@ and the captures show the boardwalk, posts, mountains, water, and the
 water's HDMA split continuing through both margins. The Mac launcher now
 defaults to 16:10.
 
-**Open.** The prefill's native-window agreement drops to 60-90% under
-motion because the world store holds zero for many in-view cells (421 of
-480 disagreements at one frame were never-written entries); the margins
-are re-decoded every frame and are right, so this is a diagnostic, but it
-may mean the runtime's attribution of DKC3's DMA column uploads to world
-chunks differs from DKC2's, and it should be understood before the store
-is trusted for anything the prefill does not cover. Object activation at
-the wider view (placed objects appearing at the native edge) is the next
-domain and is not done. Shape-1 levels and every layout other than shape
-0 are unverified. `DKC3_PREFILL_TRACE=1` prints the prefill per frame and
-`DKC3_PREFILL_DUMP=<frame counter>` lists a frame's disagreeing cells.
+**Open.** The prefill's native-window agreement dropped to 60-90% under
+motion at this point; the next entry traces that to the map base, not to
+the store. Object activation at the wider view (placed objects appearing
+at the native edge) is the next domain and is not done. Shape-1 levels
+and every layout other than shape 0 are unverified. `DKC3_PREFILL_TRACE=1`
+prints the prefill per frame and `DKC3_PREFILL_DUMP=<frame counter>`
+lists a frame's disagreeing cells.
+
+## 2026-09-03 - the margins showed the level one page early
+
+The owner's screenshot a few seconds past the same spot showed the hut's
+roof starting exactly at the left edge of the native window, sky where
+the roof should have continued into the left margin, and a second hut
+roof with its lattice in the right margin. The headless runner reproduced
+it at the same camera (`$1B4`, frame 221 of the corpus script), and on
+BG2 alone the right margin was the native content from 256 pixels to its
+left (3,768 of 4,160 pixels equal) and the left margin the content from
+256 pixels to its right.
+
+The cause was in the facts, not the store. `kDkc3LevelMapBase` had been
+set to `$FF00`, one screen before the map with 16-bit wrap, so that a
+world x would address the map directly. But DKC2Recomp's presentation
+already subtracts the one-screen origin when it turns a world tile into a
+map tile (`Dkc3VideoResolveEdgeTile`, and the same `- 32` in the metatile
+classifier and the stride calibrator), so the base compensated for the
+origin a second time and every decoded margin cell came from the metatile
+column eight before the right one. The base is now `$0000`, the map's raw
+address. The decode had looked right at the level's start only because
+the content one page away there (sky over the boardwalk) resembled the
+truth, and the store dumps compared the store with the same wrong decode.
+
+**Result.** At frame 221 the roof continues through the left margin and
+the right margin shows the broken beam and the mountains that follow the
+hut. Over the 253-frame corpus run every one of the 251 ready frames now
+has all native cells matching the decode (before the fix, 1,145 of
+1,260 at frame 221) and all margin cells matching. As a pixel oracle,
+frame 221's right margin equals the native columns for the same world
+span at frame 250 on 4,831 of 5,200 BG2 pixels, and frame 180's right
+margin equals frame 221's native columns on 5,080 of 5,200; the
+remainder is a one-pixel registration between the oracle's camera-based
+mapping and the PPU's latched scroll phase, not a seam (the seams in the
+full frame are continuous). The earlier "open" item about zero store
+entries under motion was this same page error seen through the dump's
+expected values, and is closed.
+
+The "phantom roof" first suspected at the level's start was a misreading
+of edge crops: the glide bias there is 18 pixels, and the store serves
+the exposed ring columns correctly.

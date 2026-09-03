@@ -24,11 +24,13 @@ enum {
   kDkc3WramScrollLimitX = 0x04bc,
   kDkc3WramScrollLimitY = 0x04be,
   /* The decompressed level map at $7F:0000 (the long pointer at $8C is set
-   * to $7F0000 by $B3:D917). The streamer addresses it with the camera's
-   * biased world x, so the base that makes world coordinates address the
-   * map directly is one screen before it, $FF00 with 16-bit wrap. */
+   * to $7F0000 by $B3:D917). This is the raw address of the map's first
+   * column, the one at world x $100: the presentation subtracts the
+   * one-screen origin itself (Dkc3VideoResolveEdgeTile), so a base that
+   * also compensated for it ($FF00) read every margin one 256-pixel page
+   * early. */
   kDkc3LevelMapBank = 0x7f,
-  kDkc3LevelMapBase = 0xff00,
+  kDkc3LevelMapBase = 0x0000,
   /* The metatile definitions follow the map in bank $7F; their offset is
    * the word at $1967 ($B3:DAF7). Each is 32 bytes: four rows of four
    * tile words. */

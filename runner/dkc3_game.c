@@ -1369,6 +1369,8 @@ static bool Dkc3PrefillWidescreenLevelTerrain(uint8_t layer_mask,
       Dkc3VideoLevelSourceTileY((uint16_t)ppu_scroll_y, camera_y, 0);
   const uint32_t top_source_row =
       Dkc3VideoLevelMapTileY((uint16_t)ppu_scroll_y, camera_y, 0);
+  s_terrain_prefill_stats.top_shadow_row = top_shadow_row;
+  s_terrain_prefill_stats.top_source_row = top_source_row;
   size_t decoded = 0;
   size_t expected = 0;
   unsigned row_bytes = 0;
@@ -1611,23 +1613,14 @@ static bool Dkc3PrefillWidescreenLevelTerrain(uint8_t layer_mask,
         continue;
       if (mirror_horizontally)
         entry ^= 0x4000u;
-      /* At the horizontal $xxff->$xx00 vertical page boundary the first
-       * visible tile row is supplied by the live rolling map, not by a full
-       * decompressed source row. The native row is one pixel high and the
-       * retained map can still contain a previous ship section there. Never
-       * seed those unobserved side cells from that stale row. */
-      if (layout == kDkc3VideoLevelLayoutHorizontal && row <= 0) {
-        const uint32_t tile_pixel_x = tile_x << 3;
-        if (tile_pixel_x < cartridge_x ||
-            tile_pixel_x >= cartridge_x + kDkc3VideoNativeWidth) {
-          WsShadowForceTile(
-              terrain_layer, tile_x, shadow_tile_y, transparent_tile);
-        }
-        decoded++;
-        Dkc3RecordTerrainPrefillTile(
-            terrain_layer, tile_x, shadow_tile_y, transparent_tile, margin);
-        continue;
-      }
+      /* DKC2Recomp blanked the first visible row's margin cells here: at
+       * its vertical page boundary that row came from the live ring, not
+       * from a decoded source row. DKC3's column builder rotates 32 map
+       * rows from the camera's page into the ring, so every visible row
+       * decodes like the rest. Blanking it here made the top eight pixels
+       * of both margins vanish whenever the vertical scroll sat on a tile
+       * boundary, a strip that flashed as the camera drifted vertically
+       * (Riverside Race's forest, top right). */
       /*
        * An older captured VRAM/DMA-pad tile can survive in a world cell that
        * the verified level map says is transparent. That produced the stray

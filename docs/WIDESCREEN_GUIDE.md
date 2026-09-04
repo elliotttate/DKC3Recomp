@@ -128,6 +128,7 @@ one 256-pixel page early until it was.
 | A "sprite" cut at the edge that is not in OAM | layer-isolated render, then that map's populated pages | object plane on a BG (Kackle) |
 | Water surface flatter or bluer in the margins, hard top edge where the native shows a reflection | ring diff over travel per row; compare the second layer's rows with the map decode at every row offset | a second layer that streams a strip of the level map (the reflection) over a static backdrop; alias at the verified offset, plane by row-level stamps (the river) |
 | Texture flashes for a frame at the edge | signature search across a scripted run, then the band dump at that frame | band policy or phase for one band |
+| A strip at the top of a margin flashes as the camera drifts vertically | per-frame dark-pixel count of the corner; cell dump at the jump frames | an inherited rule blanking the first visible row's margin cells on tile boundaries (DKC2's page-boundary case, absent in DKC3) |
 | Effect present in no isolated layer | VRAM map diffs across frames | sub-screen BG under color math (lava steam) |
 | Rope, steam, or another streamed effect ends falsely in a margin | is the ring ever valid beside the view for this layer? | zero-lead streamer; decode the ROM map into its own store layer and verify per frame (rigging, geysers) |
 | Backdrop through a hole beside a held wall | classifier fill map ('.', '+', '#') for the source window | player-held wall with void beyond; structural wall rule, mirror on rejected rows |
@@ -385,6 +386,10 @@ sub-screen color-math layers entirely.
 - A coincidence can verify: four rows of generic rock fill matched the
   ceiling four rows up at one camera and broke 128 pixels on. Verify at
   two cameras, and prefer the map decode over a ring as the reference.
+- A special case ported from another game (DKC2's blanking of the first
+  visible row at its vertical page boundary) must be re-proven against
+  this game's streamer; it blanked real terrain here on every tile
+  boundary.
 - Another session may share the working tree. Run `git status` before
   every commit and add only the files you changed; two sessions committed
   interleaved work here and one commit carried the other's half-finished

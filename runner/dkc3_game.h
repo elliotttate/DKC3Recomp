@@ -27,6 +27,8 @@ typedef struct Dkc3TerrainPrefillStats {
    * frame-start register. */
   uint16_t phase_h;
   uint16_t phase_v;
+  uint32_t top_shadow_row;
+  uint32_t top_source_row;
   uint8_t phase_from_band;
   /* Row-major level maps: the bytes per metatile row in use, and the
    * percentage of fully staged native cells the decode reproduced with it

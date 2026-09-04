@@ -600,3 +600,28 @@ one-pixel bright column at the native edge in some water frames was seen
 once in the sweep and not chased. The header bit `$0775` bit 7 could
 gate the verifier's search instead of running it on every second layer.
 
+## 2026-09-04 - a strip at the top of the margins that flashed
+
+In the forest of the same level the owner saw a small corner at the top
+of the right margin flash in and out. Every frame of a walk was rendered
+and the corner's dark pixels counted: the count jumped for exactly the
+two frames on which the terrain's vertical scroll sat on a tile boundary
+(400, while the camera drifted from 400 to 399), and the cell dump for
+those frames showed the margin's top row decoding as the transparent
+tile with the native top row recorded as mismatching.
+
+The cause was a rule inherited from DKC2Recomp's prefill: for horizontal
+layouts, the first visible tile row's margin cells were forced to the
+transparent tile, because DKC2's column builder supplies that row from
+the live ring at its vertical page boundary. DKC3's builder rotates 32
+map rows from the camera's page into the ring, so that row decodes like
+the rest, and the rule blanked eight pixels of real foliage whenever the
+scroll landed on a boundary. The rule is removed. The walk's corner
+count is now smooth across those frames, the native top row matches,
+the Lakeside corpus still matches on every ready frame, the river render
+is byte-identical, and the 4:3 hashes are unchanged.
+
+**Lesson.** A special case ported from another game must be re-proven
+against this game's streamer before it stays; the diagnostic that finds
+it is a per-frame signature of the flashing region, not a screenshot.
+

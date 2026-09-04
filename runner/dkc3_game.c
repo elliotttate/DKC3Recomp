@@ -176,6 +176,9 @@ static bool s_row_traveled[kDkc3TrackedMaps][kDkc3MapRows];
  * ring over the native columns this frame (0: none verified). */
 static int8_t s_row_alias_offset[kDkc3TrackedMaps][kDkc3MapRows];
 static bool s_row_alias_valid[kDkc3TrackedMaps][kDkc3MapRows];
+/* Rows with at least kDkc3AliasMinCells populated native cells: content an
+ * alias band must account for. */
+static bool s_row_alias_populated[kDkc3TrackedMaps][kDkc3MapRows];
 static int s_layer_alias_rows[kDkc3TrackedMaps];
 
 static void Dkc3ReadMapRow(uint16_t base_word, unsigned row,
@@ -302,6 +305,7 @@ static void Dkc3ComputeRowAliasOffsets(int layer, int terrain_layer,
                                        const Dkc3AliasDecodeContext *ctx) {
   memset(s_row_alias_offset[layer], 0, sizeof s_row_alias_offset[layer]);
   memset(s_row_alias_valid[layer], 0, sizeof s_row_alias_valid[layer]);
+  memset(s_row_alias_populated[layer], 0, sizeof s_row_alias_populated[layer]);
   s_layer_alias_rows[layer] = 0;
   if (layer < 0 || layer >= kDkc3TrackedMaps || terrain_layer < 0 ||
       terrain_layer >= kDkc3TrackedMaps || layer == terrain_layer ||
@@ -342,6 +346,7 @@ static void Dkc3ComputeRowAliasOffsets(int layer, int terrain_layer,
     }
     if (populated < kDkc3AliasMinCells)
       continue;
+    s_row_alias_populated[layer][row] = true;
     if (best_matches * 10u >= populated * 9u) {
       s_row_alias_offset[layer][row] = (int8_t)best_offset;
       s_row_alias_valid[layer][row] = true;
@@ -359,7 +364,10 @@ static void Dkc3ComputeRowAliasOffsets(int layer, int terrain_layer,
 
 /* The band verifies against the terrain when every populated row it shows
  * verifies at one common offset (zero: the terrain itself); that offset is
- * returned. A band with no populated row verifies nothing. */
+ * returned. A populated row that verifies nowhere vetoes the band: it is
+ * content the alias could not serve. A band with no populated row verifies
+ * nothing. (The forest's parallax band once passed on the strength of the
+ * one reflection row it happened to wrap onto, and its margins went black.) */
 static bool Dkc3BandAliasOffset(int layer, uint16_t v_scroll,
                                 uint8_t first_line, uint8_t last_line,
                                 int *offset_rows) {
@@ -367,12 +375,16 @@ static bool Dkc3BandAliasOffset(int layer, uint16_t v_scroll,
     return false;
   unsigned first, last;
   Dkc3BandRingRows(v_scroll, first_line, last_line, &first, &last);
+  if (last - first >= kDkc3MapRows)
+    return false;
   bool any = false;
   int offset = 0;
   for (unsigned row = first; row <= last; row++) {
     const unsigned ring_row = row % kDkc3MapRows;
-    if (!s_row_alias_valid[layer][ring_row])
+    if (!s_row_alias_populated[layer][ring_row])
       continue;
+    if (!s_row_alias_valid[layer][ring_row])
+      return false;
     const int candidate = s_row_alias_offset[layer][ring_row];
     if (any && candidate != offset)
       return false;
@@ -1969,9 +1981,11 @@ static void Dkc3ClassifyBands(uint8_t wide_layer_mask,
        * offset those rows prove: the reflection band verifies four rows
        * away, a duplicated ceiling at zero, and a backdrop that merely
        * scrolls at camera speed verifies nowhere and stays a plane. */
+      /* The verification keys rows by the terrain's phase, so only a band
+       * scrolling at that phase can be read through the terrain store. */
       int alias_rows = 0;
       const bool verified =
-          wide && have_owner && layer != terrain_layer &&
+          at_phase && layer != terrain_layer &&
           Dkc3BandAliasOffset(layer, band->v_scroll[layer],
                               band->first_line, band->last_line,
                               &alias_rows);

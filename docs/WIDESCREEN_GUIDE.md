@@ -378,6 +378,17 @@ sub-screen color-math layers entirely.
 - A memory note or a summary is not evidence; re-derive a claim from a
   dump before building on it (the "phantom roof" at the level start was a
   misreading that survived one context boundary).
+- A rule that accepts a band on the rows it can verify, skipping the rest,
+  accepts a band that merely wraps one verified row into view (the forest
+  parallax band on the river's reflection row). Every populated row must
+  verify, and the band must scroll at the phase the keys assume.
+- A coincidence can verify: four rows of generic rock fill matched the
+  ceiling four rows up at one camera and broke 128 pixels on. Verify at
+  two cameras, and prefer the map decode over a ring as the reference.
+- Another session may share the working tree. Run `git status` before
+  every commit and add only the files you changed; two sessions committed
+  interleaved work here and one commit carried the other's half-finished
+  code without its header.
 
 ## 10. When to stop
 

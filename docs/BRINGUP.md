@@ -565,9 +565,38 @@ pixels differed at this spot, none native): it is for identifying layers,
 never for judging margins. And a layer at the terrain phase is not the
 terrain until its rows are verified against the map.
 
-**Open.** The disassembly's second-layer streamer (which rows it copies and
-why 288 pixels above) is not yet traced; the alias is verified on content
-every frame instead. Floodlit Fish's fill was not re-checked after its
-gate. A one-pixel bright column at the native edge in some water frames
-was seen once in the sweep and not chased.
+**The cartridge's side, traced afterwards.** Level `$32` is Riverside
+Race. Its header sub-record sets `$0775` bit 7, which enables a second
+column streamer: `$B7:B75E` decodes, for the column entering the view,
+map tile rows 2 to 7 of the level map's first two metatile rows (no
+vertical term at all; flips honored, no palette change) into a six-word
+strip, and `$B7:B8D1` uploads it to VRAM `$70C0` plus the ring column,
+that is BG2 ring rows 6 to 11. The strip is therefore world rows 34 to 39
+shown at rows 70 to 75, the 36-row offset the verifier proves. The
+underwater rows 14 to 31 are a 32x18 tilemap uploaded at load to both
+ring halves (`$71C0` and `$75C0`, payload list 7 at `$FD1C8A`), so the
+512-pixel wrap is two copies of one picture and the plane policy is
+right. The band above the water is a half-speed parallax (`$B3:9485`:
+h and v = camera / 2, seam fixed at world y `$22F`), showing backdrop
+rows 27 to 30. Channel 7 sets TM/TS per line (`$17/$13` above the seam,
+`$15/$02` for 39 lines, `$05/$12` for 9, then `$04/$13`), channel 3
+CGADSUB `$24` then `$64`, channel 6 the backdrop color per band, channel 2
+window 1, channels 4 and 5 the BG3 and BG1 wobble. The water level word
+`$050F` plays no part in any of it.
+
+**A regression caught the same evening.** With the alias in, the owner's
+forest save in the same level showed black blocks at the top of both
+margins. The half-speed parallax band wraps its rows so that it displays
+ring row 8, the one row the verifier had proven, and the band rule
+accepted a band on its verified rows alone: the band became an alias
+keyed by the terrain phase it does not scroll at, its lookups reached
+rows the store never held, and BG2 went transparent to the black
+backdrop. An alias band must scroll at the terrain phase and every
+populated row it shows must verify; the parallax band is a plane again
+and the river's reflection band is unchanged.
+
+**Open.** Floodlit Fish's fill was not re-checked after its gate. A
+one-pixel bright column at the native edge in some water frames was seen
+once in the sweep and not chased. The header bit `$0775` bit 7 could
+gate the verifier's search instead of running it on every second layer.
 

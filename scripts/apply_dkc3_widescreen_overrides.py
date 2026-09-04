@@ -12,6 +12,7 @@ import re
 
 
 INCLUDE = '#include "dkc3_video.h"'
+GAME_INCLUDE = '#include "dkc3_game.h"'
 
 
 def find_unit(generated_dir: Path, symbol: str) -> Path:
@@ -27,18 +28,21 @@ def find_unit(generated_dir: Path, symbol: str) -> Path:
     return matches[0]
 
 
-def add_include(text: str) -> str:
-    if INCLUDE in text:
+def add_include(text: str, include: str = INCLUDE) -> str:
+    if include in text:
         return text
     marker = '#include "funcs.h"'
     if text.count(marker) != 1:
         raise ValueError("generated unit has an unexpected funcs.h include")
-    return text.replace(marker, marker + "\n" + INCLUDE, 1)
+    return text.replace(marker, marker + "\n" + include, 1)
 
 
-def wrap_single_read(text: str, address: str, helper: str) -> str:
+def wrap_single_read(text: str, address: str, helper: str,
+                     extra_argument: str | None = None) -> str:
+    suffix = f", {extra_argument}" if extra_argument else ""
     already = re.compile(
-        rf"{helper}\(\s*cpu_read16\([^;\n]*{address}[^;\n]*\)\s*\)")
+        rf"{helper}\(\s*cpu_read16\([^;\n]*{address}[^;\n]*\)"
+        rf"{re.escape(suffix)}\s*\)")
     if len(already.findall(text)) == 1:
         return text
     if already.search(text):
@@ -47,7 +51,7 @@ def wrap_single_read(text: str, address: str, helper: str) -> str:
     pattern = re.compile(
         rf"(uint16\s+\w+\s*=\s*)(cpu_read16\([^;\n]*{address}[^;\n]*\))"
         rf"(;)")
-    text, count = pattern.subn(rf"\1{helper}(\2)\3", text)
+    text, count = pattern.subn(rf"\1{helper}(\2{suffix})\3", text)
     if count != 1:
         raise ValueError(
             f"expected one read from {address} for {helper}; found {count}")
@@ -305,24 +309,30 @@ def apply_overrides(generated_dir: Path) -> list[Path]:
 
     Placed objects activate through $BB:AAD4, which keeps an object whose
     world X lies in [camera - Lx, camera - Lx + Wx) for the (Lx, Wx) row of
-    DATA_BBA8BE selected by the placement's parameter; $BB:A47A scans the
-    256-pixel spatial-hash cells that window covers before the compare
-    runs. Both read Lx at $BB:A8BE+row and Wx at $BB:A8C0+row, so wrapping
-    those two reads widens the spawn and the despawn windows together and
-    keeps the cell scan consistent with the compare. Every row satisfies
-    Wx = 2 * Lx + $100, and the helpers preserve that.
+    DATA_BBA8BE selected by the placement's parameter. Every row satisfies
+    Wx = 2 * Lx + $100, and the terrain-gated helpers preserve that. The
+    persistent index can be native-width in an older quick save, so $BB:A647's
+    broad-phase walk merges the current 256-pixel cell with its horizontal
+    neighbors before this final compare.
     """
     compare_path = find_unit(generated_dir, "CODE_BBAAD4_M0X0")
-    scan_path = find_unit(generated_dir, "CODE_BBA47A_M0X0")
-    sources = {
-        path: add_include(path.read_text(encoding="utf-8"))
-        for path in (compare_path, scan_path)
-    }
-    for path in (compare_path, scan_path):
-        text = sources[path]
-        text = wrap_single_read(text, "0xbba8be", "Dkc3VideoExpandCullLeft")
-        text = wrap_single_read(text, "0xbba8c0", "Dkc3VideoExpandCullSpan")
-        sources[path] = text
+    scan_path = find_unit(generated_dir, "CODE_BBA647_M0X0")
+    sources = {compare_path: add_include(
+        compare_path.read_text(encoding="utf-8"))}
+    compare = sources[compare_path]
+    compare = wrap_single_read(
+        compare, "0xbba8be", "Dkc3VideoExpandCullLeft")
+    compare = wrap_single_read(
+        compare, "0xbba8c0", "Dkc3VideoExpandCullSpan")
+    sources[compare_path] = compare
+
+    scan = add_include(scan_path.read_text(encoding="utf-8"))
+    scan = add_include(scan, GAME_INCLUDE)
+    scan = wrap_single_read(
+        scan, "0x15fe", "Dkc3PlacementScanBegin", "cpu->X")
+    scan = wrap_single_read(
+        scan, "0x7e4180", "Dkc3PlacementScanNext")
+    sources[scan_path] = scan
 
     found: set[str] = set()
     for path in sorted(generated_dir.glob("*.c")):

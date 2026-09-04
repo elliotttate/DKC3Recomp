@@ -56,3 +56,9 @@ int Dkc3GetHdmaBandCount(void);
 /* Bands of a wide layer presented as a static plane (the map's own wrap)
  * in the last rendered frame (host-only diagnostics). */
 int Dkc3GetPlaneBandCount(int layer);
+/* Generated $BB:A647 calls these around its placement-list walk. Widescreen
+ * scans the current 256-pixel spatial cell and its horizontal neighbors so
+ * restored native-index states cannot delay visible objects. */
+uint16_t Dkc3PlacementScanBegin(uint16_t native_head,
+                                uint16_t native_cell_offset);
+uint16_t Dkc3PlacementScanNext(uint16_t native_placement);

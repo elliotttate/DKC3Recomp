@@ -28,11 +28,11 @@ RecompReturn CODE_BBAAD4_M0X0(CpuState *cpu) {
 
 SCAN_FIXTURE = """\
 #include "funcs.h"
-RecompReturn CODE_BBA47A_M0X0(CpuState *cpu) {
-  L_A47A_M0X0:
-    uint16 _v4 = 0x100;
-    uint16 _v7 = cpu_read16(cpu, (uint8)((((uint32)0xbba8be + (uint32)cpu->X)) >> 16), (uint16)(((uint32)0xbba8be + (uint32)cpu->X)));
-    uint16 _v19 = cpu_read16(cpu, (uint8)((((uint32)0xbba8c0 + (uint32)cpu->X)) >> 16), (uint16)(((uint32)0xbba8c0 + (uint32)cpu->X)));
+RecompReturn CODE_BBA647_M0X0(CpuState *cpu) {
+  L_A696_M0X0:
+    uint16 _v18 = cpu_read16(cpu, (uint8)((((uint32)0x15fe + (uint32)cpu->X)) >> 16), (uint16)(((uint32)0x15fe + (uint32)cpu->X)));
+  L_A6AA_M0X0:
+    uint16 _v20 = cpu_read16(cpu, (uint8)((((uint32)0x7e4180 + (uint32)cpu->X)) >> 16), (uint16)(((uint32)0x7e4180 + (uint32)cpu->X)));
 }
 """
 
@@ -159,12 +159,21 @@ class WidescreenOverrideTests(unittest.TestCase):
             self.assertEqual(first, second)
             for name in ("compare.c", "scan.c"):
                 self.assertIn(MODULE.INCLUDE, first[name])
-                self.assertEqual(
-                    first[name].count("Dkc3VideoExpandCullLeft(cpu_read16"), 1)
-                self.assertEqual(
-                    first[name].count("Dkc3VideoExpandCullSpan(cpu_read16"), 1)
+            self.assertIn(MODULE.GAME_INCLUDE, first["scan.c"])
+            self.assertEqual(
+                first["compare.c"].count(
+                    "Dkc3VideoExpandCullLeft(cpu_read16"), 1)
+            self.assertEqual(
+                first["compare.c"].count(
+                    "Dkc3VideoExpandCullSpan(cpu_read16"), 1)
+            self.assertEqual(
+                first["scan.c"].count(
+                    "Dkc3PlacementScanBegin(cpu_read16"), 1)
+            self.assertEqual(
+                first["scan.c"].count(
+                    "Dkc3PlacementScanNext(cpu_read16"), 1)
+            self.assertIn(", cpu->X);", first["scan.c"])
             self.assertIn("uint16 _v9 = cpu_read16", first["compare.c"])
-            self.assertIn("uint16 _v4 = 0x100;", first["scan.c"])
             renderers = [text for name, text in first.items()
                          if name.startswith("renderer")]
             self.assertEqual(len(renderers), 7)

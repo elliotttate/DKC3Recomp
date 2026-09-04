@@ -95,6 +95,16 @@ enum { kDkc3HoldStartFrames = 8 };
 static uint32_t s_hold_start_frames;
 static bool s_state_loaded_recently;
 
+enum {
+  kDkc3PlacementCellTableBytes = 0x0180,
+  kDkc3PlacementListBytes = 0x2000,
+  kDkc3PlacementListWords = kDkc3PlacementListBytes / 2,
+};
+static uint16_t s_placement_scan[kDkc3PlacementListWords];
+static size_t s_placement_scan_count;
+static size_t s_placement_scan_index;
+static bool s_placement_scan_combined;
+
 int Dkc3GetPlaneBandCount(int layer) {
   return layer >= 0 && layer < 2 ? s_plane_band_count[layer] : 0;
 }
@@ -408,6 +418,65 @@ void Dkc3BeginDrawing(uint8_t *pixels, size_t pitch) {
 static uint16_t Dkc3ReadWram16(uint16_t address) {
   return (uint16_t)g_ram[address] |
          ((uint16_t)g_ram[(uint16_t)(address + 1u)] << 8);
+}
+
+/* $BB:A647 normally walks one list selected from the level's persistent
+ * 256-pixel placement index. A quick save made by an older build preserves
+ * that native-width index, and changing aspect is host-only, so rebuilding it
+ * on restore would either lose object state or leave stale buckets. Merge the
+ * current cell and its immediate horizontal neighbors for the generated
+ * list walk instead. The terrain-gated $BB:AAD4 compare remains authoritative,
+ * and 21:9's maximum added reach is less than one 256-pixel cell per side. */
+uint16_t Dkc3PlacementScanBegin(uint16_t native_head,
+                                uint16_t native_cell_offset) {
+  uint16_t cell_offsets[3];
+  const uint16_t row_stride = Dkc3ReadWram16(0x15fa);
+  const size_t cell_count = Dkc3VideoPlacementScanCells(
+      native_cell_offset, row_stride, cell_offsets);
+  s_placement_scan_count = 0;
+  s_placement_scan_index = 0;
+  s_placement_scan_combined = cell_count > 1;
+  if (!s_placement_scan_combined)
+    return native_head;
+
+  for (size_t cell_index = 0; cell_index < cell_count; cell_index++) {
+    const uint16_t cell_offset = cell_offsets[cell_index];
+    if (cell_offset >= kDkc3PlacementCellTableBytes)
+      continue;
+    uint16_t list_offset = Dkc3ReadWram16(
+        (uint16_t)(0x15feu + cell_offset));
+    if (list_offset == 0 || (list_offset & 1u) != 0 ||
+        list_offset >= kDkc3PlacementListBytes)
+      continue;
+    while (list_offset < kDkc3PlacementListBytes) {
+      const uint16_t placement = Dkc3ReadWram16(
+          (uint16_t)(0x4180u + list_offset));
+      if (placement == 0)
+        break;
+      bool duplicate = false;
+      for (size_t index = 0; index < s_placement_scan_count; index++) {
+        if (s_placement_scan[index] == placement) {
+          duplicate = true;
+          break;
+        }
+      }
+      if (!duplicate && s_placement_scan_count < kDkc3PlacementListWords)
+        s_placement_scan[s_placement_scan_count++] = placement;
+      list_offset = (uint16_t)(list_offset + 2u);
+    }
+  }
+
+  if (s_placement_scan_count == 0)
+    return 0;
+  return native_head != 0 ? native_head : 2;
+}
+
+uint16_t Dkc3PlacementScanNext(uint16_t native_placement) {
+  if (!s_placement_scan_combined)
+    return native_placement;
+  if (s_placement_scan_index >= s_placement_scan_count)
+    return 0;
+  return s_placement_scan[s_placement_scan_index++];
 }
 
 /* The terrain ring's VRAM base is the streamer's destination word at

@@ -70,6 +70,7 @@ static bool CheckMargins(uint16_t camera_x, uint16_t maximum_scroll_x,
 }
 
 int main(void) {
+  uint16_t placement_cells[3] = {0xffff, 0xffff, 0xffff};
   Dkc3VideoSetWidescreen(false);
   if (Dkc3VideoIsWidescreen() ||
       Dkc3VideoGetAspect() != kDkc3VideoAspectNative ||
@@ -77,6 +78,8 @@ int main(void) {
       Dkc3VideoExtra() != 0 ||
       Dkc3VideoExpandCullLeft(0x20) != 0x20 ||
       Dkc3VideoExpandCullSpan(0x140) != 0x140 ||
+      Dkc3VideoPlacementScanCells(2, 64, placement_cells) != 1 ||
+      placement_cells[0] != 2 ||
       Dkc3VideoPromoteOamXHigh(0x0120) != 0x0120 ||
       !CheckMargins(0x0100, 0x0800, 0, 0, 0) ||
       Dkc3VideoPixelCount() !=
@@ -103,7 +106,14 @@ int main(void) {
   if (!Dkc3VideoIsWidescreen() ||
       Dkc3VideoGetAspect() != kDkc3VideoAspect16x10 ||
       Dkc3VideoWidth() != 308 ||
-      Dkc3VideoExtra() != kDkc3Video16x10Extra) {
+      Dkc3VideoExtra() != kDkc3Video16x10Extra ||
+      Dkc3VideoPlacementScanCells(2, 64, placement_cells) != 3 ||
+      placement_cells[0] != 2 || placement_cells[1] != 0 ||
+      placement_cells[2] != 4 ||
+      Dkc3VideoPlacementScanCells(0, 64, placement_cells) != 2 ||
+      placement_cells[0] != 0 || placement_cells[1] != 2 ||
+      Dkc3VideoPlacementScanCells(126, 64, placement_cells) != 2 ||
+      placement_cells[0] != 126 || placement_cells[1] != 124) {
     fprintf(stderr, "FAIL: 16:10 video geometry\n");
     return 1;
   }

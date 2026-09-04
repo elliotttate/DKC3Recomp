@@ -205,6 +205,12 @@ int Dkc3VideoPresentationBias(void);
 uint16_t Dkc3VideoExpandCullLeft(uint16_t native_margin);
 uint16_t Dkc3VideoExpandCullSpan(uint16_t native_span);
 uint16_t Dkc3VideoExpandCullRight(uint16_t native_right);
+/* Return the current placement-index cell plus its immediate horizontal
+ * neighbors in widescreen. The final activation cull above rejects the
+ * broad-phase candidates outside the live presented window. */
+size_t Dkc3VideoPlacementScanCells(uint16_t native_cell_offset,
+                                    uint16_t row_stride,
+                                    uint16_t cell_offsets[3]);
 uint16_t Dkc3VideoPromoteOamXHigh(uint16_t screen_x);
 
 /*

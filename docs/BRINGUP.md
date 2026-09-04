@@ -401,3 +401,44 @@ mountains, water, and objects through both margins.
 The published v0.0.2 release remains unchanged and does not contain this
 follow-on option. Traversal across the whole game, crowded-screen OAM behavior
 at the maximum width, and the carried-over Windows host remain unverified.
+
+## 2026-09-03 - placement index covers the ultrawide view
+
+The owner's Lakeside Limbo quick save reproduced a Sneek appearing well inside
+the 21:9 view after moving right only a few pixels. After restoring the paused
+state, a Start pulse followed by Right activated the Sneek on replay frame 16,
+exactly as camera X crossed `$01FF` to `$0200`. Its camera-relative X was 335;
+with the 95-pixel margin and presentation bias 63, it appeared at presented X
+367, 79 pixels inside the 446-pixel frame. No sprite slot existed for it on the
+preceding frame, ruling out the renderer and the PPU sprite budget.
+
+`$BB:A47A` builds the level's 256-pixel placement-cell index before the first
+terrain frame can become ready, so the prior terrain-gated adaptation built a
+cartridge-width table. `$BB:A647` also selected only the camera's current cell.
+Placements already associated with that cell benefited from `$BB:AAD4`'s
+widened final check; a placement such as this Sneek was not examined until the
+camera entered the next cell. Quick saves preserved the old table, and aspect
+selection is host-only, so rebuilding the table only at level entry would not
+fix the owner's exact save.
+
+The runtime scan now merges the current cell with its immediate horizontal
+neighbors, deduplicates their placement IDs, and passes that broad-phase union
+to the unchanged, terrain-gated and bias-specific final activation check. The
+maximum 21:9 extension is less than one 256-pixel cell on either side, so the
+neighbors cover every possible glide bias. This also works with existing quick
+saves without rebuilding or disturbing their object state. `DKC3_CULL_WIDEN=0`
+keeps both the scan and final check native for same-binary comparisons.
+
+**Verified.** Regeneration left `$BB:A647` generated (3,035 AOT functions,
+1,721 interpreter fallbacks). On the supplied 21:9 replay, both the Sneek and
+the adjacent K token now activate on frame 5 at camera X `$01FB`, before the
+old `$0200` bucket boundary; the Sneek is rendered by frame 7. The Sneek also
+activates on frame 5 at 16:9 and frame 31 at the narrower 16:10 width. At 4:3,
+enabling the new scan produced the exact same frame, WRAM, VRAM, CGRAM, OAM,
+audio, and run-stat hashes as the native scan over 120 replay frames. With
+`DKC3_CULL_WIDEN=0`, all four aspect modes reproduced the corresponding
+pre-change 120-frame hashes exactly. The ROM-free and private integration
+suite passes all 20 tests, including headless boot, hidden macOS app smoke,
+16:10, 21:9, and quick-state loading. The supplied state remains private under
+`.cache`; whole-game traversal and the carried-over Windows host are still
+unverified.

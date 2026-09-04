@@ -398,6 +398,27 @@ uint16_t Dkc3VideoExpandCullRight(uint16_t native_right) {
   return widened;
 }
 
+size_t Dkc3VideoPlacementScanCells(uint16_t native_cell_offset,
+                                    uint16_t row_stride,
+                                    uint16_t cell_offsets[3]) {
+  if (!cell_offsets)
+    return 0;
+  cell_offsets[0] = native_cell_offset;
+  if (!g_ws_active || !Dkc3VideoCullWidenEnabled() || row_stride == 0 ||
+      (native_cell_offset & 1u) != 0)
+    return 1;
+
+  size_t count = 1;
+  const uint16_t cell = (uint16_t)(native_cell_offset / 2u);
+  const uint16_t column = (uint16_t)(cell % row_stride);
+  if (column != 0)
+    cell_offsets[count++] = (uint16_t)(native_cell_offset - 2u);
+  if ((uint16_t)(column + 1u) < row_stride &&
+      native_cell_offset <= UINT16_MAX - 2u)
+    cell_offsets[count++] = (uint16_t)(native_cell_offset + 2u);
+  return count;
+}
+
 uint16_t Dkc3VideoPromoteOamXHigh(uint16_t screen_x) {
   /* DKC3's banana renderer derives OAM's ninth X bit from bit 15 because
    * native play only needs that bit for negative coordinates. In the

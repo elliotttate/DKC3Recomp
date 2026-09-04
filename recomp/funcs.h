@@ -15,7 +15,7 @@
 
 #include "cpu_state.h"
 
-/* 4716 functions across all banks (5 decls each). */
+/* 4717 functions across all banks (5 decls each). */
 
 void CODE_808009(CpuState *cpu);  /* $80:8009 alias */
 RecompReturn CODE_808009_M0X0(CpuState *cpu);
@@ -21032,6 +21032,11 @@ RecompReturn CODE_BBA604_M0X0(CpuState *cpu);
 RecompReturn CODE_BBA604_M0X1(CpuState *cpu);
 RecompReturn CODE_BBA604_M1X0(CpuState *cpu);
 RecompReturn CODE_BBA604_M1X1(CpuState *cpu);
+void CODE_BBA647(CpuState *cpu);  /* $BB:A647 alias */
+RecompReturn CODE_BBA647_M0X0(CpuState *cpu);
+RecompReturn CODE_BBA647_M0X1(CpuState *cpu);
+RecompReturn CODE_BBA647_M1X0(CpuState *cpu);
+RecompReturn CODE_BBA647_M1X1(CpuState *cpu);
 void CODE_BBA6B2(CpuState *cpu);  /* $BB:A6B2 alias */
 RecompReturn CODE_BBA6B2_M0X0(CpuState *cpu);
 RecompReturn CODE_BBA6B2_M0X1(CpuState *cpu);

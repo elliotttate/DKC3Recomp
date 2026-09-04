@@ -3,9 +3,11 @@
 ## snesrecomp
 
 - Project: `mstan/snesrecomp`, pinned as the `snesrecomp` submodule through
-  the `elliotttate/snesrecomp` fork's `dkc3-bringup` branch, which is
-  upstream `c2f2421` plus one commit adding two missing includes
-  (`<time.h>` in `interp816.c`, `sdd1.h` in `interp_bridge.c`).
+  the `elliotttate/snesrecomp` fork at revision
+  `3b24b9daae623cd66a14e1ecf8483f0b0d2be91b`, which adds an explicit,
+  default-off line-enhancer layer mask so a callback that adjusts the
+  subscreen can preserve an already-widened BG1; the legacy default
+  remains unchanged.
 - License: see `snesrecomp/LICENSE`.
 
 ## recomp-ui

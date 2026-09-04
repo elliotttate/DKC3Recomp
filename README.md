@@ -33,17 +33,30 @@ quick saves made by older builds, do not wait for a cell boundary to activate.
 Murky Mill's HDMA-windowed BG3 light cones are evaluated across the physical
 widescreen span instead of being clipped and repeated at the native edges,
 verified at the reported quick-save state in both 16:10 and 16:9.
+Floodlit Fish's underwater BG3 color-math composition now receives its
+subscreen tint across transparent side-margin pixels without clipping the
+reconstructed BG1 terrain at the native edges, verified at the reported
+quick-save state in 16:10, 16:9, and 21:9 with an unchanged 4:3 frame.
+
+A second layer that streams a strip of the level map, Riverside Race's
+reflection under the water line, is served in the margins from the
+terrain store at the row offset its rows prove every frame, while its
+static underwater backdrop wraps as a plane judged by row-level write
+tracking; and the first visible row of the margins now decodes like the
+rest instead of being blanked on tile boundaries. See
+[docs/BRINGUP.md](docs/BRINGUP.md) for the evidence.
 
 ## Native macOS alpha release
 
-Download `DKC3Recomp-v0.0.2-macOS-arm64.zip` from
+Download `DKC3Recomp-v0.0.4-macOS-arm64.zip` from
 [Releases](../../releases), extract it, and open `DKC3Recomp.app`. Select your
 own legally obtained North American (En,Fr) ROM in the launcher; the ROM stays
 at its original path and is never copied into the application bundle.
 
-The published v0.0.2 bundle includes the Murky Mill light-window fix. The
-21:9 option described above is the next source version and is not part of
-that immutable release.
+The published v0.0.4 bundle includes the Floodlit Fish tint fix, the
+river's second-layer reflection and backdrop in the margins, and the fix
+for the strip that flashed at the top of the margins; v0.0.3 carried 21:9
+and the adjacent-cell placement activation fix.
 
 This release is an Apple-silicon alpha for macOS 26 or newer. The app is
 ad-hoc signed rather than notarized, so if Gatekeeper blocks the first launch,

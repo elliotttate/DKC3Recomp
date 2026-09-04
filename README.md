@@ -24,15 +24,18 @@ map, verified on Lakeside Limbo; screens the map does not cover center the
 native frame between black margins. Placed objects, the sprite renderer's
 culls, and the static banana arcs are widened to the presented view by
 `scripts/apply_dkc3_widescreen_overrides.py`, verified on Lakeside Limbo.
+Murky Mill's HDMA-windowed BG3 light cones are evaluated across the physical
+widescreen span instead of being clipped and repeated at the native edges,
+verified at the reported quick-save state in both 16:10 and 16:9.
 
 ## Native macOS alpha release
 
-Download `DKC3Recomp-v0.0.1-macOS-arm64.zip` from
+Download `DKC3Recomp-v0.0.2-macOS-arm64.zip` from
 [Releases](../../releases), extract it, and open `DKC3Recomp.app`. Select your
 own legally obtained North American (En,Fr) ROM in the launcher; the ROM stays
 at its original path and is never copied into the application bundle.
 
-This first release is an Apple-silicon alpha for macOS 26 or newer. The app is
+This release is an Apple-silicon alpha for macOS 26 or newer. The app is
 ad-hoc signed rather than notarized, so if Gatekeeper blocks the first launch,
 Control-click the app in Finder, choose **Open**, and confirm once. The project
 is still in bring-up: the tested boot, launcher, save-state, and Lakeside Limbo

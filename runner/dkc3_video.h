@@ -230,14 +230,26 @@ uint8_t Dkc3VideoPhysicalWideLayerMask(uint8_t bg_mode,
                                        uint8_t main_layers,
                                        uint8_t sub_layers);
 
+/* Bounded backgrounds normally repeat their already-rendered native line in
+ * the margins. A screen-space hardware window must instead be evaluated over
+ * the physical widened span: repeating the composited line repeats a clipped
+ * window at the opposite edge. Select enabled, windowed 32-column layers for
+ * that physical render path. DKC3_CULL_WIDEN=0 disables this together with
+ * the cartridge's camera-relative object windows for an exact A/B run. */
+uint8_t Dkc3VideoPhysicalWindowedLayerMask(
+    uint8_t bg_mode, const uint8_t bg_xsc[4], uint8_t main_layers,
+    uint8_t sub_layers, uint8_t main_windowed, uint8_t sub_windowed);
+
 /*
  * Select the layers whose authentic rendered scanline is repeated into the
- * margins: every enabled Mode-1 background that is not in the wide (64-column)
- * render mask. A 32-column tilemap wraps at 256 pixels on hardware, so a
+ * margins: every enabled Mode-1 background that is not in the physical render
+ * mask. A non-windowed 32-column tilemap wraps at 256 pixels on hardware, so a
  * period-256 repeat of the rendered line is exactly what a wider PPU would
- * draw from that map; HDMA phase, windows, and color math are already in the
- * rendered line. Rolling 64-column layers never repeat through this mask;
- * they are world-keyed or band-classified by the adapter.
+ * draw from that map; HDMA phase and color math are already in the rendered
+ * line. Windowed 32-column layers join the physical mask so their window can
+ * be evaluated across the presented span. Rolling 64-column layers never
+ * repeat through this mask; they are world-keyed or band-classified by the
+ * adapter.
  */
 /*
  * VRAM word pages (1024 words each) that a background tilemap occupies for

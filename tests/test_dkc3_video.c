@@ -412,6 +412,35 @@ int main(void) {
   }
   Dkc3VideoSetEdgePolicy(kDkc3VideoEdgeReflect);
 
+  {
+    /* Murky Mill puts a 32-column BG3 light plane on the main screen and
+     * changes its window through HDMA. It must render physically wide instead
+     * of repeating the clipped native line. Ordinary bounded layers and
+     * non-Mode-1 scenes retain the repeat/centered paths. */
+    const uint8_t maps[4] = {0x79, 0x74, 0x70, 0x00};
+    if (Dkc3VideoPhysicalWindowedLayerMask(
+            0x09, maps, 0x04, 0x13, 0x04, 0x00) != 0x04 ||
+        Dkc3VideoPhysicalWindowedLayerMask(
+            0x09, maps, 0x00, 0x04, 0x00, 0x04) != 0x04 ||
+        Dkc3VideoPhysicalWindowedLayerMask(
+            0x09, maps, 0x04, 0x13, 0x00, 0x00) != 0x00 ||
+        Dkc3VideoPhysicalWindowedLayerMask(
+            0x09, maps, 0x04, 0x13, 0x01, 0x00) != 0x00 ||
+        Dkc3VideoPhysicalWindowedLayerMask(
+            0x08, maps, 0x04, 0x13, 0x04, 0x00) != 0x00 ||
+        Dkc3VideoPhysicalWindowedLayerMask(
+            0x09, NULL, 0x04, 0x13, 0x04, 0x00) != 0x00) {
+      fprintf(stderr, "FAIL: physical windowed layer selection\n");
+      return 1;
+    }
+    const uint8_t wide_bg3_maps[4] = {0x79, 0x74, 0x71, 0x00};
+    if (Dkc3VideoPhysicalWindowedLayerMask(
+            0x09, wide_bg3_maps, 0x04, 0x13, 0x04, 0x00) != 0x00) {
+      fprintf(stderr, "FAIL: wide map selected as bounded window layer\n");
+      return 1;
+    }
+  }
+
   /* Display aspect = source width * (7/6 PAR) / source height. */
   const int lhs = kDkc3VideoWidescreenWidth * 7 * 9;
   const int rhs = kDkc3VideoHeight * 6 * 16;

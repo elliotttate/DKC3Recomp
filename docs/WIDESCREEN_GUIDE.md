@@ -132,6 +132,7 @@ one 256-pixel page early until it was.
 | Objects pop in inside the margin, or vanish while still visible | spawn trace, OAM trace, before/after with widening off | activation window, release window, or renderer cull not widened |
 | Banana arcs or other tile rows appear only at the native edge | OAM census for first appearance at x in [256, 266) | separate grid renderer with its own clips and sign-derived ninth bit |
 | Objects cut exactly at the authentic margin near a wall | | PPU nine-bit X limit must include the bias |
+| Light cone or other HDMA window cuts at the native edge and reappears in the opposite margin | layer-isolated render plus main/sub window masks | a bounded layer was repeated after windowing; render it over the physical span so each scanline's window is evaluated there |
 | Floor missing, level "loads" only at 4:3, moves when walking | prefill trace `ready` | a fact read from the wrong word (the moving upload pointer) |
 | No widescreen at all, black margins, in play | classifier | unknown layout for this stage; add the case after the stride sweep |
 | Enemy idle, never attacks, disappears when walked away from | generated dispatcher `_disp_n`, the state table | `JSR (abs,X)` table cut at a null slot; 14 declared entries |
@@ -205,6 +206,14 @@ character transparency) is a plane band. A map with exactly one populated
 page is an object plane and skips the static gate. Everything else with a
 proven period repeats; a 32-column map keeps its exact hardware wrap. Do
 not lower the travel gate below two streamed-column periods.
+
+A bounded 32-column layer is an exception when the PPU windows that layer.
+Repeating its already-rendered native line also repeats the native clipping,
+which can cut an HDMA-shaped effect at one edge and wrap the clipped fragment
+to the other. Render an enabled, windowed bounded layer over the physical
+widescreen span instead, so the PPU evaluates each scanline's live window
+coordinates at their presented positions. Murky Mill's BG3 light cones are
+the proving case; ordinary non-windowed bounded layers still repeat.
 
 ### 6.5 Walls, voids, and the hold
 

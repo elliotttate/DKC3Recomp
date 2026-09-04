@@ -332,3 +332,40 @@ passed from `build/macos`: the 15 public unit/tool tests plus the private-ROM
 save/load smoke. Deep strict code-signature verification passed before
 archiving. Full-game completion, Intel Macs, notarization, and Windows remain
 unverified.
+
+## 2026-09-03 - Murky Mill's light windows cross the wide margins
+
+The reported Murky Mill frame cut the right lamp's light cone at the native
+256-pixel edge and showed a clipped copy of that cone in the far-left margin.
+The quick-save reproduction was terrain-ready at camera `$058C,$07C8` in
+Mode 1. Layer isolation put the light on BG3: map `$70`, enabled and windowed
+on the main screen (mask `$04`), with HDMA changing the window across the
+scanlines.
+
+The map is 32 columns, so the adapter treated BG3 as a bounded plane. It first
+rendered the native line with the PPU window applied, then repeated that
+already-clipped line into the margins. That preserved the tilemap's 256-pixel
+wrap but incorrectly repeated screen-space clipping. The adapter now selects
+enabled, windowed 32-column Mode-1 layers for the physical-wide render path.
+The PPU therefore evaluates the live window coordinates over the presented
+span, while ordinary non-windowed bounded layers still repeat. The existing
+`DKC3_CULL_WIDEN=0` switch disables this selection for a same-binary A/B run.
+
+**Result.** With widening on, the right cone continues to its real HDMA edge
+through the right margin, while the repeated left fragment becomes the narrow
+far-left tail defined by the live window, at 16:9 and 16:10. The 4:3 A/B frame
+and its WRAM, VRAM, CGRAM, and OAM hashes are identical. At 16:9, the 256x224
+center crop is also pixel-identical while 11,587 pixels change in the wide
+frame. Thirteen samples over a 123-frame headless replay kept the center
+identical and the guest-state hashes equal; the supplied input did not move
+the restored state, so traversal through the whole stage and other
+windowed-effect variants remain unverified.
+
+## 2026-09-03 - v0.0.2 macOS alpha
+
+The Murky Mill light-window fix is packaged as the `v0.0.2` Apple-silicon
+alpha. The app remains ad-hoc signed, not notarized, and limited to macOS 26
+or newer by the bundled SDL2 binary. The source-only repository and release
+bundle contain no ROM, saves, generated C, screenshots, music, or extracted
+game assets. Full-game traversal, Intel Macs, notarization, and Windows remain
+unverified.

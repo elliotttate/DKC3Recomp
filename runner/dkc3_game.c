@@ -1802,6 +1802,19 @@ void Dkc3DrawPpuFrame(void) {
                   g_ppu->bgmode, g_ppu->bgXsc,
                   g_ppu->screenEnabled[0], g_ppu->screenEnabled[1])
             : 0;
+    /* A bounded layer with a hardware window cannot repeat an already
+     * composited 256-pixel line: Murky Mill's per-scanline BG3 light window
+     * then ends at the native edge and its clipped cone wraps to the opposite
+     * margin. Draw the 32-column map physically across the widened span so
+     * the same HDMA window edges are evaluated in screen space. */
+    physical_wide_mask = (uint8_t)(
+        physical_wide_mask |
+        (terrain_ready
+             ? Dkc3VideoPhysicalWindowedLayerMask(
+                   g_ppu->bgmode, g_ppu->bgXsc,
+                   g_ppu->screenEnabled[0], g_ppu->screenEnabled[1],
+                   g_ppu->screenWindowed[0], g_ppu->screenWindowed[1])
+             : 0));
     /* A mirrored margin at a level wall has no authored BG3 ring columns to
      * expose. Within one margin of a wall, a physical 64-column BG3 repeats
      * its rendered line like a bounded layer instead of reading the ring. */

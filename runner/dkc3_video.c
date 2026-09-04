@@ -464,6 +464,24 @@ uint8_t Dkc3VideoPhysicalWideLayerMask(uint8_t bg_mode,
   return mask;
 }
 
+uint8_t Dkc3VideoPhysicalWindowedLayerMask(
+    uint8_t bg_mode, const uint8_t bg_xsc[4], uint8_t main_layers,
+    uint8_t sub_layers, uint8_t main_windowed, uint8_t sub_windowed) {
+  if (!bg_xsc || (bg_mode & 7u) != 1u ||
+      !Dkc3VideoCullWidenEnabled())
+    return 0;
+
+  const uint8_t windowed = (uint8_t)(
+      ((main_layers & main_windowed) | (sub_layers & sub_windowed)) & 0x07u);
+  uint8_t mask = 0;
+  for (unsigned layer = 0; layer < 3; layer++) {
+    const uint8_t bit = (uint8_t)(1u << layer);
+    if ((windowed & bit) && !(bg_xsc[layer] & 1u))
+      mask = (uint8_t)(mask | bit);
+  }
+  return mask;
+}
+
 uint8_t Dkc3VideoRepeatLayerMask(uint8_t bg_mode,
                                  uint8_t main_layers,
                                  uint8_t sub_layers,

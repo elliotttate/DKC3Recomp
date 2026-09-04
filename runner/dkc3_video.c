@@ -419,6 +419,107 @@ size_t Dkc3VideoPlacementScanCells(uint16_t native_cell_offset,
   return count;
 }
 
+bool Dkc3VideoUsesUnderwaterSubscreenTint(
+    uint8_t bg_mode, uint8_t main_layers, uint8_t sub_layers,
+    uint8_t main_windowed, uint8_t sub_windowed, uint32_t window_select,
+    uint8_t window1_left, uint8_t window1_right,
+    uint8_t color_math_control, uint8_t color_math_layers,
+    uint16_t fixed_color) {
+  const bool underwater_layer_split =
+      (main_layers == 0x15u && sub_layers == 0x02u) ||
+      (main_layers == 0x05u && sub_layers == 0x12u) ||
+      (main_layers == 0x04u && sub_layers == 0x13u) ||
+      (main_layers == 0x17u && sub_layers == 0x13u);
+  return bg_mode == 0x09u && underwater_layer_split &&
+         main_windowed == 0x04u && sub_windowed == 0 &&
+         (window_select & 0x0f00u) == 0x0300u && window1_left == 0 &&
+         window1_right == 0xffu && color_math_control == 0x02u &&
+         color_math_layers == 0x64u && fixed_color == 0;
+}
+
+size_t Dkc3VideoRepeatTransparentSubscreenMargins(
+    uint16_t *pixels, size_t pixel_count, size_t native_offset,
+    unsigned left_margin, unsigned right_margin) {
+  if (!pixels || native_offset + kDkc3VideoNativeWidth > pixel_count ||
+      left_margin > native_offset ||
+      left_margin > kDkc3VideoNativeWidth ||
+      right_margin > kDkc3VideoNativeWidth ||
+      right_margin >
+          pixel_count - native_offset - kDkc3VideoNativeWidth)
+    return 0;
+
+  /* The fill's premise is a subscreen the native view covers completely:
+   * a transparent margin pixel then means missing adjacent content. Where
+   * the native row itself has transparent subscreen pixels (open water with
+   * no reflection behind it), a transparent margin pixel is authored and
+   * must stay. */
+  for (size_t index = 0; index < kDkc3VideoNativeWidth; index++)
+    if ((pixels[native_offset + index] & 0xffu) == 0)
+      return 0;
+  int nearest_left[kDkc3VideoNativeWidth];
+  int nearest_right[kDkc3VideoNativeWidth];
+  int nearest = -1;
+  for (size_t index = 0; index < kDkc3VideoNativeWidth; index++) {
+    if ((pixels[native_offset + index] & 0xffu) != 0)
+      nearest = (int)index;
+    nearest_left[index] = nearest;
+  }
+  nearest = -1;
+  for (size_t index = kDkc3VideoNativeWidth; index-- > 0;) {
+    if ((pixels[native_offset + index] & 0xffu) != 0)
+      nearest = (int)index;
+    nearest_right[index] = nearest;
+  }
+
+  size_t filled = 0;
+  for (unsigned distance = 1; distance <= left_margin; distance++) {
+    const size_t destination = native_offset - distance;
+    const size_t wrapped = kDkc3VideoNativeWidth - distance;
+    uint16_t source_pixel = pixels[native_offset + wrapped];
+    if ((source_pixel & 0xffu) == 0 &&
+        (pixels[destination + 1] & 0xffu) != 0)
+      source_pixel = pixels[destination + 1];
+    if ((source_pixel & 0xffu) == 0) {
+      int source = nearest_left[wrapped];
+      const int right = nearest_right[wrapped];
+      if (source < 0 ||
+          (right >= 0 && right - (int)wrapped < (int)wrapped - source))
+        source = right;
+      if (source >= 0)
+        source_pixel = pixels[native_offset + (size_t)source];
+    }
+    if ((pixels[destination] & 0xffu) == 0 &&
+        (source_pixel & 0xffu) != 0) {
+      pixels[destination] = source_pixel;
+      filled++;
+    }
+  }
+  for (unsigned distance = 0; distance < right_margin; distance++) {
+    const size_t destination =
+        native_offset + kDkc3VideoNativeWidth + distance;
+    const size_t wrapped = distance;
+    uint16_t source_pixel = pixels[native_offset + wrapped];
+    if ((source_pixel & 0xffu) == 0 &&
+        (pixels[destination - 1] & 0xffu) != 0)
+      source_pixel = pixels[destination - 1];
+    if ((source_pixel & 0xffu) == 0) {
+      int source = nearest_left[wrapped];
+      const int right = nearest_right[wrapped];
+      if (source < 0 ||
+          (right >= 0 && right - (int)wrapped < (int)wrapped - source))
+        source = right;
+      if (source >= 0)
+        source_pixel = pixels[native_offset + (size_t)source];
+    }
+    if ((pixels[destination] & 0xffu) == 0 &&
+        (source_pixel & 0xffu) != 0) {
+      pixels[destination] = source_pixel;
+      filled++;
+    }
+  }
+  return filled;
+}
+
 uint16_t Dkc3VideoPromoteOamXHigh(uint16_t screen_x) {
   /* DKC3's banana renderer derives OAM's ninth X bit from bit 15 because
    * native play only needs that bit for negative coordinates. In the

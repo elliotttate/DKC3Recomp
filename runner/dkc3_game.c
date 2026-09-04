@@ -51,6 +51,9 @@ enum {
   kDkc3BandPolicyRepeat = 0,
   kDkc3BandPolicyWorld = 1,
   kDkc3BandPolicyPlane = 2,
+  /* A world band of a second layer whose rows are the terrain ring's rows
+   * at a fixed vertical offset (an underwater reflection of the ceiling). */
+  kDkc3BandPolicyAlias = 3,
 };
 static Dkc3HdmaBands s_frame_bands;
 static uint8_t s_band_policy[2][kDkc3HdmaMaxBands];
@@ -61,6 +64,8 @@ static uint16_t s_terrain_phase_h;
 static uint16_t s_terrain_phase_v;
 static bool s_terrain_phase_from_band;
 static int s_plane_band_count[2];
+/* Per layer: the verified row offset of its alias bands this frame (0 none). */
+static int s_alias_offset_rows[2];
 /* The west hold the last prefill found in the level map (Dkc3VideoHoldWest):
  * the world x of the authored edge the player is held at, and the
  * presented bias, which moves at most one pixel per frame toward the
@@ -145,6 +150,246 @@ static uint32_t s_plane_frame;
  * refreshed whenever a page changes (every frame, in practice). */
 static Dkc3PlaneCacheEntry s_object_plane_cache[256];
 
+/*
+ * Row-level change tracking for the two wide layers' 64x32 tilemaps. The
+ * engine's page stamps cover 1 KB pages, so a layer that streams four rows
+ * (a river's reflection band) marks its whole map as written and its
+ * untouched backdrop rows fall to the repeat policy, which repeats a
+ * 512-pixel plane at 256. Each row keeps its own travel gate instead: a row
+ * counts as static once the camera has traveled kDkc3PlaneTravel pixels from
+ * where it stood when the row last changed. A level (or a restored state)
+ * starts with every row counted as traveled, as the pages do.
+ */
+enum { kDkc3TrackedMaps = 2, kDkc3MapRows = 32, kDkc3MapCols = 64,
+       kDkc3AliasMinCells = 8 };
+static bool Dkc3DecodeLevelTile(const uint8_t *bank_data, uint16_t map_base,
+                                uint16_t metatile_base,
+                                Dkc3VideoLevelLayout layout,
+                                unsigned row_bytes, uint32_t tile_x,
+                                uint32_t tile_y, uint16_t *entry);
+static uint16_t s_map_base_word[kDkc3TrackedMaps];
+static uint16_t s_map_rows[kDkc3TrackedMaps][kDkc3MapRows][kDkc3MapCols];
+static int32_t s_row_anchor_x[kDkc3TrackedMaps][kDkc3MapRows];
+static int32_t s_row_anchor_y[kDkc3TrackedMaps][kDkc3MapRows];
+static bool s_row_traveled[kDkc3TrackedMaps][kDkc3MapRows];
+/* Per layer and ring row: the row offset at which the row equals the terrain
+ * ring over the native columns this frame (0: none verified). */
+static int8_t s_row_alias_offset[kDkc3TrackedMaps][kDkc3MapRows];
+static bool s_row_alias_valid[kDkc3TrackedMaps][kDkc3MapRows];
+static int s_layer_alias_rows[kDkc3TrackedMaps];
+
+static void Dkc3ReadMapRow(uint16_t base_word, unsigned row,
+                           uint16_t *out) {
+  for (unsigned col = 0; col < kDkc3MapCols; col++) {
+    const uint16_t word = (uint16_t)(
+        base_word + ((col & 32u) ? 0x400u : 0u) + row * 32u + (col & 31u));
+    out[col] = g_ppu->vram[word & 0x7fffu];
+  }
+}
+
+static void Dkc3TrackMapRows(int32_t camera_x, int32_t camera_y,
+                             bool reset) {
+  for (unsigned layer = 0; layer < kDkc3TrackedMaps; layer++) {
+    const uint8_t bg_sc = g_ppu->bgXsc[layer];
+    const uint16_t base = (uint16_t)((bg_sc & 0xfcu) << 8);
+    const bool wide64 = (bg_sc & 1u) != 0;
+    const bool rebase = reset || !wide64 || base != s_map_base_word[layer];
+    s_map_base_word[layer] = wide64 ? base : 0;
+    if (!wide64)
+      continue;
+    for (unsigned row = 0; row < kDkc3MapRows; row++) {
+      uint16_t current[kDkc3MapCols];
+      Dkc3ReadMapRow(base, row, current);
+      if (rebase) {
+        memcpy(s_map_rows[layer][row], current, sizeof current);
+        s_row_traveled[layer][row] = true;
+        continue;
+      }
+      if (memcmp(current, s_map_rows[layer][row], sizeof current) != 0) {
+        memcpy(s_map_rows[layer][row], current, sizeof current);
+        s_row_traveled[layer][row] = false;
+        s_row_anchor_x[layer][row] = camera_x;
+        s_row_anchor_y[layer][row] = camera_y;
+      }
+      if (!s_row_traveled[layer][row]) {
+        const int32_t dx = camera_x - s_row_anchor_x[layer][row];
+        const int32_t dy = camera_y - s_row_anchor_y[layer][row];
+        if (dx >= kDkc3PlaneTravel || dx <= -kDkc3PlaneTravel ||
+            dy >= kDkc3PlaneTravel || dy <= -kDkc3PlaneTravel)
+          s_row_traveled[layer][row] = true;
+      }
+    }
+  }
+}
+
+/* The ring rows a band's scanlines show on a 32-row map. */
+static void Dkc3BandRingRows(uint16_t v_scroll, uint8_t first_line,
+                             uint8_t last_line, unsigned *first_row,
+                             unsigned *last_row) {
+  *first_row = ((unsigned)v_scroll + first_line - 1u) >> 3;
+  *last_row = ((unsigned)v_scroll + last_line - 1u) >> 3;
+}
+
+static bool Dkc3BandRowsStatic(int layer, uint16_t v_scroll,
+                               uint8_t first_line, uint8_t last_line) {
+  if (layer < 0 || layer >= kDkc3TrackedMaps || !s_map_base_word[layer])
+    return false;
+  unsigned first, last;
+  Dkc3BandRingRows(v_scroll, first_line, last_line, &first, &last);
+  for (unsigned row = first; row <= last; row++)
+    if (!s_row_traveled[layer][row % kDkc3MapRows])
+      return false;
+  return true;
+}
+
+/*
+ * A second 64-column layer scrolling with the terrain can carry the level
+ * map itself at a vertical offset: the river levels stream a strip of the
+ * map from 288 pixels above into BG2 under the water line, on the
+ * subscreen, as the reflection the water's half-color math tints. Those
+ * rows hold world content the level map decodes, so neither the plane nor
+ * the repeat policy is right for them; the terrain store is, read at that
+ * offset, once the prefill has decoded the source rows for the margins.
+ * Verify the relation on the cartridge's own ring every frame: a row is an
+ * alias at offset d when its cells over the native columns equal the map's
+ * decode d rows away in at least nine of ten non-empty cells. The offset
+ * proven last is tried first; a full search runs only when it fails.
+ */
+enum { kDkc3AliasRowReach = 40 };
+static int s_alias_offset_cached[kDkc3TrackedMaps];
+
+typedef struct Dkc3AliasDecodeContext {
+  const uint8_t *bank_data;
+  uint16_t map_base;
+  uint16_t metatile_base;
+  Dkc3VideoLevelLayout layout;
+  unsigned row_bytes;
+  uint32_t top_world_row;    /* the world tile row at the ring window's top */
+  unsigned top_ring_row;     /* that row's ring row */
+  unsigned first_native_col; /* ring column of the native window's first tile */
+  uint32_t first_world_col;  /* world tile column of that ring column */
+} Dkc3AliasDecodeContext;
+
+static unsigned Dkc3AliasRowMatches(const Dkc3AliasDecodeContext *ctx,
+                                    const uint16_t *cells, uint32_t world_row,
+                                    int offset, unsigned *populated_out) {
+  unsigned populated = 0, matches = 0;
+  const int64_t source_row =
+      (int64_t)world_row + offset - (int64_t)(kDkc3WorldOriginX >> 3);
+  for (unsigned i = 0; i <= 32u; i++) {
+    const unsigned col = (ctx->first_native_col + i) & 63u;
+    const uint16_t cell = cells[col];
+    if (cell == 0)
+      continue;
+    populated++;
+    const int64_t source_col =
+        (int64_t)(ctx->first_world_col + i) - (int64_t)(kDkc3WorldOriginX >> 3);
+    if (source_row < 0 || source_col < 0)
+      continue;
+    uint16_t entry = 0;
+    if (Dkc3DecodeLevelTile(ctx->bank_data, ctx->map_base, ctx->metatile_base,
+                            ctx->layout, ctx->row_bytes, (uint32_t)source_col,
+                            (uint32_t)source_row, &entry) &&
+        entry == cell)
+      matches++;
+  }
+  *populated_out = populated;
+  return matches;
+}
+
+static void Dkc3ComputeRowAliasOffsets(int layer, int terrain_layer,
+                                       uint16_t layer_h, uint16_t terrain_h,
+                                       const Dkc3AliasDecodeContext *ctx) {
+  memset(s_row_alias_offset[layer], 0, sizeof s_row_alias_offset[layer]);
+  memset(s_row_alias_valid[layer], 0, sizeof s_row_alias_valid[layer]);
+  s_layer_alias_rows[layer] = 0;
+  if (layer < 0 || layer >= kDkc3TrackedMaps || terrain_layer < 0 ||
+      terrain_layer >= kDkc3TrackedMaps || layer == terrain_layer ||
+      !s_map_base_word[layer] || !ctx || !ctx->bank_data)
+    return;
+  /* Both rings must share the column phase within a tile. */
+  const unsigned phase_distance =
+      (unsigned)(((int)layer_h - (int)terrain_h + 512) & 511);
+  if (phase_distance > 8u && phase_distance < 504u)
+    return;
+  for (unsigned row = 0; row < kDkc3MapRows; row++) {
+    const uint16_t *cells = s_map_rows[layer][row];
+    const uint32_t world_row =
+        ctx->top_world_row + ((row - ctx->top_ring_row) & 31u);
+    unsigned populated = 0;
+    int best_offset = 0;
+    unsigned best_matches = 0;
+    const int cached = s_alias_offset_cached[layer];
+    if (cached != 0) {
+      best_matches = Dkc3AliasRowMatches(ctx, cells, world_row, cached,
+                                         &populated);
+      best_offset = cached;
+    }
+    if (populated == 0 || best_matches * 10u < populated * 9u) {
+      for (int offset = -kDkc3AliasRowReach; offset <= kDkc3AliasRowReach;
+           offset++) {
+        unsigned count = 0;
+        const unsigned matches =
+            Dkc3AliasRowMatches(ctx, cells, world_row, offset, &count);
+        populated = count;
+        if (matches > best_matches) {
+          best_matches = matches;
+          best_offset = offset;
+        }
+        if (populated < kDkc3AliasMinCells)
+          break;
+      }
+    }
+    if (populated < kDkc3AliasMinCells)
+      continue;
+    if (best_matches * 10u >= populated * 9u) {
+      s_row_alias_offset[layer][row] = (int8_t)best_offset;
+      s_row_alias_valid[layer][row] = true;
+      s_layer_alias_rows[layer]++;
+      s_alias_offset_cached[layer] = best_offset;
+    }
+    if (getenv("DKC3_ALIAS_TRACE"))
+      fprintf(stderr,
+              "alias layer=%d ring_row=%u world_row=%u populated=%u best=%d "
+              "matches=%u %s\n",
+              layer, row, world_row, populated, best_offset, best_matches,
+              s_row_alias_valid[layer][row] ? "verified" : "-");
+  }
+}
+
+/* The band verifies against the terrain when every populated row it shows
+ * verifies at one common offset (zero: the terrain itself); that offset is
+ * returned. A band with no populated row verifies nothing. */
+static bool Dkc3BandAliasOffset(int layer, uint16_t v_scroll,
+                                uint8_t first_line, uint8_t last_line,
+                                int *offset_rows) {
+  if (layer < 0 || layer >= kDkc3TrackedMaps || !s_layer_alias_rows[layer])
+    return false;
+  unsigned first, last;
+  Dkc3BandRingRows(v_scroll, first_line, last_line, &first, &last);
+  bool any = false;
+  int offset = 0;
+  for (unsigned row = first; row <= last; row++) {
+    const unsigned ring_row = row % kDkc3MapRows;
+    if (!s_row_alias_valid[layer][ring_row])
+      continue;
+    const int candidate = s_row_alias_offset[layer][ring_row];
+    if (any && candidate != offset)
+      return false;
+    offset = candidate;
+    any = true;
+  }
+  if (!any)
+    return false;
+  *offset_rows = offset;
+  return true;
+}
+
+int Dkc3AliasOffsetRows(int layer) {
+  return layer >= 0 && layer < kDkc3TrackedMaps ? s_alias_offset_rows[layer]
+                                                : 0;
+}
+
 static void Dkc3TrackVramPages(int32_t camera_x, int32_t camera_y) {
   const uint64_t signature = Dkc3LevelSourceSignature();
   const bool reset =
@@ -156,6 +401,7 @@ static void Dkc3TrackVramPages(int32_t camera_x, int32_t camera_y) {
     memset(s_plane_cache, 0, sizeof s_plane_cache);
     memset(s_object_plane_cache, 0, sizeof s_object_plane_cache);
   }
+  Dkc3TrackMapRows(camera_x, camera_y, reset);
   for (unsigned page = 0; page < kDkc3VramPages; page++) {
     const uint32_t stamp = WsShadowVramPageWriteFrame(page);
     if (reset) {
@@ -216,10 +462,6 @@ static bool Dkc3BandShowsBrokenRows(uint8_t bg_sc, uint16_t v_scroll,
   return false;
 }
 
-static bool Dkc3VramPageStatic(unsigned page) {
-  return page < kDkc3VramPages && s_page_traveled[page];
-}
-
 static bool Dkc3MapIsObjectPlane(uint8_t bg_sc, uint32_t newest_stamp,
                                  uint16_t character_base) {
   Dkc3PlaneCacheEntry *entry = &s_object_plane_cache[bg_sc];
@@ -257,14 +499,16 @@ static bool Dkc3BandShowsStaticPlane(uint8_t bg_sc, uint16_t stream_base,
   if (count == 0)
     return false;
   uint32_t newest = 0;
-  bool all_static = true;
   for (unsigned index = 0; index < count; index++) {
-    if (!Dkc3VramPageStatic(pages[index]))
-      all_static = false;
     const uint32_t stamp = WsShadowVramPageWriteFrame(pages[index]);
     if (stamp > newest)
       newest = stamp;
   }
+  /* Static by row: only the rows this band shows must have gone
+   * unwritten for the travel gate, so a map that streams a few rows
+   * (the reflection band) keeps its authored backdrop rows as a plane. */
+  const bool all_static =
+      Dkc3BandRowsStatic(layer, v_scroll, first_line, last_line);
   if (all_static && Dkc3MapWrapsAuthored(bg_sc, newest, character_base) &&
       !Dkc3BandShowsBrokenRows(bg_sc, v_scroll, first_line, last_line))
     return true;
@@ -1390,6 +1634,47 @@ static bool Dkc3PrefillWidescreenLevelTerrain(uint8_t layer_mask,
           terrain_layer, tile_x, shadow_tile_y, entry, margin);
     }
   }
+  /* A second layer's alias bands read the terrain store at their verified
+   * row offset, so the source rows for every column the widened view can
+   * reach must be decoded too; the main loop covers only the viewport's own
+   * rows. Margin cells take the decode; native-window cells keep any real
+   * capture (PrefillTile never overwrites one). */
+  for (int layer = 0; layer < 2; layer++) {
+    const int alias_rows = s_alias_offset_rows[layer];
+    if (layer == terrain_layer || alias_rows == 0)
+      continue;
+    for (uint32_t tile_x = first_tile_x; tile_x <= last_tile_x; tile_x++) {
+      uint32_t source_tile_x = 0;
+      bool mirror_horizontally = false;
+      const int edge = Dkc3VideoResolveEdgeTile(
+          tile_x, maximum_scroll_x, &source_tile_x, &mirror_horizontally);
+      if (edge < 0 || source_tile_x >= source_tile_limit)
+        continue;
+      const bool outside_cartridge =
+          Dkc3VideoTileTouchesWidescreenMargin(tile_x, cartridge_x);
+      for (int row = -1; row <= visible_tile_rows; row++) {
+        const int64_t shadow_row =
+            (int64_t)top_shadow_row + row + alias_rows;
+        const int64_t source_row =
+            (int64_t)top_source_row + row + alias_rows;
+        if (shadow_row < 0 || source_row < 0)
+          continue;
+        uint16_t entry = 0;
+        if (!Dkc3DecodeLevelTile(bank_data, map_base, metatile_base, layout,
+                                 row_bytes, source_tile_x,
+                                 (uint32_t)source_row & 0x1fffu, &entry))
+          continue;
+        if (mirror_horizontally)
+          entry ^= 0x4000u;
+        if (outside_cartridge)
+          WsShadowForceTile(terrain_layer, tile_x, (uint32_t)shadow_row,
+                            entry);
+        else
+          WsShadowPrefillTile(terrain_layer, tile_x, (uint32_t)shadow_row,
+                              entry);
+      }
+    }
+  }
   /* The west hold for the glide, read for the next frame. It is entered
    * when the columns the unbiased margin would reach beside the window are
    * empty for the whole visible height, the camera has not moved since the
@@ -1524,9 +1809,14 @@ static bool Dkc3PrepareWidescreenShadow(uint8_t layer_mask,
       /* The view shares the owner's keys. The renderer adds this layer's own
        * per-line scroll delta, so a band that leads the frame anchor by a
        * few pixels still resolves the exact world cell. */
-      WsShadowSetEntryAlias(layer, terrain_layer,
-                            owner_world_x, owner_world_y,
-                            owner_scroll_x, owner_scroll_y);
+      /* An alias band's rows are the terrain's rows s_alias_offset_rows
+       * away (negative: the rows above), so the view's world Y is keyed
+       * that far from the owner's. */
+      WsShadowSetEntryAlias(
+          layer, terrain_layer, owner_world_x,
+          (uint32_t)((int32_t)owner_world_y +
+                     s_alias_offset_rows[layer] * 8),
+          owner_scroll_x, owner_scroll_y);
       WsShadowSetNativeViewportInset(
           layer, presentation_bias < 0 ? -presentation_bias : 0,
           presentation_bias > 0 ? presentation_bias : 0);
@@ -1613,6 +1903,7 @@ static void Dkc3ScanFrameBands(Dkc3HdmaBands *bands) {
  * Either physical layer may hold either role in any band. */
 static void Dkc3ClassifyBands(uint8_t wide_layer_mask,
                               int terrain_layer,
+                              Dkc3VideoLevelLayout layout,
                               const Dkc3HdmaBands *bands,
                               uint8_t policy[2][kDkc3HdmaMaxBands],
                               bool alias_layer[2]) {
@@ -1627,25 +1918,84 @@ static void Dkc3ClassifyBands(uint8_t wide_layer_mask,
   for (int layer = 0; layer < 2; layer++) {
     alias_layer[layer] = false;
     s_plane_band_count[layer] = 0;
+    s_alias_offset_rows[layer] = 0;
     const bool wide = (wide_layer_mask & (uint8_t)(1u << layer)) != 0;
+    if (wide && have_owner && layer != terrain_layer) {
+      /* Verify against the ring phase of the layer's first band that
+       * scrolls with the terrain; a parallax band above the water (the
+       * foliage, 130 pixels off) must not stand in for the water bands. */
+      uint16_t layer_h = (uint16_t)g_ppu->hScroll[layer];
+      for (int index = 0; index < bands->count; index++) {
+        const unsigned distance = (unsigned)(
+            ((int)bands->band[index].h_scroll[layer] - (int)terrain_h + 512) &
+            511);
+        if (distance <= 8u || distance >= 504u) {
+          layer_h = bands->band[index].h_scroll[layer];
+          break;
+        }
+      }
+      Dkc3AliasDecodeContext ctx;
+      memset(&ctx, 0, sizeof ctx);
+      uint8_t bank = 0;
+      ctx.bank_data = layout != kDkc3VideoLevelLayoutUnknown
+                          ? Dkc3LevelSourceBank(&bank) : NULL;
+      ctx.map_base = kDkc3LevelMapBase;
+      ctx.metatile_base = Dkc3ReadWram16(kDkc3WramMetatileBase);
+      ctx.layout = layout;
+      ctx.row_bytes = s_terrain_prefill_stats.row_bytes;
+      const uint32_t top_world_y =
+          Dkc3VideoTerrainShadowY(terrain_v, (uint32_t)camera_y);
+      ctx.top_world_row = top_world_y >> 3;
+      ctx.top_ring_row = (unsigned)((terrain_v >> 3) & 31u);
+      const uint32_t world_x =
+          Dkc3VideoTerrainShadowX(terrain_h, (uint32_t)camera_x);
+      ctx.first_world_col = world_x >> 3;
+      ctx.first_native_col = (unsigned)((terrain_h >> 3) & 63u);
+      Dkc3ComputeRowAliasOffsets(layer, terrain_layer, layer_h, terrain_h,
+                                 &ctx);
+    }
     for (int index = 0; index < bands->count; index++) {
       const Dkc3HdmaBand *band = &bands->band[index];
-      const bool world =
+      const bool at_phase =
           have_owner && wide &&
           Dkc3VideoScrollAtTerrainPhase(
               band->h_scroll[layer], band->v_scroll[layer],
               terrain_h, terrain_v);
+      const uint16_t band_base =
+          (uint16_t)((band->bg_sc[layer] & 0xfcu) << 8);
+      /* A second layer at the terrain phase is world content only when
+       * its map is the terrain ring itself (HDMA showing the ring on the
+       * other index) or its rows verify against the terrain ring, at the
+       * offset those rows prove: the reflection band verifies four rows
+       * away, a duplicated ceiling at zero, and a backdrop that merely
+       * scrolls at camera speed verifies nowhere and stays a plane. */
+      int alias_rows = 0;
+      const bool verified =
+          wide && have_owner && layer != terrain_layer &&
+          Dkc3BandAliasOffset(layer, band->v_scroll[layer],
+                              band->first_line, band->last_line,
+                              &alias_rows);
+      const bool world =
+          at_phase && (layer == terrain_layer || band_base == stream_base ||
+                       (verified && alias_rows == 0));
+      const bool alias =
+          !world && verified && alias_rows != 0 &&
+          (s_alias_offset_rows[layer] == 0 ||
+           s_alias_offset_rows[layer] == alias_rows);
       const bool plane =
-          !world && wide &&
+          !world && !alias && wide &&
           Dkc3BandShowsStaticPlane(band->bg_sc[layer], stream_base, layer,
                                    band->v_scroll[layer], band->first_line,
                                    band->last_line);
       policy[layer][index] = world ? kDkc3BandPolicyWorld
+                             : alias ? kDkc3BandPolicyAlias
                              : plane ? kDkc3BandPolicyPlane
                                      : kDkc3BandPolicyRepeat;
       if (plane)
         s_plane_band_count[layer]++;
-      if (world && layer != terrain_layer)
+      if (alias)
+        s_alias_offset_rows[layer] = alias_rows;
+      if ((world || alias) && layer != terrain_layer)
         alias_layer[layer] = true;
     }
   }
@@ -1663,6 +2013,7 @@ static void Dkc3ClassifyBands(uint8_t wide_layer_mask,
         fprintf(stderr, " %c%02x/%u,%u",
                 !wide ? '-'
                 : policy[layer][index] == kDkc3BandPolicyWorld ? 'W'
+                : policy[layer][index] == kDkc3BandPolicyAlias ? 'A'
                 : policy[layer][index] == kDkc3BandPolicyPlane ? 'P' : 'R',
                 band->bg_sc[layer], band->h_scroll[layer],
                 band->v_scroll[layer]);
@@ -1737,8 +2088,60 @@ static void Dkc3PatchInterpreterCull(void) {
   applied_extra = extra;
 }
 
+/* Floodlit Fish uses a full-screen inverted BG3 window for the water surface
+ * and half-color math against BG1/BG2 on the subscreen. The native view has a
+ * nontransparent subscreen pixel behind every surface pixel, but valid
+ * adjacent-world terrain can be transparent on that exact row. In a margin,
+ * that makes the otherwise correct repeated surface skip its tint. Supply
+ * only those missing subscreen pixels from the corresponding native column;
+ * authored adjacent-world pixels remain untouched. The exact register
+ * signature keeps this out of other color-math scenes. */
+static unsigned s_tint_lines_seen, s_tint_lines_water, s_tint_lines_matched;
+
+void Dkc3TintLineCounters(unsigned *seen, unsigned *water, unsigned *matched) {
+  *seen = s_tint_lines_seen;
+  *water = s_tint_lines_water;
+  *matched = s_tint_lines_matched;
+  s_tint_lines_seen = s_tint_lines_water = s_tint_lines_matched = 0;
+}
+
+static void Dkc3EnhanceUnderwaterSubscreen(Ppu *ppu, uint y, bool sub,
+                                           void *context) {
+  (void)y;
+  (void)context;
+  if (sub) {
+    s_tint_lines_seen++;
+    /* A water line: BG3 windowed on the main screen through an inverted
+     * window 1 spanning the whole width. */
+    if ((ppu->screenWindowed[0] & 0x04u) &&
+        (ppu->windowsel & 0x0f00u) == 0x0300u && ppu->window1left == 0 &&
+        ppu->window1right == 0xffu)
+      s_tint_lines_water++;
+  }
+  if (!sub || !Dkc3VideoIsWidescreen() ||
+      !Dkc3VideoUsesUnderwaterSubscreenTint(
+          ppu->bgmode, ppu->screenEnabled[0], ppu->screenEnabled[1],
+          ppu->screenWindowed[0], ppu->screenWindowed[1], ppu->windowsel,
+          ppu->window1left, ppu->window1right, ppu->cgwsel, ppu->cgadsub,
+          ppu->fixedColor))
+    return;
+  s_tint_lines_matched++;
+  Dkc3VideoRepeatTransparentSubscreenMargins(
+      ppu->bgBuffers[1].data, kPpuBufWidth, kPpuExtraLeftRight,
+      ppu->extraLeftCur, ppu->extraRightCur);
+}
+
 void Dkc3DrawPpuFrame(void) {
   Dkc3PatchInterpreterCull();
+  PpuSetWidescreenLineEnhancer(
+      g_ppu, Dkc3VideoIsWidescreen() ? Dkc3EnhanceUnderwaterSubscreen : NULL,
+      NULL);
+  /* The enhancer repairs only the subscreen's color-math operand. BG1 is
+   * already reconstructed by the world shadow and must remain eligible in
+   * both margins; the runtime's legacy enhancer default clips BG1 because
+   * older clients used their callback to replace that layer outright. */
+  PpuSetWidescreenLineEnhancerWideLayers(
+      g_ppu, Dkc3VideoIsWidescreen() ? 0x01u : 0u);
   SimpleHdma channels[8];
   bool active[8] = {false};
   const Dkc3VideoLevelLayout layout =
@@ -1846,7 +2249,7 @@ void Dkc3DrawPpuFrame(void) {
           (uint8_t)(band_sub_layers | s_frame_bands.band[index].sub_layers);
     }
     bool alias_layer[2] = {false, false};
-    Dkc3ClassifyBands(wide_layer_mask, terrain_layer, &s_frame_bands,
+    Dkc3ClassifyBands(wide_layer_mask, terrain_layer, layout, &s_frame_bands,
                       s_band_policy, alias_layer);
     /* WsShadow owns only BG1/BG2 terrain. Establish exact terrain readiness
      * before allowing any additional physical layer into the final render
@@ -2034,4 +2437,8 @@ void RunOneFrameOfGame_Internal(void) {
 
 void ResetSpritesFunc(int first) {
   (void)first;
+}
+
+unsigned Dkc3FrameCounter(void) {
+  return (unsigned)snes_frame_counter;
 }

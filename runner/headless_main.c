@@ -11,6 +11,7 @@
 #include "snes/interp_bridge.h"
 #include "snes/ppu.h"
 #include "snes/snes.h"
+#include "snes/ws_shadow.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -293,6 +294,44 @@ int main(int argc, char **argv) {
         spawn_state[slot] = state;
       }
     }
+    if (getenv("DKC3_PPU_DUMP") &&
+        (frame == frame_limit - 1 || getenv("DKC3_PPU_DUMP")[0] == '2')) {
+      unsigned tint_seen = 0, tint_water = 0, tint_matched = 0;
+      Dkc3TintLineCounters(&tint_seen, &tint_water, &tint_matched);
+      fprintf(stderr, "ppu_frame %ld camera=[%04x,%04x] tint=%u/%u/%u ", frame,
+              ReadWram16(0x196d), ReadWram16(0x1973), tint_seen, tint_water,
+              tint_matched);
+      fprintf(stderr,
+              "ppu_state windowsel=%08x w1=[%u,%u] w2=[%u,%u] windowed=[%02x,%02x] "
+              "enabled=[%02x,%02x] cgwsel=%02x cgadsub=%02x fixed=%04x\n",
+              (unsigned)g_ppu->windowsel, g_ppu->window1left, g_ppu->window1right,
+              g_ppu->window2left, g_ppu->window2right, g_ppu->screenWindowed[0],
+              g_ppu->screenWindowed[1], g_ppu->screenEnabled[0],
+              g_ppu->screenEnabled[1], g_ppu->cgwsel, g_ppu->cgadsub,
+              g_ppu->fixedColor);
+      for (int layer = 0; layer < 3; layer++) {
+        WsShadowMarginStat stat;
+        WsShadowGetMarginStats(layer, &stat);
+        fprintf(stderr,
+                "ws_margin layer=%d west=%llu/%llu east=%llu/%llu (hit/miss)\n",
+                layer, (unsigned long long)stat.westHit,
+                (unsigned long long)stat.westMiss,
+                (unsigned long long)stat.eastHit,
+                (unsigned long long)stat.eastMiss);
+      }
+      if (g_snes && g_snes->dma) {
+        for (int channel = 0; channel < 8; channel++) {
+          const DmaChannel *ch = &g_snes->dma->channel[channel];
+          if (!ch->hdmaActive)
+            continue;
+          fprintf(stderr,
+                  "hdma channel=%d target=$21%02x indirect=%d table=$%02x:%04x "
+                  "mode=%u\n",
+                  channel, ch->bAdr, ch->indirect ? 1 : 0, ch->aBank,
+                  ch->aAdr, (unsigned)ch->mode);
+        }
+      }
+    }
     if (oam_trace) {
       /* Decode OAM X the way the PPU does for a widened frame: the ninth
        * bit is positive up to 256 + extra, negative beyond. */
@@ -342,9 +381,10 @@ int main(int argc, char **argv) {
       Dkc3TerrainPrefillStats prefill;
       Dkc3GetTerrainPrefillStats(&prefill);
       fprintf(stderr,
-              "prefill frame=%ld camera=[%04x,%04x] ready=%d bias=%d "
+              "prefill frame=%ld counter=%u camera=[%04x,%04x] ready=%d bias=%d "
               "present=%u matching=%u margin_present=%u margin_matching=%u\n",
-              frame, ReadWram16(0x196d), ReadWram16(0x1973),
+              frame, (unsigned)Dkc3FrameCounter(), ReadWram16(0x196d),
+              ReadWram16(0x1973),
               Dkc3VideoTerrainReady() ? 1 : 0, Dkc3VideoPresentationBias(),
               prefill.present,
               prefill.matching, prefill.margin_present,
@@ -496,6 +536,18 @@ int main(int argc, char **argv) {
          g_ppu->bgTileAdr, g_ppu->hScroll[0], g_ppu->hScroll[1],
          g_ppu->hScroll[2], g_ppu->hScroll[3], g_ppu->vScroll[0],
          g_ppu->vScroll[1], g_ppu->vScroll[2], g_ppu->vScroll[3]);
+  printf("ppu_effects windowsel=$%08x w1=[%u,%u] w2=[%u,%u] "
+         "wbgobjlog=$%04x main_window=$%02x sub_window=$%02x "
+         "cgadsub=$%02x cgwsel=$%02x fixed=$%04x "
+         "wide=$%02x repeat=$%02x clamp=$%02x bg3_y=%u "
+         "window_expand=[$%02x,$%02x]\n",
+         g_ppu->windowsel, g_ppu->window1left, g_ppu->window1right,
+         g_ppu->window2left, g_ppu->window2right, g_ppu->wbgobjlog,
+         g_ppu->screenWindowed[0], g_ppu->screenWindowed[1],
+         g_ppu->cgadsub, g_ppu->cgwsel, g_ppu->fixedColor,
+         g_ppu->wsLayerWidenMask, g_ppu->wsLayerRepeat,
+         g_ppu->wsLayerClamp, g_ppu->wsBg3WidenY,
+         g_ppu->wsWindowExpandLayers, g_ppu->wsWindowExpandWindows);
   {
     Dkc3TerrainPrefillStats prefill;
     Dkc3GetTerrainPrefillStats(&prefill);

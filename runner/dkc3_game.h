@@ -36,6 +36,13 @@ typedef struct Dkc3TerrainPrefillStats {
 } Dkc3TerrainPrefillStats;
 
 const RtlGameInfo *Dkc3GameInfo(void);
+/* The game's own frame counter, the value DKC3_PREFILL_DUMP keys on. */
+unsigned Dkc3FrameCounter(void);
+/* Diagnostic: the verified row offset of a layer's alias bands this frame. */
+int Dkc3AliasOffsetRows(int layer);
+/* Diagnostic: sub-screen lines the underwater tint saw, judged water, and tinted since the last call. */
+void Dkc3TintLineCounters(unsigned *seen, unsigned *water, unsigned *matched);
+
 void Dkc3BeginDrawing(uint8_t *pixels, size_t pitch);
 void Dkc3DrawPpuFrame(void);
 uint32_t Dkc3ResumePc(void);

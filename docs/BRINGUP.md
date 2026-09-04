@@ -442,3 +442,132 @@ suite passes all 20 tests, including headless boot, hidden macOS app smoke,
 16:10, 21:9, and quick-state loading. The supplied state remains private under
 `.cache`; whole-game traversal and the carried-over Windows host are still
 unverified.
+
+## 2026-09-03 - underwater color math covers the wide margins
+
+The owner's Floodlit Fish quick save showed the expected dark underwater tint
+inside the native 256-pixel span but untreated, bright side margins at 21:9.
+The frame uses Mode 1 with BG3 on the main screen and BG2 on the subscreen.
+Across the initial save's water surface, HDMA moves BG1 and OBJ between them
+in three measured splits (`TM/TS=$15/$02`, `$05/$12`, and `$04/$13`). BG3 is
+selected by an inverted full-width window, and `CGWSEL=$02`, `CGADSUB=$64`
+applies half-color addition against the subscreen. In the cartridge view the
+effect has a subscreen color to blend against. Some valid adjacent-world
+BG1/BG2 pixels are transparent in the reconstructed margins, however, so the
+PPU correctly treated them as the backdrop and skipped half-color. That
+exposed the otherwise correct BG3 at its raw brightness.
+
+The host now recognizes that exact register signature before subscreen
+composition. On matching widescreen scanlines it fills only transparent
+subscreen margin pixels from the corresponding native column, following the
+layer's 256-pixel wrap. If that wrapped sample is also transparent, it uses the
+nearest nontransparent native subscreen pixel on the same line. Valid
+adjacent-world subscreen pixels remain intact, the main screen is never
+changed, and the policy is inactive in 4:3. The signature and
+transparent-only behavior have ROM-free unit coverage; the headless
+effect-register dump records the evidence needed to distinguish this
+composition from other BG3 effects.
+
+The first implementation exposed a separate renderer interaction in the
+owner's next capture: merely installing a line enhancer activated the shared
+PPU's legacy BG1 viewport clip. That behavior exists for older clients whose
+enhancer replaces BG1, but here the callback repairs only the subscreen. It
+therefore removed DKC3's already reconstructed ceiling and terrain from both
+margins at exactly the native boundaries. The runtime now has an explicit,
+default-off layer mask for enhancers that must preserve an already-widened
+layer. DKC3 opts BG1 into that mask while widescreen is active. A runtime unit
+test proves both the legacy default and the opt-in behavior.
+
+A later quick save at timer `0:25:54` adds a fourth measured split,
+`TM/TS=$17/$13`, over its first 23 scanlines. The original three-pair gate
+therefore left the far-right water surface untreated even though the rest of
+the frame was corrected. Extending the gate alone was insufficient because
+the corresponding native subscreen sample was transparent on that segment;
+the nearest-sample fallback is what supplies its color-math operand. The new
+pair is part of the same exact Mode 1, window, and color-math signature and is
+covered alongside the gate's negative unit case.
+
+**Verified.** The supplied state reproduces both the original untreated
+subscreen margins and the follow-up BG1 clipping regression. After the final
+change, captures at 16:10, 16:9, and 21:9 carry the underwater grade and BG1
+terrain continuously across both margins. The initial loaded frame and a
+98-frame rightward replay both keep every widened frame's 256x224 center
+pixel-identical to 4:3. At ultrawide replay frame 88, the BG1 opt-in restores
+12,463 left-margin and 12,485 right-margin pixels relative to the broken build,
+with zero center pixel changes. At the later `0:25:54` state, the nearest
+subscreen fallback corrects only the 902 faulty right-margin pixels and changes
+neither the left margin nor the center. Both saved positions have zero center
+byte differences against 4:3 in 16:10, 16:9, and 21:9. The initial 4:3 frame
+hash remains exactly
+`733ba0cbd0c420b2519f697d787ff66aac546be536fd9a10a4def243decb877b`,
+and its WRAM, VRAM, CGRAM, and OAM hashes match across aspects. The supplied
+state remains private under `.cache`. The standalone PPU regression and all
+20 project tests pass, including the native headless, macOS quick-state,
+16:10, and 21:9 checks. Traversal through the whole stage and other underwater
+effect variants remain unverified.
+
+## 2026-09-04 - the river's water edges: a second layer that is the map
+
+The owner's screenshot in the underwater river level (level `$32`, camera
+`$0E8A`x`$0218`) showed the water surface looking different at both
+margins: flatter and bluer than the native water, with a hard top edge
+where the native has the rock ceiling's reflection under the surface.
+
+**What the scene is.** BG1 (`$7800`) is the terrain ring. BG3 (`$6800`,
+32x64) is the water texture, on the main screen only below the water line,
+through an inverted window 1 that HDMA channel 2 sets to `[0,255]` there;
+channels 7 and 3 rewrite TM and CGADSUB per line so the water is BG3
+half-added to the subscreen and the underwater region is the backdrop
+half-added to it. BG2 (`$7000`, 64x32) carries the subscreen's content
+and is two things at once: its rows under the water line are streamed with
+the camera, and they are the level map itself, rows 36 to 39 in world tile
+units, 288 pixels above the water, decoded exactly (28 of 28 native cells
+at two cameras); its underwater rows are a static 512-pixel backdrop that
+never changed over 130 pixels of travel; its air rows are a parallax band.
+
+**What went wrong.** The band classifier treated BG2 as one thing per
+frame. At the terrain phase it took the plain world policy, so the margin
+read the terrain store at the same world rows, which the map leaves empty
+under the water, and the reflection vanished there; at rest the whole map
+counted as static and became a plane; moving, the streamed rows stamped
+the map's pages and every band fell to repeat, which repeats a 512-pixel
+backdrop at 256. The subscreen fill for Floodlit Fish
+(`Dkc3EnhanceUnderwaterSubscreen`) then painted the nearest native
+column into transparent margin pixels, which in this level are open water.
+
+**What changed.**
+
+- Map rows are tracked for change individually (`Dkc3TrackMapRows`), and a
+  band is static when the rows it shows have gone unwritten for the travel
+  gate, not when the map's pages have; the backdrop rows are planes while
+  the reflection rows stream.
+- A second layer's band is world content only when it proves it: its map
+  is the terrain ring itself, or its rows equal the level map's decode at
+  one row offset in nine of ten non-empty cells over the native columns
+  (`Dkc3ComputeRowAliasOffsets`, offsets up to 40 rows, the last proven
+  offset tried first). Such bands take a new policy, alias (`A` in the
+  band dump), which keys the layer's view of the terrain store that many
+  rows away, and the prefill decodes those source rows for every column
+  the widened view reaches. Here the offset is 36 rows and every populated
+  reflection row verifies at 33 of 33 cells.
+- The subscreen fill runs only where the native subscreen row is fully
+  opaque, its premise; a native row with transparent pixels leaves the
+  margins alone.
+
+**Result.** At the save and 128 pixels on, the reflection continues into
+both margins and the underwater backdrop wraps as a plane; the native
+window is unchanged (0 pixels) and the 4:3 hashes of the Lakeside run are
+identical. `DKC3_ALIAS_TRACE=1` prints each ring row's verdict.
+
+**Lessons recorded in the guide.** A render with `SNESRECOMP_LAYER_MASK`
+set, even to all layers, presents the margins differently (10,614 margin
+pixels differed at this spot, none native): it is for identifying layers,
+never for judging margins. And a layer at the terrain phase is not the
+terrain until its rows are verified against the map.
+
+**Open.** The disassembly's second-layer streamer (which rows it copies and
+why 288 pixels above) is not yet traced; the alias is verified on content
+every frame instead. Floodlit Fish's fill was not re-checked after its
+gate. A one-pixel bright column at the native edge in some water frames
+was seen once in the sweep and not chased.
+

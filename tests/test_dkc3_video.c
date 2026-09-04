@@ -71,6 +71,63 @@ static bool CheckMargins(uint16_t camera_x, uint16_t maximum_scroll_x,
 
 int main(void) {
   uint16_t placement_cells[3] = {0xffff, 0xffff, 0xffff};
+  if (!Dkc3VideoUsesUnderwaterSubscreenTint(
+          0x09, 0x04, 0x13, 0x04, 0x00, 0x00000300, 0x00, 0xff,
+          0x02, 0x64, 0x0000) ||
+      !Dkc3VideoUsesUnderwaterSubscreenTint(
+          0x09, 0x05, 0x12, 0x04, 0x00, 0x00000300, 0x00, 0xff,
+          0x02, 0x64, 0x0000) ||
+      !Dkc3VideoUsesUnderwaterSubscreenTint(
+          0x09, 0x15, 0x02, 0x04, 0x00, 0x00000300, 0x00, 0xff,
+          0x02, 0x64, 0x0000) ||
+      !Dkc3VideoUsesUnderwaterSubscreenTint(
+          0x09, 0x17, 0x13, 0x04, 0x00, 0x00000300, 0x00, 0xff,
+          0x02, 0x64, 0x0000) ||
+      Dkc3VideoUsesUnderwaterSubscreenTint(
+          0x09, 0x14, 0x03, 0x04, 0x00, 0x00000300, 0x00, 0xff,
+          0x02, 0x64, 0x0000)) {
+    fprintf(stderr, "FAIL: underwater subscreen tint signature\n");
+    return 1;
+  }
+  /* The fill's premise is a native subscreen row with no transparent
+   * pixel; the margins' transparent pixels then take the folded native
+   * column. Margins: 0..3 and 260..263; native: 4..259, all opaque. */
+  uint16_t subscreen[264];
+  for (size_t index = 0; index < 264; index++)
+    subscreen[index] = index >= 4 && index < 260 ? 0x0501 : 0x0500;
+  subscreen[4] = 0x2101;
+  subscreen[5] = 0x2202;
+  subscreen[6] = 0x2303;
+  subscreen[7] = 0x2404;
+  subscreen[256] = 0x1101;
+  subscreen[257] = 0x1202;
+  subscreen[258] = 0x1303;
+  subscreen[259] = 0x1404;
+  subscreen[261] = 0x3305;
+  subscreen[263] = 0x3406;
+  if (Dkc3VideoRepeatTransparentSubscreenMargins(
+          subscreen, 264, 4, 4, 4) != 6 ||
+      subscreen[0] != 0x1101 || subscreen[1] != 0x1202 ||
+      subscreen[2] != 0x1303 || subscreen[3] != 0x1404 ||
+      subscreen[260] != 0x2101 || subscreen[261] != 0x3305 ||
+      subscreen[262] != 0x2303 || subscreen[263] != 0x3406 ||
+      Dkc3VideoRepeatTransparentSubscreenMargins(
+          subscreen, 263, 4, 4, 4) != 0) {
+    fprintf(stderr, "FAIL: transparent subscreen margin repeat\n");
+    return 1;
+  }
+  /* A native row with a transparent subscreen pixel (open water with no
+   * reflection behind it) is not the fill's case: a transparent margin
+   * pixel there is authored and stays. */
+  for (size_t index = 0; index < 264; index++)
+    subscreen[index] = index >= 4 && index < 260 ? 0x0501 : 0x0500;
+  subscreen[100] = 0x0500;
+  if (Dkc3VideoRepeatTransparentSubscreenMargins(
+          subscreen, 264, 4, 4, 4) != 0 ||
+      subscreen[0] != 0x0500 || subscreen[263] != 0x0500) {
+    fprintf(stderr, "FAIL: partially covered subscreen row must not fill\n");
+    return 1;
+  }
   Dkc3VideoSetWidescreen(false);
   if (Dkc3VideoIsWidescreen() ||
       Dkc3VideoGetAspect() != kDkc3VideoAspectNative ||

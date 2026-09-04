@@ -126,6 +126,7 @@ one 256-pixel page early until it was.
 | Margins look like the native line repeated on a scrolling layer | band dump: per-band h/v vs frame-start | HDMA sets the scroll per line; phase must come from the bands (Slime Climb) |
 | Parallax or foreground cut at the 4:3 edges | band dump: the band's map, whether it was written recently, its period | static 64-column plane repeated at 256 (Red-Hot Ride rocks); needs the plane policy |
 | A "sprite" cut at the edge that is not in OAM | layer-isolated render, then that map's populated pages | object plane on a BG (Kackle) |
+| Water surface flatter or bluer in the margins, hard top edge where the native shows a reflection | ring diff over travel per row; compare the second layer's rows with the map decode at every row offset | a second layer that streams a strip of the level map (the reflection) over a static backdrop; alias at the verified offset, plane by row-level stamps (the river) |
 | Texture flashes for a frame at the edge | signature search across a scripted run, then the band dump at that frame | band policy or phase for one band |
 | Effect present in no isolated layer | VRAM map diffs across frames | sub-screen BG under color math (lava steam) |
 | Rope, steam, or another streamed effect ends falsely in a margin | is the ring ever valid beside the view for this layer? | zero-lead streamer; decode the ROM map into its own store layer and verify per frame (rigging, geysers) |
@@ -200,6 +201,15 @@ keys, prefill rows, band classification) on that one phase; mixing phases
 turns an 8-pixel boundary into a 31-row wrap.
 
 ### 6.4 Band policy
+
+A second layer at the terrain phase is not the terrain until its rows
+verify against the level map: equal to the decode at one row offset in
+nine of ten non-empty cells over the native columns. A verified offset
+makes the band an alias of the terrain store that many rows away, with
+the prefill decoding those source rows for the margins; the terrain ring
+shown on the other index verifies trivially at zero. Track map rows for
+change individually so a map that streams a few rows keeps its authored
+rows as a plane.
 
 A 64-column map that is not the terrain stream's destination, has had no
 VRAM write since the camera last traveled 24 px, and whose rows continue
@@ -355,8 +365,12 @@ sub-screen color-math layers entirely.
 - `pkill` once left the old app running and `open` refocused it; kill by
   pid and confirm the new pid's start time.
 - The 30-second SDL smoke timeouts fire if anything else is compiling.
-- The PPU's layer mask did not isolate sprites in one attempt (a black
-  frame); the OAM trace answered the question instead.
+- A render with `SNESRECOMP_LAYER_MASK` set changes the margins even when
+  the mask keeps every layer (10,614 margin pixels differed at the river,
+  none native), and it did not isolate sprites at all. Use masked renders
+  to identify a layer; judge margins only on unmasked renders, and prove
+  a difference between the app and the runner with the app's own hidden
+  screenshot before suspecting the upscaler.
 - A `DKC3_PREFILL_DUMP` keyed on the host frame prints nothing; it keys on
   the game's own frame counter.
 - The generated emitter duplicates shared blocks into every unit that

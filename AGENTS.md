@@ -35,3 +35,9 @@ make every milestone reproducible.
    `docs/BRINGUP.md`, and keep `README.md` current.
 6. Report unverified work as unverified. The Windows host is carried over
    from DKC2Recomp and has not been built here.
+7. Adaptations of generated code live only in
+   `scripts/apply_dkc3_widescreen_overrides.py`, which
+   `scripts/generate_snesrecomp.py` runs after emitting and which fails
+   closed when a generated anchor moves. Every widened window must be
+   shown against the native behavior (`DKC3_CULL_WIDEN=0`) before it is
+   recorded.

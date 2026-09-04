@@ -16,7 +16,9 @@ data, generated code, or extracted assets are stored in this repository.
 ## Status
 
 Bring-up. See [docs/BRINGUP.md](docs/BRINGUP.md) for the dated record of
-what runs and what has been verified. Levels present wide at 16:10 and
+what runs and what has been verified, and
+[docs/WIDESCREEN_GUIDE.md](docs/WIDESCREEN_GUIDE.md) for how the widened
+presentation works and how its defects are diagnosed and fixed. Levels present wide at 16:10 and
 16:9 with DKC2Recomp's terrain reconstruction driven by DKC3's own level
 map, verified on Lakeside Limbo; screens the map does not cover center the
 native frame between black margins. Placed objects, the sprite renderer's

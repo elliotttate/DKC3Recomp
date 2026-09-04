@@ -23,7 +23,8 @@ make every milestone reproducible.
 ## Required workflow
 
 1. Read `docs/BRINGUP.md` before changing the adapter, the ingester, or the
-   build.
+   build, and `docs/WIDESCREEN_GUIDE.md` before changing anything the
+   widened presentation depends on.
 2. Add unit tests for public behavior. Use hashes and external ROM paths for
    private integration checks; the suite must pass without a ROM.
 3. The 65816 interpreter in the snesrecomp runtime is the correctness oracle

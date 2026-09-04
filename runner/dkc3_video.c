@@ -74,6 +74,9 @@ void Dkc3VideoSetAspect(Dkc3VideoAspect aspect) {
     case kDkc3VideoAspect16x9:
       g_ws_extra = kDkc3VideoWidescreenExtra;
       break;
+    case kDkc3VideoAspect21x9:
+      g_ws_extra = kDkc3Video21x9Extra;
+      break;
     case kDkc3VideoAspectNative:
     default:
       g_ws_extra = 0;
@@ -101,6 +104,10 @@ bool Dkc3VideoAspectFromName(const char *name, Dkc3VideoAspect *aspect) {
     *aspect = kDkc3VideoAspect16x9;
     return true;
   }
+  if (strcmp(name, "21:9") == 0 || strcmp(name, "3") == 0) {
+    *aspect = kDkc3VideoAspect21x9;
+    return true;
+  }
   return false;
 }
 
@@ -110,6 +117,8 @@ const char *Dkc3VideoAspectName(Dkc3VideoAspect aspect) {
       return "16:10";
     case kDkc3VideoAspect16x9:
       return "16:9";
+    case kDkc3VideoAspect21x9:
+      return "21:9";
     case kDkc3VideoAspectNative:
     default:
       return "4:3";

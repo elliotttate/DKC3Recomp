@@ -28,6 +28,16 @@ enum {
   kDkc3VideoWidescreenExtra = 43,
   kDkc3VideoWidescreenWidth =
       kDkc3VideoNativeWidth + 2 * kDkc3VideoWidescreenExtra,
+  /*
+   * Exact 21:9 would be 448x224 after the SNES 7:6 pixel aspect ratio, but
+   * 96 columns per side exceeds the shared runtime's safe nine-bit OAM limit
+   * by one. 95 columns per side gives the nearest symmetric safe width:
+   * 446x224, or about 20.91:9 on the display grid.
+   */
+  kDkc3Video21x9Extra = 95,
+  kDkc3Video21x9Width =
+      kDkc3VideoNativeWidth + 2 * kDkc3Video21x9Extra,
+  kDkc3VideoMaximumWidth = kDkc3Video21x9Width,
   kDkc3VideoBytesPerPixel = 4,
   /*
    * DKC3 can advance a scanline band's alternate terrain phase a few pixels
@@ -50,6 +60,7 @@ typedef enum Dkc3VideoAspect {
   kDkc3VideoAspectNative = 0,
   kDkc3VideoAspect16x10,
   kDkc3VideoAspect16x9,
+  kDkc3VideoAspect21x9,
   kDkc3VideoAspectCount,
 } Dkc3VideoAspect;
 

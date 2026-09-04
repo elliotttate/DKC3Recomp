@@ -50,7 +50,7 @@
 #endif
 
 enum {
-  kFrameBufferWidth = kDkc3VideoWidescreenWidth,
+  kFrameBufferWidth = kDkc3VideoMaximumWidth,
   kFrameHeight = kDkc3VideoHeight,
   kBytesPerPixel = 4,
   kAudioRate = 32040,
@@ -507,6 +507,10 @@ static uint32_t ApplyMacCommands(SdlHost *host,
     settings->aspect_index = kDkc3VideoAspect16x9;
     settings_changed = true;
   }
+  if (commands & kDkc3MacCommandAspect21x9) {
+    settings->aspect_index = kDkc3VideoAspect21x9;
+    settings_changed = true;
+  }
   if (settings_changed) {
     settings->widescreen =
         settings->aspect_index != kDkc3VideoAspectNative;
@@ -632,7 +636,7 @@ static int RunGame(const char *rom_path,
   bool aspect_override_active = aspect_override && *aspect_override;
   if (aspect_override_active &&
       !Dkc3VideoAspectFromName(aspect_override, &aspect)) {
-    ShowError("DKC3_ASPECT must be 4:3, 16:10, or 16:9");
+    ShowError("DKC3_ASPECT must be 4:3, 16:10, 16:9, or 21:9");
     return 2;
   }
   const char *widescreen_override = getenv("DKC3_WIDESCREEN");

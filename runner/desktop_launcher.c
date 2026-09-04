@@ -361,7 +361,8 @@ int Dkc3LauncherRun(RecompLauncherCSettings *settings,
   game.num_known_sha256 = sizeof known_sha256 / sizeof known_sha256[0];
   game.widescreen_supported = 0;
   static const char *const aspect_labels[] = {
-      "4:3 (Native)", "16:10 (Mac)", "16:9 (Widescreen)"};
+      "4:3 (Native)", "16:10 (Mac)", "16:9 (Widescreen)",
+      "21:9 (Ultrawide)"};
   game.aspect_labels = aspect_labels;
   game.num_aspect_labels =
       (int)(sizeof aspect_labels / sizeof aspect_labels[0]);

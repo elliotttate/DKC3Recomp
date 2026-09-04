@@ -18,12 +18,16 @@ data, generated code, or extracted assets are stored in this repository.
 Bring-up. See [docs/BRINGUP.md](docs/BRINGUP.md) for the dated record of
 what runs and what has been verified, and
 [docs/WIDESCREEN_GUIDE.md](docs/WIDESCREEN_GUIDE.md) for how the widened
-presentation works and how its defects are diagnosed and fixed. Levels present wide at 16:10 and
-16:9 with DKC2Recomp's terrain reconstruction driven by DKC3's own level
-map, verified on Lakeside Limbo; screens the map does not cover center the
-native frame between black margins. Placed objects, the sprite renderer's
-culls, and the static banana arcs are widened to the presented view by
-`scripts/apply_dkc3_widescreen_overrides.py`, verified on Lakeside Limbo.
+presentation works and how its defects are diagnosed and fixed. Levels present
+wide at 16:10, 16:9, and the selectable 21:9 ultrawide mode with DKC2Recomp's
+terrain reconstruction driven by DKC3's own level map, verified on Lakeside
+Limbo.
+The 21:9 option uses the nearest symmetric width that preserves the shared
+runtime's safe sprite coordinate range: 446x224, or approximately 20.91:9.
+Screens the map does not cover center the native frame between black margins.
+Placed objects, the sprite renderer's culls, and the static banana arcs are
+widened to the presented view by `scripts/apply_dkc3_widescreen_overrides.py`,
+verified on Lakeside Limbo.
 Murky Mill's HDMA-windowed BG3 light cones are evaluated across the physical
 widescreen span instead of being clipped and repeated at the native edges,
 verified at the reported quick-save state in both 16:10 and 16:9.
@@ -34,6 +38,10 @@ Download `DKC3Recomp-v0.0.2-macOS-arm64.zip` from
 [Releases](../../releases), extract it, and open `DKC3Recomp.app`. Select your
 own legally obtained North American (En,Fr) ROM in the launcher; the ROM stays
 at its original path and is never copied into the application bundle.
+
+The published v0.0.2 bundle includes the Murky Mill light-window fix. The
+21:9 option described above is the next source version and is not part of
+that immutable release.
 
 This release is an Apple-silicon alpha for macOS 26 or newer. The app is
 ad-hoc signed rather than notarized, so if Gatekeeper blocks the first launch,

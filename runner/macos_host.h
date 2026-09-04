@@ -16,6 +16,7 @@ enum {
   kDkc3MacCommandAspect16x10 = 1u << 7,
   kDkc3MacCommandAspect16x9 = 1u << 8,
   kDkc3MacCommandQuit = 1u << 9,
+  kDkc3MacCommandAspect21x9 = 1u << 10,
 };
 
 /* Select a writable per-user directory and return the absolute launcher asset

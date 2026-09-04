@@ -640,7 +640,8 @@ static void DrawSettingsPage(Dkc3DesktopOverlay *overlay) {
         "shading turns shading bands into gradients.");
   }
   static const char *aspect_labels[] = {
-      "4:3 (Native)", "16:10 (Mac)", "16:9 (Widescreen)"};
+      "4:3 (Native)", "16:10 (Mac)", "16:9 (Widescreen)",
+      "21:9 (Ultrawide)"};
   if (settings.aspect_index < kDkc3VideoAspectNative ||
       settings.aspect_index >= kDkc3VideoAspectCount)
     settings.aspect_index = kDkc3VideoAspectNative;

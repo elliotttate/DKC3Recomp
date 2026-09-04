@@ -20,7 +20,7 @@
  * frames with no window or audio device and report hashes and statistics.
  *
  * Environment:
- *   DKC3_ASPECT=4:3|16:10|16:9     presentation width (default 4:3)
+ *   DKC3_ASPECT=4:3|16:10|16:9|21:9 presentation width (default 4:3)
  *   DKC3_SRAM_INPUT=<file>          exact battery-save image to start from
  *   DKC3_SAVESTATE_INPUT=<file>     quick save to restore after boot
  *   SNESRECOMP_INPUT_PLAY=<file>    scripted input ("MASK * N" lines)
@@ -130,7 +130,7 @@ int main(int argc, char **argv) {
     const char *aspect_text = getenv("DKC3_ASPECT");
     if (aspect_text && *aspect_text &&
         !Dkc3VideoAspectFromName(aspect_text, &aspect)) {
-      fprintf(stderr, "DKC3_ASPECT must be 4:3, 16:10, or 16:9\n");
+      fprintf(stderr, "DKC3_ASPECT must be 4:3, 16:10, 16:9, or 21:9\n");
       free(rom);
       return 2;
     }
@@ -172,7 +172,7 @@ int main(int argc, char **argv) {
   }
 
   enum {
-    kBufferWidth = kDkc3VideoWidescreenWidth,
+    kBufferWidth = kDkc3VideoMaximumWidth,
     kHeight = kDkc3VideoHeight,
     kBytesPerPixel = kDkc3VideoBytesPerPixel
   };

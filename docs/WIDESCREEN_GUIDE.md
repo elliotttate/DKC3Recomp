@@ -37,7 +37,10 @@ condenses.
 ## 2. The model on one page
 
 **Geometry.** 16:10 adds 26 source columns per side (308x224), 16:9 adds
-43 (342x224). The authentic center is never scaled.
+43 (342x224), and the selectable 21:9 mode adds 95 (446x224). Exact 21:9
+would be 448x224 after the SNES 7:6 pixel aspect ratio, but its 96-pixel
+margins exceed the shared runtime's safe nine-bit OAM coordinate range by
+one pixel per side. The authentic center is never scaled.
 
 **Ring versus world.** The cartridge scrolls a rolling 64x32 tilemap (the
 ring) and streams columns into it as the camera moves. Columns beside the
@@ -329,8 +332,8 @@ sub-screen color-math layers entirely.
 - The glide compared against reflect per world column on a biased state.
 - Zoomed crops of every corpus state that changed.
 - The unit suite, the ROM-backed headless boot, and the hidden app smoke
-  runs at 4:3, 16:10, and with a quick-state load. The smoke runs use the
-  bundle inside the headless build tree; rebuild every target there.
+  runs at 4:3, 16:10, 21:9, and with a quick-state load. The smoke runs use
+  the bundle inside the headless build tree; rebuild every target there.
 - The app rebuilt, the old process killed by pid, the new one confirmed
   newer than the bundle.
 

@@ -1833,8 +1833,10 @@ void Dkc3DrawPpuFrame(void) {
      * Every enabled bounded (32-column) background repeats its rendered
      * native scanline into the margins. That is exactly what a wider PPU
      * would draw from a map that wraps at 256 pixels, including its HDMA
-     * phase, windows, and color-math participation. Rolling 64-column
-     * layers are handled per scanline band below.
+     * phase and color-math participation. Windowed bounded layers are in the
+     * physical-wide mask above so their screen-space clips are evaluated at
+     * the presented positions. Rolling 64-column layers are handled per
+     * scanline band below.
      */
     /*
      * A bounded layer the cartridge enables only inside an HDMA band (the

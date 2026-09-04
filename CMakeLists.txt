@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(dkc3_port
-    VERSION 0.0.2
+    VERSION 0.0.3
     DESCRIPTION "Native PC recompilation of Donkey Kong Country 3"
     LANGUAGES C)
 
@@ -321,6 +321,22 @@ if(DKC3_BUILD_SNESRECOMP)
             LABELS "private;integration;native;desktop;macos;widescreen"
             PASS_REGULAR_EXPRESSION
                 "result=desktop_completed frames=90.*host=sdl2"
+            TIMEOUT 30)
+
+        add_test(NAME supplied_rom_macos_21x9_smoke
+            COMMAND ${CMAKE_COMMAND} -E env
+                DKC3_DESKTOP_TEST_FRAMES=90
+                DKC3_DESKTOP_TEST_HIDDEN=1
+                DKC3_DESKTOP_DISABLE_SRAM=1
+                DKC3_USER_DIR=${CMAKE_CURRENT_BINARY_DIR}/macos-test-user-21x9
+                DKC3_ASPECT=21:9
+                SNESRECOMP_NO_LAUNCHER=1
+                "$<TARGET_FILE:dkc3_snesrecomp_sdl>"
+                "${DKC3_ROM}")
+        set_tests_properties(supplied_rom_macos_21x9_smoke PROPERTIES
+            LABELS "private;integration;native;desktop;macos;widescreen"
+            PASS_REGULAR_EXPRESSION
+                "Video:.*aspect=21:9 .446x224."
             TIMEOUT 30)
 
         add_test(NAME supplied_rom_macos_quick_state_smoke

@@ -31,6 +31,12 @@ int main(void) {
     fprintf(stderr, "FAIL: 342x224 widescreen viewport\n");
     failures++;
   }
+  if (!Dkc3DesktopComputeViewport(3440, 1440, 446, 224, &viewport) ||
+      viewport.x != 47 || viewport.y != 0 ||
+      viewport.width != 3345 || viewport.height != 1440) {
+    fprintf(stderr, "FAIL: 446x224 ultrawide viewport\n");
+    failures++;
+  }
   if (Dkc3DesktopComputeViewport(0, 240, 256, 224, &viewport) ||
       Dkc3DesktopComputeViewport(320, -1, 256, 224, &viewport) ||
       Dkc3DesktopComputeViewport(320, 240, 0, 224, &viewport) ||

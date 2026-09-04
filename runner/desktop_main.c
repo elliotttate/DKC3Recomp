@@ -40,7 +40,7 @@
 #endif
 
 enum {
-  kFrameBufferWidth = kDkc3VideoWidescreenWidth,
+  kFrameBufferWidth = kDkc3VideoMaximumWidth,
   kFrameHeight = kDkc3VideoHeight,
   kBytesPerPixel = 4,
   kAudioRate = 32040,
@@ -751,7 +751,7 @@ static int RunDesktop(const char *rom_path,
   bool aspect_override_active = aspect_override && *aspect_override;
   if (aspect_override_active &&
       !Dkc3VideoAspectFromName(aspect_override, &aspect)) {
-    fprintf(stderr, "DKC3_ASPECT must be 4:3, 16:10, or 16:9\n");
+    fprintf(stderr, "DKC3_ASPECT must be 4:3, 16:10, 16:9, or 21:9\n");
     return 2;
   }
   const char *widescreen_override = getenv("DKC3_WIDESCREEN");

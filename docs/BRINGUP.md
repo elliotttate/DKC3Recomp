@@ -369,3 +369,35 @@ or newer by the bundled SDL2 binary. The source-only repository and release
 bundle contain no ROM, saves, generated C, screenshots, music, or extracted
 game assets. Full-game traversal, Intel Macs, notarization, and Windows remain
 unverified.
+
+## 2026-09-03 - selectable 21:9 ultrawide mode
+
+After publishing v0.0.2, the aspect selector gained a fourth, appended value
+so the existing persisted indices for 4:3, 16:10, and 16:9 remain unchanged.
+The launcher, in-game overlay, macOS View menu, `DKC3_ASPECT` environment
+override, SDL host, Windows host, and headless host all accept 21:9. Host frame
+buffers now allocate the maximum supported width rather than the old 16:9
+width.
+
+Exact 21:9 at the SNES 7:6 pixel aspect ratio is 448x224, which needs 96
+source pixels per side. The shared runtime's proven-safe nine-bit OAM limit is
+95, because sprites in the added right margin still need a representable X
+coordinate. The option therefore uses the nearest symmetric safe width,
+446x224 (approximately 20.91:9), and remains labeled 21:9 (Ultrawide) in the
+UI. The `snesrecomp` submodule was not changed.
+
+**Result.** The geometry unit test covers parsing, the stable enum values,
+446x224 allocation, 95-pixel margins, edge reflection, cull expansion, and
+the two-pixel difference from exact 21:9. A ROM-backed hidden SDL smoke
+reported `aspect=21:9 (446x224)`. At the preserved Lakeside Limbo state the
+wide frame was terrain-ready with every present native and margin cell
+matching the decoded level map. With cull widening disabled, its 256x224
+native window at the glide-adjusted offset was pixel-identical to 4:3, and
+WRAM, VRAM, CGRAM, and OAM hashes matched. A 180-frame right-input replay
+remained terrain-ready at its final frame with all 1,829 present cells and all
+868 margin cells matching; the resulting frame showed continuous boardwalk,
+mountains, water, and objects through both margins.
+
+The published v0.0.2 release remains unchanged and does not contain this
+follow-on option. Traversal across the whole game, crowded-screen OAM behavior
+at the maximum width, and the carried-over Windows host remain unverified.

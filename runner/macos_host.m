@@ -19,6 +19,7 @@ typedef enum Dkc3MacMenuItemIndex {
   kDkc3MacItemAspectNative,
   kDkc3MacItemAspect16x10,
   kDkc3MacItemAspect16x9,
+  kDkc3MacItemAspect21x9,
   kDkc3MacItemCount,
 } Dkc3MacMenuItemIndex;
 
@@ -223,6 +224,9 @@ void Dkc3MacInstallMenu(void) {
     AddCommand(aspect, @"Widescreen 16:9 (342x224)",
                kDkc3MacCommandAspect16x9, @"", 0,
                kDkc3MacItemAspect16x9);
+    AddCommand(aspect, @"Ultrawide 21:9 (446x224)",
+               kDkc3MacCommandAspect21x9, @"", 0,
+               kDkc3MacItemAspect21x9);
     AddSubmenu(view, @"Aspect Ratio", aspect);
     AddSubmenu(bar, @"View", view);
 
@@ -248,6 +252,8 @@ void Dkc3MacUpdateMenu(bool fullscreen, bool linear_filter, int aspect) {
         aspect == 1 ? NSControlStateValueOn : NSControlStateValueOff;
     s_menu_items[kDkc3MacItemAspect16x9].state =
         aspect == 2 ? NSControlStateValueOn : NSControlStateValueOff;
+    s_menu_items[kDkc3MacItemAspect21x9].state =
+        aspect == 3 ? NSControlStateValueOn : NSControlStateValueOff;
     s_menu_items[kDkc3MacItemQuickSave].enabled = YES;
     s_menu_items[kDkc3MacItemQuickLoad].enabled = YES;
   }

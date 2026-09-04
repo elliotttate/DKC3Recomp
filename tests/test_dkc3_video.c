@@ -86,9 +86,14 @@ int main(void) {
   }
 
   Dkc3VideoAspect parsed_aspect = kDkc3VideoAspectNative;
-  if (!Dkc3VideoAspectFromName("16:10", &parsed_aspect) ||
+  if (kDkc3VideoAspectNative != 0 || kDkc3VideoAspect16x10 != 1 ||
+      kDkc3VideoAspect16x9 != 2 || kDkc3VideoAspect21x9 != 3 ||
+      !Dkc3VideoAspectFromName("16:10", &parsed_aspect) ||
       parsed_aspect != kDkc3VideoAspect16x10 ||
       strcmp(Dkc3VideoAspectName(parsed_aspect), "16:10") != 0 ||
+      !Dkc3VideoAspectFromName("21:9", &parsed_aspect) ||
+      parsed_aspect != kDkc3VideoAspect21x9 ||
+      strcmp(Dkc3VideoAspectName(parsed_aspect), "21:9") != 0 ||
       Dkc3VideoAspectFromName("wide", &parsed_aspect)) {
     fprintf(stderr, "FAIL: aspect vocabulary\n");
     return 1;
@@ -449,6 +454,36 @@ int main(void) {
     fprintf(stderr,
             "FAIL: widescreen geometry is not within one pixel of 16:9\n");
     return 1;
+  }
+
+  Dkc3VideoSetAspect(kDkc3VideoAspect21x9);
+  Dkc3VideoSetTerrainReady(true);
+  Dkc3VideoSetEdgePolicy(kDkc3VideoEdgeReflect);
+  if (!Dkc3VideoIsWidescreen() ||
+      Dkc3VideoGetAspect() != kDkc3VideoAspect21x9 ||
+      Dkc3VideoWidth() != kDkc3Video21x9Width ||
+      Dkc3VideoWidth() != kDkc3VideoMaximumWidth ||
+      Dkc3VideoExtra() != kDkc3Video21x9Extra ||
+      kDkc3Video21x9Extra != 95 ||
+      Dkc3VideoExpandCullLeft(0x20) != 0x7f ||
+      Dkc3VideoExpandCullSpan(0x140) != 0x1fe ||
+      !CheckMargins(0x0100, 0x0800, 0, 95, 95) ||
+      !CheckMargins(0x0800, 0x0800, 0, 95, 95) ||
+      Dkc3VideoPixelCount() !=
+          (size_t)kDkc3Video21x9Width * kDkc3VideoHeight) {
+    fprintf(stderr, "FAIL: 21:9 video geometry\n");
+    return 1;
+  }
+  {
+    /* Exact 21:9 needs 448 source pixels; the safe symmetric OAM limit is
+     * two pixels narrower, one per side. */
+    const int ultrawide_lhs = Dkc3VideoWidth() * 7 * 9;
+    const int ultrawide_rhs = kDkc3VideoHeight * 6 * 21;
+    const int ultrawide_error = ultrawide_rhs - ultrawide_lhs;
+    if (ultrawide_error != 2 * 7 * 9) {
+      fprintf(stderr, "FAIL: 21:9 safe-width geometry\n");
+      return 1;
+    }
   }
 
   {

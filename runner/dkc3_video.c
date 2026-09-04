@@ -1,4 +1,6 @@
 #include "dkc3_video.h"
+#include <stdio.h>
+#include <stdlib.h>
 
 #include <string.h>
 
@@ -332,20 +334,59 @@ int Dkc3VideoPresentationBias(void) {
  * right margin near a level's left wall (bias +extra) was released the
  * moment it passed the native span plus one margin while still on screen.
  */
+/* DKC3_CULL_WIDEN=0 keeps every cull and activation window native while
+ * the margins still present, for before/after comparisons. */
+static bool Dkc3VideoCullWidenEnabled(void) {
+  static int enabled = -1;
+  if (enabled < 0) {
+    const char *setting = getenv("DKC3_CULL_WIDEN");
+    enabled = (setting && setting[0] == '0') ? 0 : 1;
+  }
+  return enabled != 0;
+}
+
+/* DKC3_CULL_TRACE=1 prints the first widened calls of each helper. */
+static void Dkc3VideoCullTrace(const char *helper, unsigned native,
+                               unsigned widened) {
+  static int remaining = -1;
+  if (remaining < 0)
+    remaining = getenv("DKC3_CULL_TRACE") ? 12 : 0;
+  if (remaining > 0 && widened != native) {
+    remaining--;
+    fprintf(stderr, "cull %s native=%u widened=%u\n", helper, native,
+            widened);
+  }
+}
+
 uint16_t Dkc3VideoExpandCullLeft(uint16_t native_margin) {
-  if (!Dkc3VideoTerrainReady())
+  if (!Dkc3VideoTerrainReady() || !Dkc3VideoCullWidenEnabled())
     return native_margin;
   int left = g_ws_extra - s_presentation_bias;
   if (left < 0)
     left = 0;
   if (left > 2 * g_ws_extra)
     left = 2 * g_ws_extra;
+  Dkc3VideoCullTrace("left", native_margin, (unsigned)(native_margin + left));
   return (uint16_t)(native_margin + left);
 }
 
 uint16_t Dkc3VideoExpandCullSpan(uint16_t native_span) {
-  return (uint16_t)(native_span +
-                    (Dkc3VideoTerrainReady() ? 2 * g_ws_extra : 0));
+  const uint16_t widened = (uint16_t)(
+      native_span +
+      (Dkc3VideoTerrainReady() && Dkc3VideoCullWidenEnabled()
+           ? 2 * g_ws_extra : 0));
+  Dkc3VideoCullTrace("span", native_span, widened);
+  return widened;
+}
+
+/* A window expressed as a right edge (camera + $100 and the like) grows by
+ * what the span gains beyond the left margin: extra + bias. */
+uint16_t Dkc3VideoExpandCullRight(uint16_t native_right) {
+  const unsigned span = Dkc3VideoExpandCullSpan(0);
+  const unsigned left = Dkc3VideoExpandCullLeft(0);
+  const uint16_t widened = (uint16_t)(native_right + (span - left));
+  Dkc3VideoCullTrace("right", native_right, widened);
+  return widened;
 }
 
 uint16_t Dkc3VideoPromoteOamXHigh(uint16_t screen_x) {

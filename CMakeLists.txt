@@ -354,6 +354,11 @@ if(BUILD_TESTING)
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ingest_dkc3_disasm.py)
         set_tests_properties(dkc3_ingest_tool PROPERTIES
             LABELS "unit;tooling;recomp;portable")
+        add_test(NAME dkc3_widescreen_overrides
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_apply_dkc3_widescreen_overrides.py)
+        set_tests_properties(dkc3_widescreen_overrides PROPERTIES
+            LABELS "unit;tooling;widescreen;portable")
     endif()
 
     add_executable(test_desktop_input

@@ -32,6 +32,11 @@
  *   DKC3_STATE_TRACE=1              print game-state transitions
  *   DKC3_PREFILL_TRACE=1            print the widescreen prefill per frame
  *   DKC3_TRACE_PC=<hex pc24>        print CPU state at each hit of a PC
+ *   DKC3_OAM_TRACE=1                print, per frame, every sprite whose X
+ *                                   lies outside the native 256 columns
+ *   DKC3_SPAWN_TRACE=1              print each sprite slot the frame it
+ *                                   comes alive, with its camera-relative
+ *                                   position
  */
 
 static void PrintHash(FILE *stream, const uint8_t hash[32]) {
@@ -253,6 +258,9 @@ int main(int argc, char **argv) {
   const char *savestate_input = getenv("DKC3_SAVESTATE_INPUT");
   bool savestate_pending = savestate_input && *savestate_input;
 
+  const bool oam_trace = getenv("DKC3_OAM_TRACE") != NULL;
+  const bool spawn_trace = getenv("DKC3_SPAWN_TRACE") != NULL;
+  uint16_t spawn_state[24] = {0};
   for (long frame = 0; frame < frame_limit; frame++) {
     if (savestate_pending && frame == 2) {
       savestate_pending = false;
@@ -269,6 +277,40 @@ int main(int argc, char **argv) {
     }
     uint32_t _in = Dkc3InputPlaybackFrame(&input_playback, (size_t)frame);
     RtlRunFrame(_in);
+    if (spawn_trace) {
+      const uint16_t camera_x = ReadWram16(0x196d);
+      const uint16_t camera_y = ReadWram16(0x1973);
+      for (int slot = 0; slot < 24; slot++) {
+        const unsigned base = 0x0878u + (unsigned)slot * 0x6eu;
+        const uint16_t state = ReadWram16(base);
+        if (state != 0 && spawn_state[slot] == 0) {
+          fprintf(stderr,
+                  "spawn frame=%ld slot=%d dx=%d dy=%d handler=%04x param=%04x\n",
+                  frame, slot, (int)ReadWram16(base + 0x12) - (int)camera_x,
+                  (int)ReadWram16(base + 0x16) - (int)camera_y,
+                  ReadWram16(base + 2), ReadWram16(base + 0x0a));
+        }
+        spawn_state[slot] = state;
+      }
+    }
+    if (oam_trace) {
+      /* Decode OAM X the way the PPU does for a widened frame: the ninth
+       * bit is positive up to 256 + extra, negative beyond. */
+      const int extra = Dkc3VideoExtra();
+      for (int index = 0; index < 128; index++) {
+        const uint8_t *entry = g_ppu->oam + index * 4;
+        int x = entry[0] |
+                (((g_ppu->highOam[index >> 2] >> ((index & 3) * 2)) & 1)
+                 << 8);
+        if (x >= 256 + extra)
+          x -= 512;
+        const int y = entry[1];
+        if (y >= 224 || (x >= 0 && x < 256))
+          continue;
+        fprintf(stderr, "oam frame=%ld index=%d x=%d y=%d tile=%02x attr=%02x\n",
+                frame, index, x, y, entry[2], entry[3]);
+      }
+    }
     if (g_fail) {
       fprintf(stderr,
               "snesrecomp reported an off-rails runtime failure at host "

@@ -193,6 +193,7 @@ int Dkc3VideoPresentationBias(void);
 
 uint16_t Dkc3VideoExpandCullLeft(uint16_t native_margin);
 uint16_t Dkc3VideoExpandCullSpan(uint16_t native_span);
+uint16_t Dkc3VideoExpandCullRight(uint16_t native_right);
 uint16_t Dkc3VideoPromoteOamXHigh(uint16_t screen_x);
 
 /*

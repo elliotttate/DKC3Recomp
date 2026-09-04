@@ -1630,7 +1630,46 @@ static void Dkc3ApplyBandPolicies(const Dkc3HdmaBand *band,
   }
 }
 
+/*
+ * The sprite renderer variant at $B7:A88F culls at SBC $196D / ADC #$0030 /
+ * CMP #$0160 ($B7:A8C8) exactly like the eight variants the override
+ * script widens in generated code, but the analysis leaves it to the
+ * interpreter, which reads those immediates from the ROM image. Widen them
+ * there: $30 by the configured margin and $160 by two margins, symmetric,
+ * without the glide bias the generated wrappers apply (a cull only decides
+ * whether a sprite reaches OAM, so a superset is harmless). Each write
+ * checks the bytes it replaces, so an image that does not hold the native
+ * or the previously widened operands is left alone.
+ */
+static void Dkc3PatchInterpreterCull(void) {
+  static int applied_extra = -1;
+  const int extra = Dkc3VideoExtra();
+  if (extra == applied_extra || !g_rom)
+    return;
+  enum { kLeftOperand = 0x37a8c9u, kSpanOperand = 0x37a8ccu };
+  const uint32_t rom_size = g_snes && g_snes->cart ? (uint32_t)g_snes->cart->romSize : 0;
+  if (rom_size < kSpanOperand + 2u)
+    return;
+  uint8_t *rom = (uint8_t *)(uintptr_t)g_rom;
+  const unsigned previous = applied_extra < 0 ? 0u : (unsigned)applied_extra;
+  const uint16_t expect_left = (uint16_t)(0x30u + previous);
+  const uint16_t expect_span = (uint16_t)(0x160u + 2u * previous);
+  if (rom[kLeftOperand] != (expect_left & 0xffu) ||
+      rom[kLeftOperand + 1] != (expect_left >> 8) ||
+      rom[kSpanOperand] != (expect_span & 0xffu) ||
+      rom[kSpanOperand + 1] != (expect_span >> 8))
+    return;
+  const uint16_t left = (uint16_t)(0x30u + (unsigned)extra);
+  const uint16_t span = (uint16_t)(0x160u + 2u * (unsigned)extra);
+  rom[kLeftOperand] = (uint8_t)(left & 0xffu);
+  rom[kLeftOperand + 1] = (uint8_t)(left >> 8);
+  rom[kSpanOperand] = (uint8_t)(span & 0xffu);
+  rom[kSpanOperand + 1] = (uint8_t)(span >> 8);
+  applied_extra = extra;
+}
+
 void Dkc3DrawPpuFrame(void) {
+  Dkc3PatchInterpreterCull();
   SimpleHdma channels[8];
   bool active[8] = {false};
   const Dkc3VideoLevelLayout layout =

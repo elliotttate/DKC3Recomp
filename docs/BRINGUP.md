@@ -243,3 +243,69 @@ expected values, and is closed.
 The "phantom roof" first suspected at the level's start was a misreading
 of edge crops: the glide bias there is 18 pixels, and the store serves
 the exposed ring columns correctly.
+
+## 2026-09-03 - objects activate and draw for the presented view
+
+At 16:9 the owner saw "a lot of things appear after they should": a
+Kremling popping in well inside the native area and a banana arc appearing
+only at the native edge, while 16:10 looked right. The cause is the same
+as in DKC2: the cartridge activates and culls against the 256-column
+screen, and at 16:10 its slack (32 pixels of activation, 48 of renderer
+cull) happens to cover the 26-pixel margin, but not 16:9's 43.
+
+DKC3 has three such systems, all now widened by
+`scripts/apply_dkc3_widescreen_overrides.py` in the generated units, the
+way DKC2Recomp does it, with helpers in `runner/dkc3_video.c`:
+
+- **Placement activation.** `$BB:AAD4` keeps an object whose world X lies
+  in [camera - Lx, camera - Lx + Wx) for the (Lx, Wx) row of `DATA_BBA8BE`
+  its placement parameter selects (spawn rows Lx = $20, despawn rows $28;
+  every row has Wx = 2 Lx + $100), and `$BB:A47A` scans the 256-pixel
+  spatial-hash cells that window covers before the compare runs. Both
+  read Lx at `$BB:A8BE+row` and Wx at `$BB:A8C0+row`; wrapping those two
+  reads (`Dkc3VideoExpandCullLeft`, `Dkc3VideoExpandCullSpan`) widens the
+  spawn and despawn windows together and keeps the cell scan consistent
+  with the compare. The interpreter never runs either routine here, so
+  the generated wrappers are the ones executing (`DKC3_TRACE_PC` at both
+  addresses reports no hits over 3,300 frames).
+- **Sprite renderer culls.** The renderer keeps a sprite whose
+  camera-relative X lies in [-$30, $130) at eight generated blocks (the
+  block at `$B7:8925` is inlined into eleven renderer variants, so nineteen
+  copies widen), and one variant at `$B7:8DFC` uses [-$10, $110). The
+  variant at `$B7:A88F` has no generated unit; `Dkc3PatchInterpreterCull`
+  in `dkc3_game.c` widens its two immediates in the in-memory ROM image
+  instead, checking the bytes it replaces. `$B6:F186`, the "is this sprite
+  on screen" test sprite behaviors call, widens the same way.
+- **Static tile-row objects.** `$B7:E4D6` builds a list at `$7E:6780` of
+  the level's static tile-row objects (the banana arcs; 21 in Lakeside
+  Limbo, from world X $7A0 on) and `$B7:E8E0` walks it every frame,
+  stopping at the first object starting at camera + $100 and skipping one
+  whose right end lies more than 15 pixels left of the screen. `$B7:E981`
+  draws one object, clipping its columns at the screen's left edge (the
+  $0F slack) and right edge (the $107), and takes OAM's ninth X bit from
+  bit 15 of a column's screen X, which native play only needs for
+  negative values. The right edges widen by `Dkc3VideoExpandCullRight`
+  (extra + bias), the left slacks by `Dkc3VideoExpandCullLeft`, and
+  `Dkc3VideoPromoteOamXHigh` mirrors bit 8 into bit 15 before the packing
+  sequence so columns in the right margin land on the right.
+
+**Result.** Over the 3,300-frame right-running script at 16:9
+(`DKC3_SPAWN_TRACE=1`, new), every right-side spawn landed 279 to 286
+pixels ahead of the camera with the widening off (`DKC3_CULL_WIDEN=0`,
+new) and 322 to 328 with it on, with left-side spawns now at -60. At the
+first banana arc (world $7A0), frames 748 to 780: with the widening off
+the Kremling pops in inside the native area at frame 764 and the arc
+appears at the native edge at frame 780; with it on the Kremling is
+already walking in the right margin at frame 748 and the arc slides in
+through the margin from frame 764, on the correct side. At 4:3 the run's
+hashes are identical with the widening off and on. `DKC3_OAM_TRACE=1`
+(new) prints every sprite outside the native columns per frame, and
+`DKC3_CULL_TRACE=1` the first widened helper calls.
+
+**Open.** `$B9:AA3F` tests "sprite fully on screen" ([0, $100) by X) for
+some behavior gated on `$05AF` bit 14 and runs in the interpreter; it is
+not widened. The level-specific spawner at `$BE:E27F` ([-$18, $118)) is
+gated off on this level and is not widened. Sprites at the widened view
+share the cartridge's OAM budget, so a screen crowded to the margins can
+drop sprites the native view would have drawn.
+

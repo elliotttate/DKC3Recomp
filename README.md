@@ -19,8 +19,9 @@ Bring-up. See [docs/BRINGUP.md](docs/BRINGUP.md) for the dated record of
 what runs and what has been verified. Levels present wide at 16:10 and
 16:9 with DKC2Recomp's terrain reconstruction driven by DKC3's own level
 map, verified on Lakeside Limbo; screens the map does not cover center the
-native frame between black margins. Placed objects still activate at the
-native screen's edge, which is the next piece of work.
+native frame between black margins. Placed objects, the sprite renderer's
+culls, and the static banana arcs are widened to the presented view by
+`scripts/apply_dkc3_widescreen_overrides.py`, verified on Lakeside Limbo.
 
 ## Building on macOS
 

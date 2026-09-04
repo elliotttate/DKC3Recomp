@@ -211,6 +211,24 @@ uint16_t Dkc3VideoExpandCullRight(uint16_t native_right);
 size_t Dkc3VideoPlacementScanCells(uint16_t native_cell_offset,
                                     uint16_t row_stride,
                                     uint16_t cell_offsets[3]);
+/* Match the exact PPU register signature of Floodlit Fish's underwater
+ * color-math composition. Keeping this as a pure, tested host policy avoids
+ * changing unrelated full-screen effects that also use BG3. */
+bool Dkc3VideoUsesUnderwaterSubscreenTint(
+    uint8_t bg_mode, uint8_t main_layers, uint8_t sub_layers,
+    uint8_t main_windowed, uint8_t sub_windowed, uint32_t window_select,
+    uint8_t window1_left, uint8_t window1_right,
+    uint8_t color_math_control, uint8_t color_math_layers,
+    uint16_t fixed_color);
+/* Fill only transparent subscreen pixels in the side margins from the
+ * corresponding native-screen pixel. When that wrapped sample is also empty,
+ * continue the nearest valid inner margin pixel outward before falling back
+ * to a native neighbor. This preserves valid adjacent-world pixels without a
+ * color boundary while giving full-screen half-color effects a backdrop to
+ * blend against when their authored subscreen ends at 256 pixels. */
+size_t Dkc3VideoRepeatTransparentSubscreenMargins(
+    uint16_t *pixels, size_t pixel_count, size_t native_offset,
+    unsigned left_margin, unsigned right_margin);
 uint16_t Dkc3VideoPromoteOamXHigh(uint16_t screen_x);
 
 /*

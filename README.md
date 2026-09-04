@@ -25,6 +25,19 @@ native frame between black margins. Placed objects, the sprite renderer's
 culls, and the static banana arcs are widened to the presented view by
 `scripts/apply_dkc3_widescreen_overrides.py`, verified on Lakeside Limbo.
 
+## Native macOS alpha release
+
+Download `DKC3Recomp-v0.0.1-macOS-arm64.zip` from
+[Releases](../../releases), extract it, and open `DKC3Recomp.app`. Select your
+own legally obtained North American (En,Fr) ROM in the launcher; the ROM stays
+at its original path and is never copied into the application bundle.
+
+This first release is an Apple-silicon alpha for macOS 26 or newer. The app is
+ad-hoc signed rather than notarized, so if Gatekeeper blocks the first launch,
+Control-click the app in Finder, choose **Open**, and confirm once. The project
+is still in bring-up: the tested boot, launcher, save-state, and Lakeside Limbo
+paths work, but full-game compatibility is not yet claimed.
+
 ## Building on macOS
 
 Requirements: CMake, Ninja, SDL2 (`brew install cmake ninja sdl2`), Python 3,
@@ -41,8 +54,8 @@ python3 scripts/generate_snesrecomp.py --rom /private/path/dkc3.sfc
 `generate_snesrecomp.py` verifies the ROM's hash, refreshes `recomp/funcs.h`,
 and emits the private recompiled units under `generated/` (ignored by Git).
 `build_macos.sh` builds `build/macos/DKC3Recomp.app` and the headless
-runner, bundles SDL2, and ad-hoc signs the app. Open the app and select the
-ROM in its launcher.
+runner, bundles SDL2, embeds the project icon, and ad-hoc signs the app. Open
+the app and select the ROM in its launcher.
 
 ## Headless validation
 

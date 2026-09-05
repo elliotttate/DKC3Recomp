@@ -337,17 +337,17 @@ int main(int argc, char **argv) {
        * bit is positive up to 256 + extra, negative beyond. */
       const int extra = Dkc3VideoExtra();
       for (int index = 0; index < 128; index++) {
-        const uint8_t *entry = g_ppu->oam + index * 4;
-        int x = entry[0] |
+        const uint16_t *entry = g_ppu->oam + index * 2;
+        int x = (entry[0] & 0xff) |
                 (((g_ppu->highOam[index >> 2] >> ((index & 3) * 2)) & 1)
                  << 8);
         if (x >= 256 + extra)
           x -= 512;
-        const int y = entry[1];
+        const int y = entry[0] >> 8;
         if (y >= 224 || (x >= 0 && x < 256))
           continue;
         fprintf(stderr, "oam frame=%ld index=%d x=%d y=%d tile=%02x attr=%02x\n",
-                frame, index, x, y, entry[2], entry[3]);
+                frame, index, x, y, entry[1] & 0xff, entry[1] >> 8);
       }
     }
     if (g_fail) {

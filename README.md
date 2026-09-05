@@ -6,7 +6,7 @@ game's code is statically recompiled to C by [snesrecomp](snesrecomp/README.md)
 from a bank configuration derived from a public disassembly, the shared
 snesrecomp runtime executes anything the analysis cannot prove through its
 65816 interpreter, and project-owned hosts present the game natively on
-macOS (and, unverified here, Windows).
+macOS and Linux (and, unverified here, Windows).
 
 You must supply your own DKC3 ROM. The supported image is the headerless
 North American (En,Fr) release, 4 MiB, SHA-256
@@ -82,6 +82,22 @@ and emits the private recompiled units under `generated/` (ignored by Git).
 `build_macos.sh` builds `build/macos/DKC3Recomp.app` and the headless
 runner, bundles SDL2, embeds the project icon, and ad-hoc signs the app. Open
 the app and select the ROM in its launcher.
+
+## Building on Linux
+
+Requires C/C++ compilers, CMake, Ninja, Python 3, Cargo, and SDL2/OpenGL
+development packages.
+
+```sh
+git submodule update --init --recursive
+python3 scripts/generate_snesrecomp.py --rom /private/path/dkc3.sfc
+cmake -S . -B build/linux -G Ninja -DCMAKE_BUILD_TYPE=Release -DDKC3_FETCH_SDL2=OFF
+cmake --build build/linux --target dkc3_snesrecomp_sdl dkc3_snesrecomp_headless
+./build/linux/DKC3Recomp /private/path/dkc3.sfc
+```
+
+Keep `build/linux/assets/` beside the executable. The existing launcher and
+Escape menu provide settings. See [docs/BRINGUP.md](docs/BRINGUP.md) for validation.
 
 ## Headless validation
 

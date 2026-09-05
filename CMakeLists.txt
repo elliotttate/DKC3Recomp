@@ -11,6 +11,11 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # Expose the runtime/launcher's POSIX APIs under strict C11.
+    add_compile_definitions("$<$<COMPILE_LANGUAGE:C>:_GNU_SOURCE>")
+endif()
+
 set(DKC3_ROM "" CACHE FILEPATH
     "Private path to a headerless DKC3 USA (En,Fr) ROM")
 set(DKC3_DESKTOP_ICON "" CACHE FILEPATH

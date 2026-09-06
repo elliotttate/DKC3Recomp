@@ -40,6 +40,7 @@
 
 #ifdef _WIN32
 #include <direct.h>
+#include "windows_menu.h"
 #define DKC3_MKDIR(path) _mkdir(path)
 #else
 #define DKC3_MKDIR(path) mkdir(path, 0755)
@@ -80,6 +81,10 @@ static const double kDisplayLockTolerance = 0.02;
 static const double kDisplayTickTimeoutSeconds = 0.05;
 
 typedef struct SdlHost {
+#ifdef _WIN32
+  Dkc3WindowsMenu *menu;
+  unsigned menu_command;
+#endif
   Dkc3SdlPresenter presenter;
   Dkc3DesktopColorFilter color_filter;
   SDL_AudioDeviceID audio_device;
@@ -196,6 +201,12 @@ static void RefreshControllers(SdlHost *host) {
 static void PumpEvents(SdlHost *host) {
   SDL_Event event;
   while (SDL_PollEvent(&event)) {
+    /* Window close is a host lifecycle event, even while the overlay consumes input. */
+    if (event.type == SDL_QUIT) { host->running = false; continue; }
+#ifdef _WIN32
+    unsigned menu_command = Dkc3WindowsMenuEvent(host->menu, &event);
+    if (menu_command) { host->menu_command = menu_command; continue; }
+#endif
     if (event.type == SDL_KEYDOWN && event.key.repeat == 0 &&
         event.key.keysym.scancode == SDL_SCANCODE_ESCAPE &&
         Dkc3DesktopEscapeExitsFullscreen(
@@ -209,7 +220,6 @@ static void PumpEvents(SdlHost *host) {
     bool consumed =
         Dkc3DesktopOverlayProcessSdlEvent(host->overlay, &event);
     if (consumed) continue;
-    if (event.type == SDL_QUIT) host->running = false;
     if (event.type == SDL_CONTROLLERDEVICEADDED ||
         event.type == SDL_CONTROLLERDEVICEREMOVED)
       RefreshControllers(host);
@@ -383,6 +393,10 @@ static void ResetAudio(SdlHost *host) {
 }
 
 static void ShutdownHost(SdlHost *host) {
+#ifdef _WIN32
+  Dkc3WindowsMenuDestroy(host->menu);
+  host->menu = NULL;
+#endif
   CloseControllers(host);
   if (host->audio_device) SDL_CloseAudioDevice(host->audio_device);
   Dkc3DesktopOverlayDestroy(host->overlay);
@@ -517,6 +531,58 @@ static uint32_t ApplyMacCommands(SdlHost *host,
     Dkc3DesktopOverlaySetSettings(host->overlay, settings);
   }
   return host_actions;
+}
+#endif
+
+#ifdef _WIN32
+static Dkc3MenuState WindowsMenuState(const SdlHost *host,
+                                      const RecompLauncherCSettings *settings) {
+  Dkc3MenuState state = {settings->aspect_index,
+      Dkc3LauncherUpscaler() == kDkc3UpscalerReconstruct
+          ? kDkc3UpscalerReconstruct : (settings->texture_filter ? 1 : 0),
+      Dkc3LauncherReconstructMode(), Dkc3LauncherWidescreenEdge(),
+      settings->screen_kind, Dkc3SdlPresenterIsFullscreen(&host->presenter)};
+  return state;
+}
+
+static uint32_t ApplyWindowsMenu(SdlHost *host,
+                                 RecompLauncherCSettings *settings) {
+  unsigned command = host->menu_command;
+  host->menu_command = 0;
+  if (!command) return 0;
+  if (command == kDkc3MenuPause) Dkc3DesktopOverlayToggle(host->overlay);
+  if (command == kDkc3MenuQuit) host->running = false;
+  if (command == kDkc3MenuAbout)
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "About DKC3Recomp",
+        "DKC3Recomp " DKC3_RELEASE_VERSION " - Windows SDL2/OpenGL\n"
+        "Native port foundation. Supply your own legally obtained ROM.\n"
+        "Game / Pause / Settings opens all display, audio, control and Assist options.",
+        (SDL_Window *)host->presenter.window);
+  if (command == kDkc3MenuSave) return kDkc3HostSaveState;
+  if (command == kDkc3MenuLoad) return kDkc3HostLoadState;
+  if (command == kDkc3MenuFullscreen) {
+    bool fullscreen = !Dkc3SdlPresenterIsFullscreen(&host->presenter);
+    if (Dkc3SdlPresenterSetFullscreen(&host->presenter, fullscreen)) {
+      settings->fullscreen = fullscreen ? 1 : 0;
+      Dkc3DesktopOverlaySetSettings(host->overlay, settings);
+    }
+  }
+  Dkc3MenuState state = WindowsMenuState(host, settings);
+  if (Dkc3MenuApply(&state, command)) {
+    settings->aspect_index = state.aspect;
+    settings->widescreen = state.aspect != kDkc3VideoAspectNative;
+    settings->screen_kind = state.screen;
+    if (state.upscaler != kDkc3UpscalerReconstruct)
+      settings->texture_filter = state.upscaler == kDkc3UpscalerBilinear;
+    Dkc3LauncherSetUpscaler(state.upscaler);
+    Dkc3LauncherSetReconstructMode(state.reconstruct);
+    Dkc3LauncherSetWidescreenEdge(state.edge);
+    Dkc3VideoSetEdgePolicy((Dkc3VideoEdgePolicy)state.edge);
+    Dkc3DesktopOverlaySetSettings(host->overlay, settings);
+  }
+  fprintf(stdout, "Windows menu: command=%u aspect=%d upscaler=%d reconstruct=%d\n",
+          command, state.aspect, state.upscaler, state.reconstruct);
+  return 0;
 }
 #endif
 
@@ -761,6 +827,17 @@ static int RunGame(const char *rom_path,
     ShowError("Unable to initialize the in-game overlay");
     return 4;
   }
+#ifdef _WIN32
+  host.menu = Dkc3WindowsMenuCreate(host.presenter.window);
+  if (!host.menu) {
+    free(rom);
+    ShutdownHost(&host);
+    ShowError("Unable to install the Windows Game / View menus");
+    return 4;
+  }
+  Dkc3MenuState initial_menu = WindowsMenuState(&host, settings);
+  Dkc3WindowsMenuUpdate(host.menu, &initial_menu);
+#endif
 #ifdef __APPLE__
   if (!host.hidden) {
     Dkc3MacInstallMenu();
@@ -915,8 +992,12 @@ static int RunGame(const char *rom_path,
     Dkc3DiagnosticsHeartbeat(host_frame, Dkc3ResumePc());
     host_report_crash_test_tick();
     uint32_t platform_host_actions = 0;
+#ifdef _WIN32
+    platform_host_actions = ApplyWindowsMenu(&host, settings);
+#endif
 #ifdef __APPLE__
     platform_host_actions = ApplyMacCommands(&host, settings);
+#endif
     if (test_save_load_requested && !test_save_injected &&
         host_frame >= 30) {
       platform_host_actions |= kDkc3HostSaveState;
@@ -943,7 +1024,6 @@ static int RunGame(const char *rom_path,
                 test_load_state_path);
       }
     }
-#endif
     SdlControls controls = ReadControls(&host);
     if (test_overlay_requested && !test_overlay_completed &&
         host_frame >= 30) {
@@ -969,6 +1049,10 @@ static int RunGame(const char *rom_path,
     if (overlay_actions & kDkc3OverlayActionLoadState)
       controls.host_actions |= kDkc3HostLoadState;
     ApplyOverlaySettings(&host, settings, &screen_filter);
+#ifdef _WIN32
+    Dkc3MenuState menu_state = WindowsMenuState(&host, settings);
+    Dkc3WindowsMenuUpdate(host.menu, &menu_state);
+#endif
     bool overlay_open = Dkc3DesktopOverlayIsOpen(host.overlay);
     if (overlay_open != previous_overlay_open) {
       ResetAudio(&host);
@@ -1381,8 +1465,14 @@ int main(int argc, char **argv) {
       (force_launcher || !settings.skip_launcher || !rom_path[0]);
   if (show_launcher) {
     char selected_rom[kPathCapacity] = {0};
+#ifdef _WIN32
+    Dkc3WindowsWatchTitlebars(true);
+#endif
     int action = Dkc3LauncherRun(&settings, rom_path, selected_rom,
                                  sizeof selected_rom, NULL, 0);
+#ifdef _WIN32
+    Dkc3WindowsWatchTitlebars(false);
+#endif
     if (action == 1) return 0;
     if (action == 0 && selected_rom[0])
       (void)snprintf(rom_path, sizeof rom_path, "%s", selected_rom);

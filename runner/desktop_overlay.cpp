@@ -640,7 +640,7 @@ static void DrawSettingsPage(Dkc3DesktopOverlay *overlay) {
         "shading turns shading bands into gradients.");
   }
   static const char *aspect_labels[] = {
-      "4:3 (Native)", "16:10 (Mac)", "16:9 (Widescreen)",
+      "4:3 (Native)", "16:10 (Widescreen)", "16:9 (Widescreen)",
       "21:9 (Ultrawide)"};
   if (settings.aspect_index < kDkc3VideoAspectNative ||
       settings.aspect_index >= kDkc3VideoAspectCount)
@@ -1029,7 +1029,7 @@ extern "C" void Dkc3DesktopOverlayRenderOpenGl(
                    ImGuiWindowFlags_NoCollapse |
                    ImGuiWindowFlags_NoSavedSettings);
   ImGui::TextColored(ImVec4(0.70f, 0.38f, 1.0f, 1.0f),
-                     "DONKEY KONG COUNTRY 2");
+                     "DONKEY KONG COUNTRY 3");
   ImGui::SameLine();
   ImGui::TextDisabled("| Native-port test");
   if (overlay->model.assist_tools) {

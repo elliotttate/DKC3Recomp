@@ -6,7 +6,7 @@ game's code is statically recompiled to C by [snesrecomp](snesrecomp/README.md)
 from a bank configuration derived from a public disassembly, the shared
 snesrecomp runtime executes anything the analysis cannot prove through its
 65816 interpreter, and project-owned hosts present the game natively on
-macOS (and, unverified here, Windows).
+macOS and Windows.
 
 You must supply your own DKC3 ROM. The supported image is the headerless
 North American (En,Fr) release, 4 MiB, SHA-256
@@ -46,7 +46,11 @@ tracking; and the first visible row of the margins now decodes like the
 rest instead of being blanked on tile boundaries. See
 [docs/BRINGUP.md](docs/BRINGUP.md) for the evidence.
 
-## Native macOS alpha release
+## Native macOS release
+
+The v0.0.5 release includes the new Windows x64 build and the unchanged
+v0.0.4 Mac archive below. The Mac source, menus, and display-link pacing are
+retained; the Mac binary has not been rebuilt for this Windows-focused release.
 
 Download `DKC3Recomp-v0.0.4-macOS-arm64.zip` from
 [Releases](../../releases), extract it, and open `DKC3Recomp.app`. Select your
@@ -58,11 +62,57 @@ river's second-layer reflection and backdrop in the margins, and the fix
 for the strip that flashed at the top of the margins; v0.0.3 carried 21:9
 and the adjacent-cell placement activation fix.
 
-This release is an Apple-silicon alpha for macOS 26 or newer. The app is
+This release is for Apple silicon running macOS 26 or newer. The app is
 ad-hoc signed rather than notarized, so if Gatekeeper blocks the first launch,
 Control-click the app in Finder, choose **Open**, and confirm once. The project
 is still in bring-up: the tested boot, launcher, save-state, and Lakeside Limbo
 paths work, but full-game compatibility is not yet claimed.
+
+## Building on Windows
+
+The Windows x64 SDL build has passed all 23 project tests, a 4,801-frame
+headless run, and a packaged launcher/visible-game smoke check. Full-game
+completion and hardware/controller coverage are not claimed.
+
+Requirements: Visual Studio 2022 with Desktop development with C++, CMake,
+and Python 3. Initialize the Git submodules before building. In PowerShell:
+
+```powershell
+python scripts/generate_snesrecomp.py --analysis-backend python --rom 'C:\private\dkc3.sfc'
+cmake -S . -B build-windows -G 'Visual Studio 17 2022' -A x64 `
+  -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DSNESRECOMP_SDL_BACKEND=SDL2 `
+  -DDKC3_ROM='C:\private\dkc3.sfc'
+cmake --build build-windows --config Release --parallel 4
+ctest --test-dir build-windows -C Release --output-on-failure
+```
+
+Run `build-windows/Release/DKC3RecompSDL.exe`. This is the shared SDL2/OpenGL
+host with 4:3, 16:10, 16:9, and 21:9 presentation, reconstruction upscaling,
+overlay, and audio rate control. Keep `SDL2.dll` and the `assets` directory
+beside the executable when moving it. Select your own ROM in the launcher.
+The separate `DKC3Recomp.exe` in the build directory is the legacy Win32 host;
+portable packages use the SDL executable renamed to `DKC3Recomp.exe`.
+
+The game window now has native **Game** and **View** dropdown menus matching
+the Mac's game commands: Pause / Settings, Quick Save, Quick Load, fullscreen,
+nearest/bilinear scaling, and all four aspect ratios. Windows also exposes
+reconstruction scaling, all five dither/edge-reconstruction levels, level-edge
+policies, and screen models in View submenus. Selections apply live and are
+remembered beside the executable. **Game > Pause / Settings > Settings** opens
+the same detailed sliders and dropdowns as the Mac overlay, including
+reconstruction strength, softness, shading, audio, and volume; Controls and
+Assist Tools are adjacent tabs. These menus appear after launching the game,
+not on the pre-boot ROM picker. Ordinary Windows minimize/close commands replace
+the macOS-specific Hide and application-management commands.
+The Windows title bar, menu bar, and nested dropdowns use a dark theme.
+The product title is simply `DKC3Recomp`, without a pre-release label.
+
+CMake fetches the pinned SDL 2.30.9 source when no SDL2 package is installed.
+The Python analysis backend avoids a Rust toolchain requirement. If `cmake`
+is not on PATH, use its full path from Visual Studio's bundled CMake tools.
+Private Windows smoke tests cover all four aspect modes with reconstruction,
+overlay, rewind, fast-forward, and quick-state save/load. ROM-free tests remain
+available with `-DDKC3_BUILD_SNESRECOMP=OFF`.
 
 ## Building on macOS
 

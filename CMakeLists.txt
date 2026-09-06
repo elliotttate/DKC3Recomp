@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(dkc3_port
-    VERSION 0.0.4
+    VERSION 0.0.5
     DESCRIPTION "Native PC recompilation of Donkey Kong Country 3"
     LANGUAGES C)
 
@@ -142,7 +142,6 @@ if(DKC3_BUILD_SNESRECOMP)
             runner/dkc3_game.c
             runner/dkc3_video.c
             runner/dkc3_hdma.c
-        runner/dkc3_hdma.c
             runner/diagnostics.c
             runner/headless_host.c
             runner/verified_rom.c
@@ -257,6 +256,17 @@ if(DKC3_BUILD_SNESRECOMP)
     if(WIN32)
         set_target_properties(dkc3_snesrecomp_sdl PROPERTIES
             OUTPUT_NAME DKC3RecompSDL)
+        target_sources(dkc3_snesrecomp_sdl PRIVATE
+            runner/desktop_menu.c runner/windows_menu.c)
+        target_link_libraries(dkc3_snesrecomp_sdl PRIVATE dwmapi comctl32 gdi32)
+        get_target_property(DKC3_SDL2_TYPE SDL2::SDL2 TYPE)
+        if(DKC3_SDL2_TYPE STREQUAL "SHARED_LIBRARY")
+            add_custom_command(TARGET dkc3_snesrecomp_sdl POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    $<TARGET_FILE:SDL2::SDL2>
+                    $<TARGET_FILE_DIR:dkc3_snesrecomp_sdl>
+                VERBATIM)
+        endif()
     else()
         set_target_properties(dkc3_snesrecomp_sdl PROPERTIES
             OUTPUT_NAME DKC3Recomp)
@@ -284,6 +294,33 @@ if(DKC3_BUILD_SNESRECOMP)
             LABELS "private;integration;native;headless"
             PASS_REGULAR_EXPRESSION "result=completed frames=600"
             TIMEOUT 120)
+    endif()
+
+    if(BUILD_TESTING AND WIN32 AND DKC3_ROM)
+        foreach(aspect IN ITEMS "4:3" "16:10" "16:9" "21:9")
+            string(REPLACE ":" "x" aspect_id "${aspect}")
+            add_test(NAME supplied_rom_windows_${aspect_id}_smoke
+                COMMAND ${CMAKE_COMMAND} -E env
+                    DKC3_DESKTOP_TEST_FRAMES=180
+                    DKC3_DESKTOP_TEST_HIDDEN=1
+                    DKC3_DESKTOP_TEST_OVERLAY=1
+                    DKC3_DESKTOP_TEST_REWIND=1
+                    DKC3_DESKTOP_TEST_FASTFORWARD=1
+                    DKC3_DESKTOP_TEST_SAVELOAD=1
+                    DKC3_DESKTOP_DISABLE_SRAM=1
+                    DKC3_ASPECT=${aspect}
+                    DKC3_UPSCALER=reconstruct
+                    SNESRECOMP_NO_LAUNCHER=1
+                    "$<TARGET_FILE:dkc3_snesrecomp_sdl>" "${DKC3_ROM}")
+            set_tests_properties(supplied_rom_windows_${aspect_id}_smoke PROPERTIES
+                LABELS "private;integration;native;desktop;sdl;windows"
+                RUN_SERIAL TRUE
+                PASS_REGULAR_EXPRESSION
+                    "result=desktop_completed frames=180.*save_load=passed.*host=sdl2"
+                FAIL_REGULAR_EXPRESSION
+                    "shader failed to compile;Unable to initialize the in-game overlay"
+                TIMEOUT 45)
+        endforeach()
     endif()
 
     if(BUILD_TESTING AND APPLE AND DKC3_ROM)
@@ -430,7 +467,7 @@ if(BUILD_TESTING)
     set_tests_properties(launcher_defaults PROPERTIES
         LABELS "unit;desktop;launcher")
 
-    foreach(module IN ITEMS rewind overlay_model fps pacer audio_rate perf viewport)
+    foreach(module IN ITEMS rewind overlay_model fps pacer audio_rate perf viewport menu)
         add_executable(test_desktop_${module}
             tests/test_desktop_${module}.c
             runner/desktop_${module}.c)
@@ -455,6 +492,22 @@ if(BUILD_TESTING)
         LABELS "unit;desktop;video;widescreen")
 
     if(WIN32)
+        if(TARGET SDL2::SDL2)
+            add_executable(test_windows_menu tests/test_windows_menu.c
+                runner/windows_menu.c runner/desktop_menu.c)
+            target_include_directories(test_windows_menu PRIVATE runner)
+            target_compile_definitions(test_windows_menu PRIVATE SDL_MAIN_HANDLED)
+            target_link_libraries(test_windows_menu PRIVATE SDL2::SDL2 user32 dwmapi comctl32 gdi32)
+            if(DKC3_SDL2_TYPE STREQUAL "SHARED_LIBRARY")
+                add_custom_command(TARGET test_windows_menu POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:test_windows_menu>
+                    VERBATIM)
+            endif()
+            dkc3_enable_project_warnings(test_windows_menu)
+            add_test(NAME windows_menu COMMAND test_windows_menu)
+            set_tests_properties(windows_menu PROPERTIES LABELS "unit;desktop;windows;menu")
+        endif()
         add_executable(test_desktop_present
             tests/test_desktop_present.c
             runner/desktop_filter.c

@@ -39,6 +39,14 @@
   in `runner/dkc3_facts.h`.
 - License: see `LICENSE`, which is carried over unchanged.
 
+## SDL2 (Windows)
+
+- Project: `libsdl-org/SDL`, release 2.30.9 at
+  `c98c4fbff6d8f3016a3ce6685bf8f43433c3efcc`.
+- Built without source adaptations as the shared SDL2.dll for the Windows
+  SDL/OpenGL host. The SDL zlib license is included as `licenses/SDL2.txt`
+  in the portable Windows package and in the dependency's `LICENSE.txt`.
+
 ## Launcher artwork
 
 `recomp/launcher/boxart.tga` and `assets/macos/DKC3Recomp.icns` are

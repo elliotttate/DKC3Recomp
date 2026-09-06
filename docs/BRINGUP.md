@@ -625,3 +625,108 @@ is byte-identical, and the 4:3 hashes are unchanged.
 against this game's streamer before it stays; the diagnostic that finds
 it is a per-frame signature of the flashing region, not a screenshot.
 
+## 2026-09-06 - first Windows x64 build and packaged launch verification
+
+Built source revision `5afdacbd284144a92521d5219250d39ddca167c3` with
+Visual Studio 2022 / MSVC 19.44.35214, Release optimization, static MSVC
+runtime, and SDL 2.30.9 (`c98c4fbff6d8f3016a3ce6685bf8f43433c3efcc`).
+The supplied external 4 MiB ROM matches the supported SHA-256. Generation
+used the Python analyzer: 4,724 roots, 3,046 AOT variants, 1,710 interpreter
+variants, and all generated widescreen override anchors passed. This is
+not the native-analyzer output used for the earlier Mac measurements.
+Neither the private ROM nor generated C is tracked.
+
+All three Windows executable targets compile. The portable package selects
+the SDL/OpenGL host (`DKC3RecompSDL.exe`, renamed to `DKC3Recomp.exe`), which
+shares the Mac host's reconstruction shaders and portable audio rate control.
+CMake now stages SDL2.dll beside that executable and removes one duplicate
+HDMA source-list entry from the legacy Win32 target.
+
+The 16 ROM-free baseline tests passed before the build. Four new sequential
+Windows integration checks exercise 4:3, 16:10, 16:9, and 21:9 with reconstruction,
+overlay, rewind, fast-forward, and quick save/load. Their first run exposed
+that save/load and preloaded-state automation were incorrectly inside the
+Mac menu-command guard. Only the Mac command call is now guarded; the shared
+test hooks execute on Windows as well. The full 21-test suite then passed.
+Windows tests use the build executable's directory for temporary saves and
+run serially because that host anchors paths beside the executable.
+
+A separate 4,801-frame headless run completed with 4,250 video-active and
+4,322 audio-active frames. The standalone package recognized the ROM in its
+launcher and visibly rendered the intro, title, and world map. Its SDL2/OpenGL
+4.6 NVIDIA runtime reported 16:10 (308x224), reconstruction sampling, audio
+available, and a clean exit after 8,998 host frames. No developer PATH or
+external SDL DLL was needed. UI automation did not reliably open the overlay
+for a visual settings inspection; overlay rendering and the save tools were
+exercised by the automated smoke tests instead.
+
+The runtime still logs an `unresolved-abandon` diagnostic at `$808CAD` during
+boot, even though these runs complete. This was not suppressed or converted
+into a fabricated success. Full-game traversal, physical controller testing,
+visual validation of every wide level effect, and frame-pacing benchmarking
+remain unverified. The package contains no ROM, saves, generated C, or captures.
+
+## 2026-09-06 - Windows menu parity and dark presentation (r2)
+
+The SDL Windows host now exposes native Game and View menus. Game provides
+Pause / Settings, quick save/load, About and Quit. View provides fullscreen,
+four aspect ratios, three scalers, five reconstruction modes, four level-edge
+policies and four screen models. The platform-independent menu model shares
+the existing settings indices, applies selections through the existing host
+setters, and synchronizes native checkmarks with the shared overlay. Choosing
+a reconstruction mode also enables reconstruction scaling. Detailed sliders,
+audio, bindings and Assist Tools remain in the same shared overlay used on Mac.
+The stale DKC2 overlay heading and Mac-only 16:10 label were corrected.
+Mac application-management items use normal Windows window controls instead;
+the Mac display-link implementation is platform-specific, not a missing setting.
+
+The product title is now DKC3Recomp. Windows uses documented DWM title colors
+and Win32 owner-drawn menus, retaining accessible labels, command routing,
+keyboard mnemonics, selection highlights and checkmarks. No undocumented
+uxtheme entry points or system-wide theme changes are used. DWM attributes
+unsupported by older Windows versions fail harmlessly. The launcher is themed
+through an SDL window-event watch; the game themes its HWND directly.
+OS-close events are handled before overlay event consumption so the close
+button also exits while Settings is open.
+
+Baseline 21 tests passed before this milestone. Two synthetic tests cover
+selection bounds/nulls/enum parity and real native menu hierarchy, command
+delivery, checkmarks, background color, owner-draw measurement/rendering and
+mnemonics. The updated 23-test suite passes, including the four external-ROM
+aspect-ratio smoke checks; the separate ROM-free build passes all 17 tests.
+Live packaged checks confirmed dark title/menu bars and nested aspect menus,
+16:10 persistence, changing to 16:9, the Level-3 reconstruction controls in
+Settings, and exiting through the window close button while Settings was open.
+Earlier live menu checks exercised quick save/load and Game > Quit. This is
+launch/menu/settings verification, not a claim of complete game traversal.
+Private logs are under ignored build-tests-windows; no screenshots are tracked.
+The final launcher also visibly uses the dark title bar. A fresh extraction of
+the r2 ZIP completed the 180-frame 21:9/reconstruction smoke check with rewind,
+fast-forward and save/load all passing and exit code 0. The archive's SHA-256 is
+`fb1a16faf398fb0b731788c0b0737085b43579d141809efcda65494358230b92`;
+the packaged executable is
+`c81a16da2d0c8b57be67820059df80eee3235af5cbe6a9a67c6050a9fb4d7321`.
+
+Win32 API references: Microsoft Learn's [Using Menus](https://learn.microsoft.com/en-us/windows/win32/menurc/using-menus)
+and [DWM window attributes](https://learn.microsoft.com/en-us/windows/win32/api/dwmapi/ne-dwmapi-dwmwindowattribute).
+
+## 2026-09-06 - v0.0.5 cross-platform release
+
+Version 0.0.5 packages the Windows menu/theme work as a normal release. The
+source keeps the existing Mac host, menu and display-link files and both
+submodule pins unchanged. The previous v0.0.4 Apple-silicon ZIP is included
+byte-for-byte, with its original filename, embedded version and signature;
+it was not rebuilt or runtime-tested on Windows. Its SHA-256 matches the
+previous GitHub release: `5b8966c44d6973f8244939c49c23a2d25fc0085bc7513ae87e3ab6259f986601`.
+
+All Windows targets were rebuilt after the version bump. Baseline and final
+23-test suites passed, as did all 17 tests in the separate ROM-free build.
+A fresh extraction of the Windows release ZIP reported version 0.0.5 and
+completed 180 frames at 21:9 with reconstruction, overlay, rewind,
+fast-forward and save/load checks passing, followed by a clean exit (code 0).
+Windows ZIP SHA-256:
+`c7576ef6044727206064852fe996938fdd8d89f4d3ff1bbe4de40f7776b4c720`.
+Release assets stay outside Git under the ignored build-release-v0.0.5 folder;
+only source, tests, notices and documentation are committed. Full-game and
+new Mac runtime verification are not claimed.
+

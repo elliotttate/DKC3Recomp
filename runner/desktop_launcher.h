@@ -6,7 +6,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-#define DKC3_PRODUCT_TITLE "DKC3 Recomp Alpha Pre-Release"
+#define DKC3_PRODUCT_TITLE "DKC3Recomp"
 
 #ifdef __cplusplus
 extern "C" {

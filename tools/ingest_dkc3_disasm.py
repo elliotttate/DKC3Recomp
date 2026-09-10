@@ -62,6 +62,96 @@ FORCE_LLE = {
     0x80A65F: "pops and re-pushes its return address around pushed digits",
 }
 
+# Declared function boundaries inside a disassembly routine. Each entry
+# splits the routine that covers `pc24` at that address, naming the second
+# half; the first half keeps its name and ends at the split.
+FUNC_SPLITS = {
+    0xBBA647: "CODE_BBA647",
+    # The per-frame sprite handler loop the disassembly labels
+    # sprite_handler_direct follows CODE_BBB884's RTS at $BB:B8A4 and is
+    # reached by JMP from $BB:85C1; give it its own entry so the dispatcher
+    # node stays one instruction wide.
+    0xBBB8A5: "sprite_handler_direct",
+}
+
+# Exit width contracts (`exit_mx_at`) for routines whose exit the analysis
+# cannot derive on its own. Each entry names the structural fact behind it;
+# the directive is written before the routine's `func` line.
+EXIT_MX_AT = {
+    0xBBA6B2: (0, 0,
+        "Every direct return and placement-handler dispatch rejoins the caller's\n"
+        "16-bit placement loop. This exit contract lets the adjacent-cell caller at\n"
+        "$BB:A647 remain generated while the handler bodies keep their own evidence."),
+    0xB7D078: (0, 0,
+        "$B7:D078 is one instruction, JMP ($009E); its callers stage a handler from\n"
+        "DATA_B7D07B into $9E first. Every handler returns to the caller's 16-bit\n"
+        "CMP.w at $B7:CFC3, so the trampoline's exit width is the entry width."),
+    0xBB8FDD: (0, 0,
+        "$BB:8FDD falls through its declared boundary into the init-script parser,\n"
+        "whose command dispatch at $BB:9015 recurses through $BB:8FF9, so the exit\n"
+        "equation never closes. The caller at $BB:A71B resumes 16-bit at $BB:A71F."),
+    # The four placement handlers dispatched from $BB:A778 (DATA_BBA992) each
+    # run straight-line code with no REP/SEP, call CODE_BB8F8B/CODE_BB8FC8/
+    # CODE_BB8F78 and the init-script parser, and return with RTS into the
+    # caller's 16-bit loop (AND #$3FFF / AND #$000F / ASL / TAX at $BB:A76C-
+    # $BB:A777, then PLB / PLX / INX at $BB:A77B). The parser's own exit
+    # width is the $BB:8FDD contract above.
+    0xBBA786: (0, 0,
+        "Placement handler dispatched from $BB:A778; no width change, RTS at\n"
+        "$BB:A7E4 into the caller's 16-bit placement loop at $BB:A77B."),
+    0xBBA7E7: (0, 0,
+        "Placement handler dispatched from $BB:A778; no width change, RTS at\n"
+        "$BB:A850 into the caller's 16-bit placement loop at $BB:A77B."),
+    0xBBA853: (0, 0,
+        "Placement handler dispatched from $BB:A778; no width change, RTS at\n"
+        "$BB:A8BB into the caller's 16-bit placement loop at $BB:A77B."),
+    0xBBA85F: (0, 0,
+        "Placement handler dispatched from $BB:A778 (shares $BB:A863-$BB:A8BB\n"
+        "with $BB:A853); no width change, RTS into the 16-bit loop at $BB:A77B."),
+    0xB8806C: (0, 0,
+        "$B8:806C is a JMP stub into the interaction dispatcher at $B8:8304,\n"
+        "whose 45 ptrtail handlers contain no REP/SEP and return with RTL; the\n"
+        "exit equation stays open only because two handlers leave through\n"
+        "JML [$001A]. Both sprite-handler call sites ($BB:B8F9, $BB:B983)\n"
+        "resume 16-bit (ADC #$0063 at $BB:B9A9; the loop compares Y 16-bit)."),
+}
+
+
+FUNC_LINE_RE = re.compile(
+    r"^func (\S+) ([0-9A-Fa-f]{4}) end:([0-9A-Fa-f]{4})(.*)$")
+
+
+def apply_contracts(text: str, bank: int) -> str:
+    """Apply FUNC_SPLITS and EXIT_MX_AT to one bank's cfg text."""
+    lines = text.rstrip("\n").split("\n")
+    out = []
+    for line in lines:
+        match = FUNC_LINE_RE.match(line)
+        if not match:
+            out.append(line)
+            continue
+        name, start, end, rest = match.groups()
+        start_pc, end_pc = int(start, 16), int(end, 16)
+        pieces = [(name, start_pc, end_pc)]
+        for split_pc24, second in sorted(FUNC_SPLITS.items()):
+            if (split_pc24 >> 16) & 0xFF != bank:
+                continue
+            split = split_pc24 & 0xFFFF
+            for index, (piece_name, piece_start, piece_end) in enumerate(pieces):
+                if piece_start < split < piece_end:
+                    pieces[index:index + 1] = [
+                        (piece_name, piece_start, split),
+                        (second, split, piece_end)]
+                    break
+        for piece_name, piece_start, piece_end in pieces:
+            pc24 = (bank << 16) | piece_start
+            if pc24 in EXIT_MX_AT:
+                m, x, why = EXIT_MX_AT[pc24]
+                out.extend(f"# {why_line}" for why_line in why.split("\n"))
+                out.append(f"exit_mx_at {pc24:06X} {m} {x}")
+            out.append(f"func {piece_name} {piece_start:04X} end:{piece_end:04X}{rest}")
+    return "\n".join(out) + "\n"
+
 
 def load_nocash_symbols(path: Path) -> list[tuple[int, str]]:
     """(pc24, name) for every label in an asar no$sns symbol file."""
@@ -248,6 +338,7 @@ def main() -> int:
             "# Auto-generated by tools/ingest_dkc3_disasm.py.\n"
             "# Source: H4v0c21 DKC3 byte-exact assembly + asar symbols.")
         bank = int(path.stem[4:], 16)
+        text = apply_contracts(text, bank)
         forced = [(pc24, why) for pc24, why in sorted(FORCE_LLE.items())
                   if (pc24 >> 16) & 0xFF == bank]
         if forced:

@@ -14,7 +14,7 @@
 # originals for the copies in a runtime source list.
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
-set(DKC3_RUNTIME_PATCH_DIR "${CMAKE_CURRENT_SOURCE_DIR}/cmake/runtime-patches")
+set(DKC3_RUNTIME_PATCH_DIR "${CMAKE_CURRENT_SOURCE_DIR}/cmake/runtime-patches" CACHE PATH "Directory of runtime adaptation hunks")
 set(DKC3_RUNTIME_PATCHED_DIR "${CMAKE_CURRENT_BINARY_DIR}/dkc3-runtime")
 set(DKC3_RUNTIME_PATCH_SCRIPT
     "${CMAKE_CURRENT_SOURCE_DIR}/scripts/apply_dkc3_runtime_patches.py")

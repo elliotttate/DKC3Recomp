@@ -154,7 +154,9 @@ unsupported toolchains retain ordinary Release optimization. The
 project's runtime adaptations live as literal hunks under
 `cmake/runtime-patches/`; `scripts/apply_dkc3_runtime_patches.py` applies
 them to build-directory copies of the pinned snesrecomp sources at
-configure time and fails closed when an anchor moves. They keep the
+configure time and fails closed when an anchor moves
+(`-DDKC3_RUNTIME_PATCH_DIR` points a scratch build at another hunk
+directory, for example with `tools/diagnostics/` added). They keep the
 scalar PPU's widescreen merge and composite off per-pixel branch chains,
 give the shared bus a direct path for plain cartridge ROM reads, stop the
 interpreter prefetching poll bytes it never consults, and compile out

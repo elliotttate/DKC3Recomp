@@ -1,0 +1,42 @@
+# Diagnostic hunk: histogram of interpreted program counters.
+#
+# Not applied by default. To use it, copy cmake/runtime-patches to a scratch
+# directory, add this file there, and configure a separate build directory
+# with -DDKC3_RUNTIME_PATCH_DIR=<that directory>. Run the headless binary
+# with DKC3_DIAG_PC_HIST=<output path>; at exit it writes one line per
+# interpreted PC ("%06X count"). Map PCs onto program_manifest.json nodes to
+# see which routines the interpreter still executes and why they are
+# lle_only (docs/BRINGUP.md, 2026-09-10 third pass).
+file: runner/src/snes/interp_bridge.c
+
+@@ diag-pc-histogram
+<<<<
+        const uint8_t  op = bridge_bus_read(cpu, pc_before);
+====
+        {
+            static uint32_t *s_pc_hist; static int s_hist_atexit;
+            extern void dkc3_diag_dump_pc_hist(void);
+            if (!s_pc_hist) { s_pc_hist = (uint32_t *)calloc(1u << 24, sizeof(uint32_t)); }
+            if (!s_hist_atexit) { s_hist_atexit = 1; atexit(dkc3_diag_dump_pc_hist); }
+            if (s_pc_hist) s_pc_hist[pc_before & 0xFFFFFFu]++;
+            g_dkc3_diag_pc_hist = s_pc_hist;
+        }
+        const uint8_t  op = bridge_bus_read(cpu, pc_before);
+>>>>
+
+@@ diag-pc-histogram-dump
+<<<<
+static int itrace_enabled(void) {
+====
+uint32_t *g_dkc3_diag_pc_hist;
+void dkc3_diag_dump_pc_hist(void) {
+    const char *path = getenv("DKC3_DIAG_PC_HIST");
+    if (!path || !g_dkc3_diag_pc_hist) return;
+    FILE *f = fopen(path, "w");
+    if (!f) return;
+    for (uint32_t pc = 0; pc < (1u << 24); pc++)
+        if (g_dkc3_diag_pc_hist[pc]) fprintf(f, "%06X %u\n", pc, g_dkc3_diag_pc_hist[pc]);
+    fclose(f);
+}
+static int itrace_enabled(void) {
+>>>>

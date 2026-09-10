@@ -1490,3 +1490,90 @@ Windows and other compilers are unverified for this pass; the hunks are
 plain C11 and the patch step needs Python 3 at configure time, which the
 Windows instructions already require. The existing `tier2_*` files in the
 repository root are ignored artifacts of earlier runs and can be deleted.
+
+## 2026-09-10 - third pass: execution-tier accounting and the desktop present path
+
+The owner asked what else could improve and whether the port is fully
+static. Two measurements answer both.
+
+### How much of the game runs compiled
+
+The static manifest (`generated/snesrecomp/program_manifest.json`) holds
+4,756 variants: 3,035 `aot_eligible` (66,255 instructions) and 1,721
+`lle_only` (21,656 instructions), so 75% of the statically reachable
+instructions have compiled bodies. At run time the picture is narrower.
+The optimized cave-replay profile splits its leaf samples as: scalar PPU
+and world shadow 48%, interpreter plus shared bus and dispatch 27%,
+SPC/DSP 16%, DKC3 widescreen adapter 4%, and generated compiled bodies
+0.3%. A diagnostic build (`tools/diagnostics/interp_pc_histogram.hunks`,
+applied through the new `DKC3_RUNTIME_PATCH_DIR` override) counted the
+interpreted instructions over the 843-frame replay: 1,447,604, or about
+1,717 per frame, against a frame that executes several thousand. The
+compiled bodies therefore carry most instructions cheaply, while the
+interpreter's share of time comes from a small set of routines executed
+at roughly 90 nanoseconds per instruction. The top of the histogram:
+
+| Interpreted PC range | Share of interpreted instructions | Manifest disposition and reason |
+| --- | ---: | --- |
+| `$B7:CF68` (`CODE_B7CF68`) | 12.5% | `lle_only`: truncated call continuation, unproven callee exit at `$B7:CFC0` to `$B7:D078` |
+| `$BB:A6B2` (`CODE_BBA6B2`) | 9.4% | `lle_only`: truncated call continuation, unproven callee exit at `$BB:A71B` to `$BB:8FDD` |
+| `$B7:CE43` (`CODE_B7CE43`) | 6.4% | `lle_only`: truncated call continuation, unproven callee exit at `$B7:CE7D` to `$B7:CF68` |
+| `$BB:B8CE`-`$BB:B8F7` loop | 13.0% | inside `CODE_BBB884`, but its compiled node stops at `$BB:B8A4`; no node covers the loop |
+| `$B2:825E`, `$80:89CA`, `$00:80C4` | 8.8% | `aot_eligible` but reached by fall-through or as the frame handler itself, which the scheduler always interprets |
+
+Promoting those four regions (a cfg contract change with disassembly
+structure behind it, per the working agreement) is the largest remaining
+CPU-side lever; it was not attempted here because it changes which tier
+executes them and so cannot be held byte-identical by construction. The
+earlier observation that `SNESRECOMP_LLE_BOUNCE=0` reaches different game
+states makes that a correctness question first.
+
+### Interpreter per-step cost
+
+An auto-quiescent run compared every interpreted instruction against all
+64 entries of the quiescent ring, loading each 56-byte entry. A parallel
+array of the entries' program counters now rejects non-matching slots
+from four cache lines; matching slots are checked with the original full
+condition in the original order (`interp_bridge.hunks`,
+`quiescent-ring-pc-*`). Same evidence as the previous pass, all identical:
+48 headless cases (2,248 sampled frame pairs), the native app's presented
+pixels in four aspects, 27 CTest checks. Medians of three alternating
+pairs against the `3877929` baseline, cumulative for the day:
+
+| Workload | Baseline | Now | Time reduction |
+| --- | ---: | ---: | ---: |
+| Cave replay, 16:9 | 0.957 ms per frame | 0.590 ms per frame | 38.3% |
+| Cave replay, 21:9 | 1.092 ms per frame | 0.693 ms per frame | 36.5% |
+| Boot/attract, 4:3 | 0.805 ms per frame | 0.551 ms per frame | 31.5% |
+| Boot/attract, 21:9 | 0.919 ms per frame | 0.618 ms per frame | 32.7% |
+
+The ring index itself is worth one to two percent; it is kept because
+it is exact and the interpreter core loop remains about a tenth of the
+profile.
+
+### Desktop present path
+
+The SDL host's pacing log (`DKC3_PACING_LOG`) over a visible 1,500-frame
+16:9 run with the owner's settings (window scale 4, reconstruction
+upscaler) shows emulation at a median 0.43 ms per frame and the present
+call at a median 0.39 ms but a mean of 1.19 ms with a 95th percentile of
+5.2 ms. Hidden-window runs measure the present call at 1.5 to 1.8 ms
+mean whether the upscaler is nearest or reconstruction, so the shader is
+not the cost. A `sample` of the visible run attributes it: of the main
+thread's present samples, most sit in `SDL_GL_SwapWindow` ->
+`CGLFlushDrawable` -> `SLSFlushSurfaceWithOptionsAndIndex` ->
+`_CGSWindowIsOrderedIn` -> `mach_msg`, a synchronous WindowServer round
+trip inside the legacy OpenGL swap on macOS 27. Frame intervals still
+hold 16.667 ms at the 95th percentile on this machine, so nothing was
+changed. The remedy that removes it is the one DKC1Recomp shipped
+(`runner/macos_metal_presenter.m`): a `CAMetalLayer` presented from a
+`CAMetalDisplayLink` thread through a three-slot frame queue, with the
+emulation thread never calling into the window system. That port,
+including a Metal version of the reconstruction shader, is the largest
+remaining desktop-side lever and was not attempted in this pass.
+
+Artifacts for this pass (verification and benchmark JSON, CTest and build
+logs, the interpreted-PC histogram, the desktop `sample` and pacing logs
+with both upscalers, the diagnostic hunk, and the round-3 headless binary,
+SHA-256 `2626ddc8…`) are outside Git under
+`/Users/briantate/Documents/Codex/diagnostics/dkc3-optimize2-20260910/pass3`.

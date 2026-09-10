@@ -86,3 +86,50 @@ void Tier2CoverageWriteDefaultManifest(const char *rom_title) {
         return;
     const char *path = tier2_capture_manifest_path(rom_title);
 >>>>
+
+# An auto-quiescent run compares every interpreted instruction's state
+# against all 64 entries of the quiescent ring: each visit loads a
+# 56-byte entry to test its step and program counter before anything
+# else. A parallel array of the entries' program counters lets the scan
+# reject the 63 non-matching slots from four cache lines; a slot whose
+# counter matches is checked with the original full condition, in the
+# original order, so the first match and the repeat count are unchanged.
+@@ quiescent-ring-pc-index
+<<<<
+    QuiescentState qring[64];
+    if (auto_quiescent)
+        memset(qring, 0, sizeof qring);
+====
+    QuiescentState qring[64];
+    uint32_t qring_pc[64];
+    if (auto_quiescent) {
+        memset(qring, 0, sizeof qring);
+        memset(qring_pc, 0xff, sizeof qring_pc);
+    }
+>>>>
+
+@@ quiescent-ring-pc-scan
+<<<<
+            for (unsigned qi=0; qi<64; qi++) {
+                QuiescentState *old=&qring[qi];
+                if (old->step && steps-old->step<=64 &&
+                    old->pc==now.pc && old->a==now.a && old->x==now.x &&
+====
+            for (unsigned qi=0; qi<64; qi++) {
+                if (qring_pc[qi]!=now.pc) continue;
+                QuiescentState *old=&qring[qi];
+                if (old->step && steps-old->step<=64 &&
+                    old->pc==now.pc && old->a==now.a && old->x==now.x &&
+>>>>
+
+@@ quiescent-ring-pc-store
+<<<<
+            qring[steps & 63]=now;
+        }
+        if (s_pre_opcode_hook_count > 0) {
+====
+            qring[steps & 63]=now;
+            qring_pc[steps & 63]=now.pc;
+        }
+        if (s_pre_opcode_hook_count > 0) {
+>>>>

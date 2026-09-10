@@ -88,6 +88,15 @@ int main(void) {
     return 1;
 
   if (Expect(Dkc3DesktopOverlayModelRequest(
+                 &model, kDkc3OverlayActionTestHaptics),
+             "haptics test action was rejected"))
+    return 1;
+  if (Expect(Dkc3DesktopOverlayModelTakeActions(&model) ==
+                 kDkc3OverlayActionTestHaptics,
+             "haptics test action was not delivered exactly once"))
+    return 1;
+
+  if (Expect(Dkc3DesktopOverlayModelRequest(
                   &model, kDkc3OverlayActionResume),
              "resume action was rejected"))
     return 1;

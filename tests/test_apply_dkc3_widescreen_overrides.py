@@ -124,6 +124,18 @@ RecompReturn CODE_B7E981_M0X0(CpuState *cpu) {
 }
 """
 
+MUSIC_FIXTURE = """\
+#include "funcs.h"
+RecompReturn CODE_B2800F_M0X0(CpuState *cpu) {
+  L_800F_M0X0:
+    cpu_trace_block(cpu, 0xB2800F);
+    WatchdogCheck();
+    goto L_80E5_M0X0;
+  L_80E5_M0X0:
+    cpu_trace_block(cpu, 0xB280E5);
+}
+"""
+
 
 class WidescreenOverrideTests(unittest.TestCase):
     def make_generated_dir(self, root: Path) -> Path:
@@ -136,6 +148,7 @@ class WidescreenOverrideTests(unittest.TestCase):
             ONSCREEN_FIXTURE, encoding="utf-8")
         (generated / "walk.c").write_text(WALK_FIXTURE, encoding="utf-8")
         (generated / "draw.c").write_text(DRAW_FIXTURE, encoding="utf-8")
+        (generated / "music.c").write_text(MUSIC_FIXTURE, encoding="utf-8")
         sites = [address for address in MODULE.CULL_SITES
                  if MODULE.CULL_SITES[address] == ("0x30", "0x160")]
         for index, address in enumerate(sorted(sites)):
@@ -160,6 +173,14 @@ class WidescreenOverrideTests(unittest.TestCase):
             for name in ("compare.c", "scan.c"):
                 self.assertIn(MODULE.INCLUDE, first[name])
             self.assertIn(MODULE.GAME_INCLUDE, first["scan.c"])
+            self.assertIn(MODULE.GAME_INCLUDE, first["music.c"])
+            self.assertEqual(
+                first["music.c"].count(
+                    "Dkc3RecordMusicTransition(cpu->A);"), 1)
+            self.assertLess(
+                first["music.c"].index("cpu_trace_block(cpu, 0xB2800F);"),
+                first["music.c"].index(
+                    "Dkc3RecordMusicTransition(cpu->A);"))
             self.assertEqual(
                 first["compare.c"].count(
                     "Dkc3VideoExpandCullLeft(cpu_read16"), 1)
@@ -236,6 +257,15 @@ class WidescreenOverrideTests(unittest.TestCase):
             walk.write_text(WALK_FIXTURE.replace("0x10f", "0x10e"),
                             encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "0x10f"):
+                MODULE.apply_overrides(generated)
+
+    def test_fails_closed_when_music_transition_anchor_moves(self):
+        with tempfile.TemporaryDirectory() as directory:
+            generated = self.make_generated_dir(Path(directory))
+            music = generated / "music.c"
+            music.write_text(MUSIC_FIXTURE.replace("0xB2800F", "0xB28010"),
+                             encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "B2:800F"):
                 MODULE.apply_overrides(generated)
 
 

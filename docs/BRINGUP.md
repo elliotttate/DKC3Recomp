@@ -730,3 +730,479 @@ Release assets stay outside Git under the ignored build-release-v0.0.5 folder;
 only source, tests, notices and documentation are committed. Full-game and
 new Mac runtime verification are not claimed.
 
+## 2026-09-04 - DKC1-style enemy-stomp haptics
+
+DKC1's native host uses a narrow game-state transition to recognize a
+successful enemy stomp and sends a 55 ms SDL controller-rumble request from a
+worker thread. DKC3 now uses the same presentation behavior, with the trigger
+re-derived from DKC3 rather than carrying over DKC1's WRAM addresses.
+
+The first DKC3 trigger tried to identify the result of
+`player_interaction_10` at `$B8:9001` from only the active player's state and
+Y speed. Live checks showed why that is insufficient: different Kongs and
+animal paths use different state/velocity pairs, and one Ellie-specific flag
+also changes during an ordinary jump. That approach both missed enemy hits
+and produced a false pulse on a jump, so none of those player-only heuristics
+remain in the trigger.
+
+The corrected evidence follows the actual enemy defeat. DKC3's 26 non-Kong
+sprite slots run from `$0954` through `$1412` in `$006E`-byte records.
+`defeat_sprite_using_animation` at `$B6:8085` moves a live enemy into a
+distinct fall-away state: placement number `$0000`, placement parameter
+`$0005`, render order `$00F4`, OAM property bits `$3000`, and cleared
+interaction flags, while retaining its sprite type for the defeat animation.
+The host snapshots every live enemy before a cartridge frame and accepts a
+haptic event only if the same sprite type newly enters that defeated state
+while the same active player changes from downward to upward Y movement.
+This directly implements the rule that the jump must kill the enemy: a plain
+jump has no enemy transition, and a projectile or other unrelated defeat has
+no simultaneous player rebound.
+
+The SDL host sends DKC1's pulse (`$2800` low frequency, `$5000` high
+frequency, 55 ms) to the gamepad assigned to the cartridge's active player.
+The SDL call stays on a dedicated worker so a controller or Bluetooth driver
+cannot stall emulation; controller refresh and shutdown wait for any in-flight
+call before closing the handle. An `Enemy-stomp haptics` checkbox in the
+pause menu applies immediately and persists as `HapticsEnabled` in
+`launcher.cfg`; the same section reports the detected controller and its SDL
+rumble capability and offers an unmistakable 500 ms test pulse.
+`DKC3_HAPTICS=0` remains an override for scripted launches.
+
+Public unit coverage accepts a jump-kill transition in both the first and last
+enemy slots. It rejects an ordinary jump, a non-jump enemy defeat, an enemy
+that was already defeated before the frame, a reused slot with a different
+sprite type, and an invalid or changed player. The macOS SDL host and the full
+public test suite were rebuilt successfully. A connected Sony DualSense was
+enumerated by the native host as `DualSense Wireless Controller` with SDL
+rumble support. Both a direct SDL rumble request and the pause-menu test pulse
+were physically confirmed. The corrected automatic gameplay trigger still
+requires the final check at the reported save. The separate Win32 host remains
+unchanged and unbuilt here.
+
+The same follow-up corrected the pause window itself. SDL's renderer supplies
+physical drawable pixels, but ImGui positions windows in logical points; using
+the drawable dimensions displaced the menu on Retina displays. The initial
+position and size now use `ImGuiIO::DisplaySize`, the window is centered only
+on its first appearance, and the `NoMove` flag is removed so its title bar can
+be dragged without the next frame snapping it back. The heading now also says
+DKC3 rather than DKC2. The hidden overlay smoke and persisted-haptics tests
+cover startup and configuration. Its centered initial placement and title-bar
+dragging were also confirmed visibly on the Retina display.
+
+## 2026-09-04 - optional DKC1-style MSU-1 music
+
+The macOS SDL host now supports optional MSU-1 PCM packs without applying an
+IPS patch to the user's ROM or adding music to the repository. As in the DKC1
+host, all present tracks are memory-mapped during startup, resampled from
+44.1 kHz into the cartridge audio stream, and mixed after the stock DSP so
+sound effects remain intact. Enabling a valid pack applies only the patch's
+two-byte SPC-music mute in memory, after the supported ROM has passed its
+SHA-256 check. The source bytes at headerless offset `$2D02D3` must be exactly
+`D0 05`; the host fails closed if they move.
+
+The DKC3 mapping was derived from the supplied patch and checked against the
+public disassembly's addresses and structure. Direct-page `$08` is the current
+song. Normal song values 1 through 46 select the same-numbered PCM tracks.
+The transition entry at `$B2:800F` maps commands 1 through 10 to tracks 49
+through 58, with command 11 intentionally aliasing track 53. Tracks 20, 22,
+24, 46, and 50 through 58 are one-shots; track 49 and the other normal songs
+use their PCM loop points. A fail-closed generated-source adaptation records
+the transition command without modifying cartridge state. Save loads and the
+end of a rewind reset the external player from the restored `$08` state.
+
+The macOS Music menu accepts an extracted folder or a `.msu1` archive and
+persists the chosen directory. Folder discovery supports `track-N.pcm`,
+`dkc3_msu-N.pcm`, and `dkc3_msu1-N.pcm`. The two supplied external packs,
+"DKC3 pcm by JUD6MENT 2025 update" and "Donkey Kong Country 3 (HD Audio
+Restoration)", each exposed 56 validly named PCM files. Both completed a
+300-frame hidden native run with audio enabled and selected track 22 at the
+title sequence. The dedicated PCM/mute/mapping unit test and the full suite
+pass (23 of 23), including private headless, macOS, save/load, rewind,
+widescreen, and overlay smoke tests.
+
+The live runs prove pack discovery, exact ROM gating, native integration, and
+track selection; an audible full-game pass through every normal and transition
+track remains unverified. MSU-1 remains macOS-only for now. The separate
+Win32 host is unchanged and unbuilt here.
+
+The first mixed file-and-directory `NSOpenPanel` made a selected folder act as
+a navigation target, leaving its PCM files disabled and preventing the user
+from confirming the pack. The menu now asks for **PCM Folder** or **.msu1
+Archive** first and configures a directory-only or file-only panel accordingly.
+In folder mode, **Use Music Pack** selects the folder instead of opening it.
+
+## 2026-09-04 - original music overlapping MSU after a quick load
+
+The reported doubled soundtrack was reproducible with an older Lakeside Limbo
+save. The boot-time mute only changed the verified ROM image; a snapshot
+restored its own unmuted SPC RAM at `$07AB` (`D0 05`) and the original song
+continued underneath the host PCM. Applying the branch mute after loading was
+not enough either: already-sounding music voices retained their envelopes.
+
+`Dkc3RestoreSpcMusicPolicy` now runs from the adapter's post-load hook, covering
+file quick loads and in-memory rewind. The policy comes from the current
+verified ROM image, not the save. `$B2:82E5` uploads ROM `$ED:0088` to SPC
+`$0560`, placing the two mute bytes at `$07AB`. The helper compares the whole
+`$07A9..$07DA` scheduler against that image except for the two known policy
+bytes, so an unrecognized/early-boot engine is left untouched. When changing
+an old save to replacement music, it also releases only music-owned DSP voices
+(`$01E0+voice == 0` in the SPC scheduler), clears pending music key-ons, and
+discards the pre-rendered audio and shared echo containing the original song.
+An active SFX voice keeps its complete envelope, position and volume. A shared
+SFX echo tail is discarded once along with the music echo. Ordinary same-policy
+loads do not clear voices or buffers. Loading an MSU-era save with replacement
+disabled restores native sequencing instead of leaving the game muted. No
+snapshot-format change or on-disk ROM/save rewrite is involved.
+
+The macOS headless host now accepts an explicit `DKC3_MSU1_PACK` for repeatable
+audio isolation with its existing snapshot, input-playback and PCM-output
+controls. It does not read or modify the app's saved pack preference. Example
+(all inputs/outputs remain private and outside Git):
+
+```sh
+DKC3_MSU1_PACK=/private/pack DKC3_MSU1_GAIN=0 \
+DKC3_SAVESTATE_INPUT=/private/old-state.sav \
+DKC3_AUDIO_PCM=/private/sfx-only.pcm \
+build/macos/dkc3_snesrecomp_headless /private/dkc3.sfc 602
+```
+
+**Verified:** on the existing Lakeside Limbo save, 602-frame native runs with
+both supplied packs reduced the stock-only output after the first five seconds from RMS
+498.462 to exactly zero (0 nonzero samples out of 321,478). With replacement
+gain restored to 1, JUD6MENT and HD Audio Restoration produced RMS 2550.856 and
+1451.920 respectively over that same window. A scripted unpause/jump run with
+replacement gain 0 produced SFX (peak 7151), then returned to exact silence;
+three saved underwater positions also stayed silent when idle. The separate
+mouse-pop save preserved its four active SFX-owned voices while all four
+music-owned voices had zero output. ROM-free tests cover every one of the 256
+SFX-ownership masks, pending notes, stale echo/output, same-policy loads,
+restoration of native music, and fail-closed signature/metadata checks. All 24
+CTest checks pass. The signed macOS app also completed isolated 300-frame
+quick-load runs with each pack, selecting track 15; those smoke runs used a
+dummy audio device to avoid interrupting the user's game. Deep strict signature
+verification passed. An audible full-game pass through every event/transition
+remains unverified, as does the Windows host. The user's ongoing gameplay was
+left running; the rebuilt app must be restarted to pick up this fix.
+
+## 2026-09-04 - KAOS's body clipped and repeated at the wide edges
+
+The owner's quick save in level `$0020`, camera `$0130,$01A0`, reproduces
+KAOS's body ending at the native right edge while a fragment repeats at the
+left. The head and flame are sprites, but layer isolation identifies the
+body as BG1: map `$71` (VRAM `$7000`, 64x32), character base `$6000`,
+scroll `$0374,$00EC`. Its two horizontal pages contain 156 and zero
+nontransparent cells, satisfying the existing object-plane verifier. BG2
+at `$79` is the terrain ring.
+
+The initial main-screen enable is `$16`, excluding BG1. HDMA changes it to
+`$17` on lines 20 through 147 and back to `$16` afterwards. The frame's
+wide-layer selection looked only at the initial registers, so BG1 never
+reached the object-plane classifier. The later repeat-mask calculation did
+include HDMA enables, causing the already-clipped native body to repeat
+every 256 pixels. H4v0c21 revision
+`bed96892f5e85eabd5c920306f00b361c2e1f34c` confirms the structure:
+`$B5:C2C9` derives the boss scroll, `$B3:A277..A2DD` constructs the
+`$16/$17` enable table, and `$B3:A371..A383` applies the BG1 scroll.
+These are reference addresses only; no disassembly source or data is copied.
+
+The adapter now scans the already-built HDMA tables before choosing wide
+layers. `Dkc3VideoPpuFrameWideLayerMask` includes both main- and subscreen
+enables from every band and retains the existing Mode-1, map-width and
+tilemap-collision gates. The body consequently reaches the existing verified
+object-plane path (`P71` in the band trace), while the original HDMA still
+controls its vertical visibility. The guest, generated code, and culling
+contracts are untouched. `DKC3_CULL_WIDEN=0` restores the old selection for
+same-binary comparisons.
+
+**Verified.** The private save SHA-256 is
+`c156d6601659c612012e84c79acf9eb4d6ff20c6beba42e8f43fcd630e2761cc`.
+At the initial save, the switch-off frame exactly reproduces the pre-change
+binary in all four aspects. The fix changes 4,353 pixels at 16:10, 5,451 at
+16:9 and 5,880 at 21:9, restoring the right body and removing its left copy;
+zero pixels change in the visible native window. The 4:3 frame remains
+`7cffce5ff6e97665ef29eebce5c4f16b0438bb675dd07a4d4fe08736b7d2dd43`.
+
+A 1,803-frame replay (three neutral frames, one Start pulse, then neutral)
+moves the boss through the arena. The 151 samples at frames 2 through 1802,
+every 12 frames, plus the final frame, preserve every visible native-window
+pixel against both the previous binary and the matching 4:3 frame in all
+aspects. Final WRAM, VRAM, CGRAM and OAM hashes also match the prior binary
+in each aspect. Five existing private saves (Lakeside Limbo, mouse-pop and
+three underwater positions), replayed for 123 frames in all four aspects,
+retain all frame and guest-memory hashes. All 24 CTest checks pass, including
+19 ROM-free tests. The new synthetic HDMA test covers the boss's enable span,
+late subscreen enables, bounded layers, unsupported mode, null input and
+overlapping tilemap rejection.
+
+The rebuilt, ad-hoc-signed canonical macOS app completed a hidden 90-frame
+load of the exact save with the user's reconstruction settings; its
+3080x1920 drawable capture shows the corrected body. Deep strict signature
+verification passes. The old app process was closed and the canonical bundle
+relaunched at the preserved save (PID 60788, 22:29:24 local, after the
+22:26:55 executable build); a live window capture confirms the corrected
+body and absent left copy. The user's on-disk quick save retains its original
+SHA-256. Private inputs, comparison scripts, logs and captures
+are retained outside Git under
+`/Users/briantate/Documents/Codex/diagnostics/dkc3-kaos-20260904`.
+
+**Limits.** This validates the reported state and the 30-second replay, not
+completion of the boss fight or every boss phase. The save's existing terrain
+prefill discrepancy (1,293/1,302 total cells and 309/310 margin cells matching
+at 16:10) is identical before and after and was not changed here. Windows
+remains unbuilt and unverified.
+
+## 2026-09-04 - Waterfall columns disappear and wrap across wide edges
+
+The new quick save is level `$0038`, shape 4, camera `$02BF,$1F99`;
+its SHA-256 is
+`a038c56a8671a9b45792fd2cd6e8910fd6a1e11bb3be1d8695112ae48f6b7338`.
+Layer isolation identifies BG2 as the waterfall: Mode 1, map `$71`
+(VRAM `$7000`, 64x32), character base `$5000`, horizontal phase matching
+the camera and a vertically animated HDMA phase. BG1 is the terrain.
+
+A fresh restore initially classifies BG2 as a static plane because it has
+no write history. Camera travel rewrites its rows and changes the policy to
+native-line repetition. The latter produces the reported right cutoff and
+left copy; the former can still sample recycled columns outside the view.
+This is a zero-lead column streamer, so neither presentation policy is valid.
+
+H4v0c21 revision `bed96892f5e85eabd5c920306f00b361c2e1f34c` provides
+the reference structure. `$B3:8609..869A` uploads an entering column when
+the camera crosses an eight-pixel boundary. `$B7:F421..F433` selects the
+layout pointer at WRAM `$15E4` using the level flag `$0775 & $0200` and
+index `$0793`. The ten pointers at `$B3:869B` address per-level lists
+minus one; lists occupy `$86AF..87B5`, followed by column templates at
+`$87B6..8EF5`. The renderer indices `$0D`, `$17`, and `$1B` call this
+streamer. Only these addresses, bounds, and addressing relationships are
+used; no disassembly source, comments, or game data are copied.
+
+`Dkc3VideoDecodeWaterfallColumn` reads the user's verified ROM at runtime.
+Each list byte selects the four tile columns of a 32-pixel world group;
+kind zero selects the blank column and kinds 1 through 7 select the
+appropriate 32-word template. Pointer membership, list extent, and template
+bounds are checked. The adapter uses the full-bank HiROM mirror `$F3:0000`
+to access bank B3, whose low half otherwise maps WRAM.
+
+Before using the decode, `Dkc3VideoVerifyWaterfallViewport` requires exact
+agreement with all 992 or 1,024 tile words in the fully uploaded native
+columns. Partial edge columns are excluded because the next DMA may not yet
+have run. The dedicated BG2 host store holds the decoded world columns and
+repeats their 32 rows across all four epochs of the 10-bit vertical HDMA
+phase. Its `F` band policy preserves native rendering and honors presentation
+bias. Unsupported columns or failed source verification produce transparent
+margin columns. Guest VRAM, simulation, generated code, and culling contracts
+are unchanged. `DKC3_WATERFALL_TRACE=1` exposes the per-frame source check;
+`DKC3_CULL_WIDEN=0` disables the new policy.
+
+**Verified.** A 603-frame replay loads the save, pulses Start, travels left,
+right, then left, and idles. All 601 restored frames pass waterfall source
+verification at 16:10, 16:9, and 21:9. Every visible native-window pixel
+matches both the previous binary and the corresponding 4:3 frame, including
+the camera's slide at the west bound. All 601 4:3 frames are unchanged.
+The fix changes margins on 124, 133, and 340 frames respectively; the largest
+frame differences are 9,796, 17,412, and 29,456 pixels. Final WRAM, VRAM,
+CGRAM, and OAM hashes match the previous binary at every aspect.
+
+With `DKC3_CULL_WIDEN=0`, every sampled frame matches the previous binary
+with the same switch disabled in all four aspects. Comparing switch-off to
+the previous switch-on binary also exposes existing object-culling differences
+at wider aspects during travel, so it is not a whole-frame baseline for this
+isolated change. Five earlier private saves plus the preserved KAOS save,
+replayed for 123 frames each at all four aspects, retain every final frame and
+guest-memory hash. All 24 CTest checks pass, including 19 ROM-free tests.
+Synthetic tests cover column/template addressing, scene selection, pointer
+and list bounds, invalid kinds, native mismatch rejection, and fine-scroll
+edge exclusion.
+
+The rebuilt, ad-hoc-signed canonical macOS app completed a hidden 90-frame
+load of this save using the user's 16:10 reconstruction settings. Its
+3080x1920 drawable capture shows the waterfall continuing on the right and
+the false left strip removed. Deep strict signature verification passes.
+The main app was reopened from the canonical bundle (PID 63643, 22:51:07
+local, after the 22:50:05 executable build), and Quick Load restored the
+reported save. Live captures show the correction and subsequent gameplay
+at 60 FPS. The user's quick-save file retains its original SHA-256.
+Private snapshots, before/after headless binaries, replay scripts, measurements,
+selected frames, and the app capture are retained outside Git under
+`/Users/briantate/Documents/Codex/diagnostics/dkc3-waterfall-20260904`.
+
+**Limits.** The ten-second scripted traversal and live spot check do not
+establish full-level completion or coverage of every waterfall layout and
+renderer variant. Existing terrain-prefill mismatches during movement are
+unchanged. Windows remains unbuilt and unverified. Changes remain uncommitted
+pending the owner's verification.
+
+## 2026-09-09 - Bleak invisible behind the arena; Mode 2 stayed 4:3
+
+The reported and running-app images reproduce from the private quick save
+SHA-256 `0a6e0eba0d07d38d28d2268bc1c82a3085b8c987b783905fa78a7374411d570a`.
+The checkout is `5afdacb` plus the pre-existing uncommitted haptics, MSU,
+KAOS, and waterfall work, all preserved. Level `$0021` uses Mode 2, BG1/BG2
+maps `$7C/$74`, character bases `$0022`, and no HDMA. The configured aspect
+was already 16:10; this mode had no supported wide presentation path.
+
+**Boss cause and correction.** OBJ-only rendering contains Bleak in OAM
+slots 21 through 36 at priority 2. The composite hides him because the fast
+PPU uses Mode 1's BG priorities in Mode 2. The independent scalar renderer
+in the pinned runtime already implements the correct order: OBJ3, BG1 high,
+OBJ2, BG2 high, OBJ1, BG1 low, OBJ0, BG2 low. This also agrees with the
+[bsnes Mode 2 implementation](https://github.com/bsnes-emu/bsnes/blob/master/bsnes/sfc/ppu/io.cpp).
+`cmake/Dkc3Ppu.cmake` adapts only the Mode 2 calls in a build copy of the
+pinned PPU source, with a unique, fail-closed anchor. The submodule,
+generated guest code, cfg contracts, ROM, and gameplay are unchanged.
+`DKC3_PPU_LEGACY=1` exposes the scalar renderer in the headless host for
+reproducible comparisons. Fixing native priority intentionally changes 1,210
+pixels at the saved frame; preserving the previously broken native render
+would preserve the defect.
+
+**Wide policy and evidence.** H4v0c21 revision
+`bed96892f5e85eabd5c920306f00b361c2e1f34c` identifies payload `$FD:290D`,
+which loads the trench map from `$E9:45BC`, the mountain/sky map from
+`$E9:4782`, and their graphics. These are fixed, bounded 32-column maps,
+not a rolling terrain stream. The verified scene renders their actual
+256-pixel hardware wrap over the wider physical span, keeping the camera
+centered and leaving terrain readiness false so no activation/culling
+windows widen. The gate requires gameplay, level `$21`, Mode 2 with small
+tiles, maps `$7C/$74/$00`, character bases `$0022`, no HDMA, and all 1,024
+BG3 offset-map entries having both layer-enable bits clear. Other signatures
+remain bounded. Only structural facts are recorded in source; no maps,
+graphics, assembly, or game data were copied.
+
+**Verification.** A 1,803-frame replay restores the save, pulses Start,
+then runs the fight for 30 seconds. At frames 2 through 1802, sampled every
+three frames, all 601 complete images match the independent scalar PPU
+pixel-for-pixel in 4:3, 16:10, 16:9, and 21:9. The samples contain 577
+distinct native frames. Every wider frame's native center matches the
+corrected 4:3 frame, with and without `DKC3_CULL_WIDEN=0`. The switch
+disables only this margin policy, retaining the priority correction. Final
+WRAM, VRAM, CGRAM, and OAM hashes match the previous binary in every aspect.
+The margins therefore have both a source-map contract and an independent
+whole-frame renderer comparison, rather than a visual-plausibility check.
+
+Seven previous states (Lakeside Limbo, mouse-pop, three underwater states,
+KAOS, and waterfall) retain every final frame and guest-memory hash across
+123-frame replays in all four aspects: 28 comparisons, zero differences.
+All 25 CTest checks pass, including 20 ROM-free tests. The new actual-PPU
+test compares 180 Mode 1/2 BG/OBJ priority combinations on main/sub screens
+against the scalar renderer; it fails on the original PPU. Synthetic scene
+tests reject incorrect modes/maps, missing inputs, HDMA, and either OPT
+enable bit at every address in the 1,024-word table.
+
+The signed canonical bundle completed a 90-frame hidden quick-load run
+with the user's reconstruction settings; its 3080x1920 drawable shows
+Bleak and the extended arena. Deep strict signature verification passed.
+The old process was closed and the rebuilt bundle launched as PID 56993
+at 22:32:33 local, after the 22:31:58 executable build. Quick Load restored
+the preserved state, and the live window shows Bleak in widescreen at
+60 FPS. The quick-save hash is unchanged. Private inputs, before/after
+binaries, replay scripts, reports, and captures are outside Git under
+`/Users/briantate/Documents/Codex/diagnostics/dkc3-bleak-20260909`.
+
+**Limits.** This verifies the supplied position and the 30-second fight
+segment, not boss completion or every phase. Other Mode 2 scenes have no
+new widescreen policy. Windows remains unbuilt and unverified. These changes
+remain uncommitted for the owner's verification.
+
+## 2026-09-09 - Pothole Panic quick save remained pillarboxed
+
+The new reported position is level `$0045`, Pothole Panic. The private
+quick save has SHA-256
+`466b9d5c1ca3058f5c5529e302febddf663ef3cc01899b1ef94b6b3215a7309a`.
+The live app reproduced the black margins with AspectIndex 1 (16:10),
+glide edges, and the user's reconstruction settings. Shape `$0470=1`
+was deliberately unknown to the level-map decoder, leaving terrain
+readiness false. Mode `$09`, BG1 map `$61`, stream destination `$6000`,
+metatile base `$4000`, camera `$0145,$0288`, and rendered terrain phase
+`$0145,$0287` identify the saved frame. The existing uncommitted work,
+including the Bleak correction above, was preserved.
+
+**Address contract.** H4v0c21 reference revision
+`bed96892f5e85eabd5c920306f00b361c2e1f34c`, dispatch `$B7:F3C5/$B7:F401`,
+selects builder `$B7:BE37-$B7:C067` for shape 1. The column builder at
+`$B7:BE5D-$B7:BE76` doubles the masked horizontal offset and masks vertical
+position to `$03E0`; the row builder advances `$0040` per metatile column
+at `$B7:BFD5`. In metatile coordinates the map offset is therefore
+`x * 64 + (y & 31) * 2`, with 16-bit address wrapping. Shapes 0/8 retain
+their existing `x * 32 + (y & 15) * 2` formula. Only addresses and structure
+are recorded; no disassembly source or game data was copied.
+
+The new tall-horizontal layout shares the proven metatile definition,
+flip, and bit-11 carry handling. Tile reads, metatile classification,
+neighbour scans, and map extents use the same explicit column row count.
+The prefill adapter skips row-major stride calibration for both
+column-major layouts. No generated code, cfg contracts, guest simulation,
+or runtime submodule source was changed for this correction.
+
+**Verification.** An offline decode of the saved native BG1 ring matches
+all 837 fully visible interior tile words (31 columns by 27 rows). Including
+the partially visible top row gives 867/868: the one differing native cell
+at world tile `(39,48)` is `$1010` where the source map decodes `$0000`.
+Native captured cells remain authoritative. At the saved frame, the 4:3
+image and WRAM/VRAM/CGRAM/OAM hashes are unchanged; all three wide aspects
+retain its exact 256x224 native view after accounting for glide bias.
+
+A reproducible 843-frame input replay loads the save, pulses Start, then
+flaps Squawks while travelling right and left before releasing input.
+Camera travel spans X 325..799 and Y 256..648. All 281 sampled 4:3 images
+match the previous binary, with 280 distinct native frames. With
+`DKC3_CULL_WIDEN=0`, all 281 aligned native views and final guest-memory
+hashes match in 16:10, 16:9, and 21:9 as well. Terrain readiness stays true
+throughout the restored wide replay, including vertical page transitions.
+
+Default widescreen now also enables the already-audited object windows
+once terrain is ready. Comparing those runs against the native windows
+produces 31, 28, and 18 differing native samples at 16:10, 16:9, and 21:9,
+respectively, and differing final guest-memory hashes. The inspected
+differences at frames 311/362 are bomb/explosion animation changes with
+those object windows enabled; the native-window comparison above isolates
+the terrain fix. Earlier activation is the likely cause of that timing
+difference, but a per-object activation trace was not collected.
+These default runs are not claimed to be guest-state identical.
+
+Eight previous saved scenes (five archived user states, KAOS, waterfall,
+and Bleak) retain every final frame and guest-memory hash across 123-frame
+replays in all four aspects: 32 comparisons, zero differences. All 25
+CTest checks pass, including 20 ROM-free tests. Synthetic tests cover the
+new shape selection, both halves of every 32-row column, vertical and
+16-bit horizontal wrapping, flipped/carry-bearing definitions, and
+neighbour counts that include the lower half of the map.
+
+The packaged, signed canonical bundle passed a 90-frame hidden quick-load
+check at the user's settings with a 3080x1920 drawable. Deep strict
+signature verification passed. The old app was closed; the rebuilt
+`build/macos/DKC3Recomp.app` launched as PID 62556 at 23:00:13 local,
+after the 22:59:04 executable build. Quick Load restored the supplied
+position, and the live 60 FPS window fills the 16:10 view with the cave.
+The user's quick-save hash is unchanged. Private before/after binaries,
+replays, dumps, reports, and captures are outside Git under
+`/Users/briantate/Documents/Codex/diagnostics/dkc3-cave-20260909`.
+
+**Limits.** This verifies the reported save and a 14-second traversal,
+not fresh level entry, full-level completion, or every shape-1 stage.
+Windows remains unbuilt and unverified. Changes remain uncommitted for
+the owner's verification.
+
+## 2026-09-10 - combine the validated local changes with v0.0.5
+
+The owner authorized committing and pushing all pending source changes.
+Fetching `origin/main` found the newer Windows release commit `f2de72a`.
+The local haptics, MSU-1 music, KAOS, waterfall, Bleak, and shape-1 cave
+changes were rebased onto that release, preserving its Windows menus,
+settings, version, tests, and documentation. The shared shutdown path
+retains both native-menu teardown and haptic-worker shutdown. The shared
+automated quick-load path guards the Mac-only replacement-music reset
+with `__APPLE__`, because the Windows release moved that path outside
+the Mac menu-command guard.
+
+The combined macOS build passes all 26 CTest checks, including 21 ROM-free
+tests and five private integration checks. The packaged canonical app
+passes deep strict signature verification and a separate 90-frame hidden
+quick-load run at the preserved Pothole Panic save and display settings.
+Its complete 3080x1920 rendered image is pixel-identical to the validated
+pre-integration app capture. Build, test, packaging, and app-smoke logs
+are outside Git under
+`/Users/briantate/Documents/Codex/diagnostics/dkc3-push-20260910`.
+No private inputs, generated sources, captures, or build products were
+added to the commit. Earlier uncommitted-status notes record their state
+at the time; this authorization supersedes those holds. The combined
+changes have not been built or exercised on Windows in this local run.

@@ -33,7 +33,9 @@ struct Dkc3DesktopOverlay {
   void *window;
   uint64_t last_counter;
   char status[128];
+  char haptics_device[128];
   bool status_success;
+  bool haptics_supported;
   bool initialized;
 };
 
@@ -554,6 +556,14 @@ extern "C" void Dkc3DesktopOverlaySetStatus(
   overlay->status_success = success;
 }
 
+extern "C" void Dkc3DesktopOverlaySetHapticsDevice(
+    Dkc3DesktopOverlay *overlay, const char *name, bool rumble_supported) {
+  if (!overlay) return;
+  std::snprintf(overlay->haptics_device, sizeof overlay->haptics_device,
+                "%s", name ? name : "");
+  overlay->haptics_supported = name && name[0] && rumble_supported;
+}
+
 static void DrawMainPage(Dkc3DesktopOverlay *overlay) {
   ImGui::TextWrapped("The game is paused at a completed frame boundary.");
   ImGui::Spacing();
@@ -696,6 +706,26 @@ static void DrawSettingsPage(Dkc3DesktopOverlay *overlay) {
   bool audio = settings.enable_audio != 0;
   if (ImGui::Checkbox("Enable audio", &audio))
     settings.enable_audio = audio ? 1 : 0;
+  bool haptics = Dkc3LauncherHaptics() != 0;
+  if (ImGui::Checkbox("Enemy-stomp haptics", &haptics))
+    Dkc3LauncherSetHaptics(haptics ? 1 : 0);
+  if (overlay->haptics_device[0]) {
+    ImGui::TextDisabled("Controller: %s (%s)", overlay->haptics_device,
+                        overlay->haptics_supported
+                            ? "rumble available" : "rumble unavailable");
+  } else {
+    ImGui::TextDisabled("Controller: none detected");
+  }
+  if (!haptics || !overlay->haptics_device[0] ||
+      !overlay->haptics_supported)
+    ImGui::BeginDisabled();
+  if (ImGui::Button("Test controller pulse"))
+    Dkc3DesktopOverlayModelRequest(
+        &overlay->model, kDkc3OverlayActionTestHaptics);
+  if (!haptics || !overlay->haptics_device[0] ||
+      !overlay->haptics_supported)
+    ImGui::EndDisabled();
+  ImGui::TextDisabled("Normal enemy stomps use a short pulse.");
   static const int rates[] = {32040, 32000, 44100, 48000};
   char rate_label[32];
   std::snprintf(rate_label, sizeof rate_label, "%d Hz", settings.audio_freq);
@@ -731,6 +761,7 @@ static void DrawSettingsPage(Dkc3DesktopOverlay *overlay) {
       "rate choices are retained for launcher compatibility.");
   if (ImGui::Button("Restore All Settings to Defaults")) {
     Dkc3LauncherSettingsDefault(&overlay->settings);
+    Dkc3LauncherSetHaptics(1);
     Dkc3DesktopOverlayModelSetAssistTools(
         &overlay->model, overlay->settings.assist_tools != 0);
   }
@@ -1013,20 +1044,21 @@ extern "C" void Dkc3DesktopOverlayRenderOpenGl(
     ImGui::NewFrame();
   }
 
+  const ImVec2 display_size = ImGui::GetIO().DisplaySize;
   ImGui::GetBackgroundDrawList()->AddRectFilled(
-      ImVec2(0.0f, 0.0f), ImVec2(static_cast<float>(width),
-                                  static_cast<float>(height)),
-      IM_COL32(0, 0, 0, 150));
-  float menu_width = width < 760 ? static_cast<float>(width) - 32.0f : 720.0f;
+      ImVec2(0.0f, 0.0f), display_size, IM_COL32(0, 0, 0, 150));
+  float menu_width =
+      display_size.x < 760.0f ? display_size.x - 32.0f : 720.0f;
   float menu_height =
-      height < 560 ? static_cast<float>(height) - 32.0f : 520.0f;
+      display_size.y < 560.0f ? display_size.y - 32.0f : 520.0f;
+  if (menu_width < 1.0f) menu_width = 1.0f;
+  if (menu_height < 1.0f) menu_height = 1.0f;
   ImGui::SetNextWindowPos(
-      ImVec2(width * 0.5f, height * 0.5f), ImGuiCond_Always,
+      ImVec2(display_size.x * 0.5f, display_size.y * 0.5f), ImGuiCond_Once,
       ImVec2(0.5f, 0.5f));
   ImGui::SetNextWindowSize(ImVec2(menu_width, menu_height), ImGuiCond_Always);
   ImGui::Begin("DKC3 Pause Menu", nullptr,
-               ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-                   ImGuiWindowFlags_NoCollapse |
+               ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse |
                    ImGuiWindowFlags_NoSavedSettings);
   ImGui::TextColored(ImVec4(0.70f, 0.38f, 1.0f, 1.0f),
                      "DONKEY KONG COUNTRY 3");

@@ -72,7 +72,16 @@ typedef enum Dkc3VideoLevelLayout {
   kDkc3VideoLevelLayoutNarrowVertical,
   /* Ship-hold terrain is row-major with 80 metatiles (160 bytes) per row. */
   kDkc3VideoLevelLayoutShipHold,
+  /* Shape 1: column-major, 32 metatile rows (64 bytes per column). */
+  kDkc3VideoLevelLayoutTallHorizontal,
 } Dkc3VideoLevelLayout;
+
+/* Bleak's fixed, bounded Mode 2 maps wrap at 256 pixels. Reject other
+ * scenes and active offset-per-tile tables before exposing that wrap. */
+bool Dkc3VideoUsesSnowArenaPlanes(bool in_level, uint16_t level,
+                                 uint8_t mode, const uint8_t maps[4],
+                                 uint16_t character_bases, uint8_t hdma,
+                                 const uint16_t *vram, size_t vram_words);
 
 /*
  * What a host margin shows where the level authors nothing: within one
@@ -253,6 +262,15 @@ uint8_t Dkc3VideoPpuWideLayerMask(uint8_t bg_mode,
                                   uint8_t main_layers,
                                   uint8_t sub_layers);
 
+/* Include layers enabled later by the frame's HDMA tables before assigning
+ * terrain/object-plane policies. The native register enables are untouched;
+ * DKC3_CULL_WIDEN=0 retains the frame-start-only selection for comparison. */
+uint8_t Dkc3VideoPpuFrameWideLayerMask(uint8_t bg_mode,
+                                       const uint8_t bg_xsc[4],
+                                       uint8_t main_layers,
+                                       uint8_t sub_layers,
+                                       const Dkc3HdmaBands *bands);
+
 /*
  * Return every enabled Mode-1 background that owns a physical 64-column
  * tilemap. This is a presentation capability, not terrain ownership: BG1/BG2
@@ -338,6 +356,21 @@ uint8_t Dkc3VideoRepeatLayerMask(uint8_t bg_mode,
                                  uint8_t main_layers,
                                  uint8_t sub_layers,
                                  uint8_t wide_layer_mask);
+
+/* The waterfall streamer at $B3:8609 reads a per-level sequence of 32px
+ * column groups and 32-word column templates from the verified ROM's B3
+ * bank. These helpers contain addresses and decoding rules, never art. */
+bool Dkc3VideoUsesWaterfallColumns(uint16_t level_flags, uint16_t renderer,
+                                    uint8_t bg_mode, uint8_t bg2_sc);
+bool Dkc3VideoDecodeWaterfallColumn(const uint8_t *bank, size_t bank_size,
+                                     uint16_t layout_pointer,
+                                     uint32_t world_tile_x,
+                                     uint16_t entries[32]);
+bool Dkc3VideoVerifyWaterfallViewport(const uint8_t *bank, size_t bank_size,
+                                       uint16_t layout_pointer,
+                                       const uint16_t *vram, size_t words,
+                                       uint16_t camera_x,
+                                       unsigned *matching, unsigned *total);
 
 /* Shortest distance between two 10-bit SNES scroll phases. */
 uint16_t Dkc3VideoScrollPhaseDistance(uint16_t a, uint16_t b);
@@ -445,12 +478,17 @@ uint32_t Dkc3VideoLevelMapTileY(uint16_t ppu_scroll_y,
  * vertical shafts (32 metatiles), 192 for the square scroller's audited
  * stage (96 metatiles: the cartridge's column builder $B5:B555 multiplies
  * the row by six), 32 for Parrot Chute Panic, 160 for the ship holds (80
- * metatiles), and 0 for the column-major horizontal layout. A stage can
+ * metatiles), and 0 for the column-major horizontal layouts. A stage can
  * run a different builder than its sub-mode suggests (Bramble $002D uses
  * the 160-byte rows), so the host verifies the stride against the native
  * ring and calibrates it when the default fails.
  */
 unsigned Dkc3VideoLevelLayoutRowBytes(Dkc3VideoLevelLayout layout);
+
+/* Metatile rows per column: 16 for shapes 0/8, 32 for shape 1, and 0 for
+ * layouts that are not column-major. Shape 1's column builder doubles the
+ * X stride and masks Y to $03E0 ($B7:BE5D-$B7:BE76). */
+unsigned Dkc3VideoLevelLayoutColumnRows(Dkc3VideoLevelLayout layout);
 
 /*
  * Decode one tile of a row-major level map with an explicit row stride:
@@ -459,7 +497,7 @@ unsigned Dkc3VideoLevelLayoutRowBytes(Dkc3VideoLevelLayout layout);
  * Dkc3VideoDecodeLevelTile.
  */
 /* The id (flip bits stripped) of the metatile at a level-map cell:
- * column-major 16-row pages for the horizontal layout, `row_bytes` strided
+ * column-major 16/32-row pages for the horizontal layouts, `row_bytes` strided
  * rows otherwise (0 takes the layout's stride). */
 bool Dkc3VideoReadLevelMetatile(const uint8_t *bank_data, size_t bank_size,
                                 uint16_t level_map_base,

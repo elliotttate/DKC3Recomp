@@ -29,6 +29,9 @@ bool Dkc3DesktopOverlayProcessWin32Message(Dkc3DesktopOverlay *overlay,
                                            intptr_t lparam);
 void Dkc3DesktopOverlaySetGamepad(Dkc3DesktopOverlay *overlay,
                                   const Dkc3GamepadState *gamepad);
+void Dkc3DesktopOverlaySetHapticsDevice(Dkc3DesktopOverlay *overlay,
+                                        const char *name,
+                                        bool rumble_supported);
 
 void Dkc3DesktopOverlayToggle(Dkc3DesktopOverlay *overlay);
 bool Dkc3DesktopOverlayIsOpen(const Dkc3DesktopOverlay *overlay);

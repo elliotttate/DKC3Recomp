@@ -27,6 +27,10 @@ int Dkc3LauncherReconstructSoftness(void);
 void Dkc3LauncherSetReconstructSoftness(int percent);
 int Dkc3LauncherReconstructShading(void);
 void Dkc3LauncherSetReconstructShading(int percent);
+/* DKC3-specific enemy-stomp controller feedback, persisted alongside the
+ * shared launcher settings. */
+int Dkc3LauncherHaptics(void);
+void Dkc3LauncherSetHaptics(int enabled);
 
 void Dkc3LauncherSettingsDefault(RecompLauncherCSettings *settings);
 void Dkc3LauncherSettingsLoad(RecompLauncherCSettings *settings);

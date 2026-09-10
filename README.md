@@ -37,6 +37,20 @@ Floodlit Fish's underwater BG3 color-math composition now receives its
 subscreen tint across transparent side-margin pixels without clipping the
 reconstructed BG1 terrain at the native edges, verified at the reported
 quick-save state in 16:10, 16:9, and 21:9 with an unchanged 4:3 frame.
+KAOS's body layer, enabled partway down the frame by HDMA, now uses its
+complete object tilemap in the wide margins. This fixes the right-edge body
+cutoff and the repeated fragment at the left edge in the reported boss save.
+The streamed waterfall layer now decodes its authored columns into the wide
+margins, checked against the native tilemap every frame. Waterfalls keep their
+world positions after scrolling instead of disappearing at one edge and
+repeating at the other, verified at the reported save in all wide aspects.
+Bleak's snowball arena now preserves Mode 2's correct background/sprite order,
+so the snowman appears in front of the distant snowbank and behind foreground
+cover. Its bounded background maps fill 16:10, 16:9, and 21:9 using their
+hardware wrap, with the native center and gameplay unchanged by widening.
+Pothole Panic's cave now fills the wide view from its authored level map.
+Its shape-1 layout uses 32 metatile rows per column, twice the height of
+the previously supported horizontal layout.
 
 A second layer that streams a strip of the level map, Riverside Race's
 reflection under the water line, is served in the margins from the
@@ -133,6 +147,35 @@ and emits the private recompiled units under `generated/` (ignored by Git).
 runner, bundles SDL2, embeds the project icon, and ad-hoc signs the app. Open
 the app and select the ROM in its launcher.
 
+The SDL host gives the active player's game controller a short haptic pulse
+when a descending jump both defeats an enemy and rebounds upward. The trigger
+observes the enemy's actual defeated-sprite transition, so ordinary jumps,
+damage, swimming, and enemies defeated by unrelated causes do not activate
+it. The rumble request runs off the frame-critical thread. The pause menu's
+Settings tab shows the detected controller and rumble capability, provides a
+test pulse, enables or disables the feedback, and remembers that choice;
+setting `DKC3_HAPTICS=0` when launching the app also disables it.
+
+On macOS, optional MSU-1 replacement music can be enabled from **Music >
+Choose MSU-1 Music Pack…**. Choose **PCM Folder** for an extracted pack or
+**.msu1 Archive** for an archive, select it, then restart the app. The host
+accepts `track-N.pcm`,
+`dkc3_msu-N.pcm`, and `dkc3_msu1-N.pcm` naming, mixes the 44.1 kHz music with
+the game's original sound effects, and preserves the selected pack for later
+launches. **Music > Disable Replacement Music** restores the stock soundtrack
+after a restart. For development runs, `DKC3_MSU1_PACK=/path/to/pack` selects
+a pack, `DKC3_MSU1_DISABLE=1` suppresses a saved selection, and
+`DKC3_MSU1_GAIN=0.0..4.0` adjusts replacement-music gain.
+Quick loads and rewind keep the current music choice: older saves cannot
+bring the original soundtrack back underneath a replacement pack. Disabling
+replacement music also restores native sequencing when loading an MSU-era save.
+
+For macOS audio isolation checks, the headless runner accepts an explicit
+`DKC3_MSU1_PACK` too (it never reads the app's saved pack preference). Combine
+it with `DKC3_MSU1_GAIN=0`, `DKC3_SAVESTATE_INPUT`, and `DKC3_AUDIO_PCM` to
+capture only the remaining stock sound effects; omit the gain override to
+capture the full replacement mix.
+
 ## Headless validation
 
 ```bash
@@ -146,6 +189,9 @@ in `runner/headless_main.c` write frames as PPM (`DKC3_FRAME_PPM`,
 (`DKC3_AUDIO_PCM`), and memory dumps, restore an SRAM image or a quick
 save (`DKC3_SRAM_INPUT`, `DKC3_SAVESTATE_INPUT`), and replay scripted
 input (`SNESRECOMP_INPUT_PLAY`).
+`DKC3_PPU_LEGACY=1` selects the independent scalar renderer for pixel-oracle
+comparisons. CMake applies the checked Mode 2 priority adaptation to a build
+copy of the pinned PPU source; the submodule stays unchanged.
 
 ## Regenerating the bank configuration
 

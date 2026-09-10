@@ -20,6 +20,11 @@ option(DKC3_BUILD_SNESRECOMP
 option(DKC3_FETCH_SDL2
     "Fetch the pinned SDL2 source when no system package is available" ON)
 
+if(NOT DEFINED SNESRECOMP_ROOT)
+    set(SNESRECOMP_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/snesrecomp)
+endif()
+include(cmake/Dkc3Ppu.cmake)
+
 function(dkc3_enable_project_warnings target_name)
     if(MSVC)
         # Visual Studio otherwise sends every source in a target through one
@@ -57,6 +62,8 @@ if(DKC3_BUILD_SNESRECOMP)
             "snesrecomp is not initialized; run git submodule update --init --recursive")
     endif()
     include(${SNESRECOMP_ROOT}/runner/runner.cmake)
+    list(REMOVE_ITEM SNESRECOMP_RUNNER_SOURCES "${DKC3_PPU_SOURCE}")
+    list(APPEND SNESRECOMP_RUNNER_SOURCES "${DKC3_PATCHED_PPU}")
     # SDL2 and recomp-ui are portable dependencies shared by the launcher and
     # the gameplay host on Windows, Linux, and macOS. Prefer a package config
     # (vcpkg/Homebrew commonly provide one), then accept a distribution module.
@@ -98,6 +105,10 @@ if(DKC3_BUILD_SNESRECOMP)
         runner/input_playback.c
         runner/verified_rom.c
         runner/headless_main.c)
+    target_sources(dkc3_snesrecomp_headless PRIVATE runner/dkc3_spc_music.c)
+    if(APPLE)
+        target_sources(dkc3_snesrecomp_headless PRIVATE runner/dkc3_msu1.c)
+    endif()
     target_include_directories(dkc3_snesrecomp_headless PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/runner
         ${CMAKE_CURRENT_SOURCE_DIR}/recomp
@@ -197,6 +208,7 @@ if(DKC3_BUILD_SNESRECOMP)
         ${SNESRECOMP_RUNNER_SOURCES}
         ${DKC3_SNESRECOMP_GEN_SOURCES}
         runner/dkc3_game.c
+        runner/dkc3_haptics.c
         runner/dkc3_video.c
         runner/dkc3_hdma.c
         runner/diagnostics.c
@@ -220,6 +232,7 @@ if(DKC3_BUILD_SNESRECOMP)
     if(APPLE)
         enable_language(OBJC)
         target_sources(dkc3_snesrecomp_sdl PRIVATE
+            runner/dkc3_msu1.c
             runner/macos_host.m
             runner/macos_display_link.m
             assets/macos/DKC3Recomp.icns)
@@ -230,6 +243,10 @@ if(DKC3_BUILD_SNESRECOMP)
         ${CMAKE_CURRENT_SOURCE_DIR}/runner
         ${CMAKE_CURRENT_SOURCE_DIR}/recomp
         ${SNESRECOMP_RUNNER_INCLUDE_DIRS})
+    target_sources(dkc3_snesrecomp_sdl PRIVATE runner/dkc3_spc_music.c)
+    if(TARGET dkc3_snesrecomp_desktop)
+        target_sources(dkc3_snesrecomp_desktop PRIVATE runner/dkc3_spc_music.c)
+    endif()
     target_compile_definitions(dkc3_snesrecomp_sdl PRIVATE
         DKC3_RELEASE_VERSION="${PROJECT_VERSION}"
         SNESRECOMP_TRACE=$<BOOL:${SNESRECOMP_ENABLE_TRACE}>
@@ -244,7 +261,8 @@ if(DKC3_BUILD_SNESRECOMP)
     if(APPLE)
         target_link_libraries(dkc3_snesrecomp_sdl PRIVATE
             "-framework AppKit"
-            "-framework QuartzCore")
+            "-framework QuartzCore"
+            "-framework UniformTypeIdentifiers")
     endif()
     if(UNIX AND NOT APPLE)
         target_link_libraries(dkc3_snesrecomp_sdl PRIVATE m)
@@ -395,6 +413,17 @@ if(DKC3_BUILD_SNESRECOMP)
 endif()
 
 if(BUILD_TESTING)
+    add_executable(test_dkc3_ppu_mode2
+        tests/test_dkc3_ppu_mode2.c
+        ${DKC3_PATCHED_PPU}
+        ${SNESRECOMP_ROOT}/runner/src/snes/ppu_legacy.c)
+    target_include_directories(test_dkc3_ppu_mode2 PRIVATE
+        ${SNESRECOMP_ROOT}/runner/src
+        ${SNESRECOMP_ROOT}/runner/src/snes)
+    target_compile_definitions(test_dkc3_ppu_mode2 PRIVATE
+        SNESRECOMP_REVERSE_DEBUG=0)
+    add_test(NAME dkc3_ppu_mode2 COMMAND test_dkc3_ppu_mode2)
+    set_tests_properties(dkc3_ppu_mode2 PROPERTIES LABELS "unit;video;ppu")
     find_package(Python3 QUIET COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
         add_test(NAME dkc3_pacing_log_tool
@@ -490,6 +519,61 @@ if(BUILD_TESTING)
     add_test(NAME dkc3_video COMMAND test_dkc3_video)
     set_tests_properties(dkc3_video PROPERTIES
         LABELS "unit;desktop;video;widescreen")
+
+    add_executable(test_dkc3_haptics
+        tests/test_dkc3_haptics.c
+        runner/dkc3_haptics.c)
+    target_include_directories(test_dkc3_haptics PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/runner)
+    dkc3_enable_project_warnings(test_dkc3_haptics)
+    add_test(NAME dkc3_haptics COMMAND test_dkc3_haptics)
+    set_tests_properties(dkc3_haptics PROPERTIES
+        LABELS "unit;desktop;input;haptics")
+
+    if(TARGET SDL2::SDL2)
+        add_executable(test_desktop_launcher_settings
+            tests/test_desktop_launcher_settings.c
+            runner/desktop_launcher.c)
+        target_include_directories(test_desktop_launcher_settings PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/runner
+            ${CMAKE_CURRENT_SOURCE_DIR}/recomp-ui/src
+            ${CMAKE_CURRENT_SOURCE_DIR}/recomp-ui/src/common)
+        target_link_libraries(test_desktop_launcher_settings PRIVATE
+            SDL2::SDL2)
+        dkc3_enable_project_warnings(test_desktop_launcher_settings)
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/desktop-launcher-settings-test")
+        add_test(NAME desktop_launcher_settings
+            COMMAND test_desktop_launcher_settings)
+        set_tests_properties(desktop_launcher_settings PROPERTIES
+            LABELS "unit;desktop;launcher;haptics"
+            WORKING_DIRECTORY
+                "${CMAKE_CURRENT_BINARY_DIR}/desktop-launcher-settings-test")
+    endif()
+
+    add_executable(test_dkc3_spc_music
+        tests/test_dkc3_spc_music.c
+        runner/dkc3_spc_music.c)
+    target_include_directories(test_dkc3_spc_music PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/runner
+        ${CMAKE_CURRENT_SOURCE_DIR}/snesrecomp/runner/src)
+    dkc3_enable_project_warnings(test_dkc3_spc_music)
+    add_test(NAME dkc3_spc_music COMMAND test_dkc3_spc_music)
+    set_tests_properties(dkc3_spc_music PROPERTIES LABELS "unit;audio;msu1")
+
+    if(APPLE)
+        add_executable(test_dkc3_msu1
+            tests/test_dkc3_msu1.c
+            runner/dkc3_msu1.c)
+        target_include_directories(test_dkc3_msu1 PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/runner)
+        dkc3_enable_project_warnings(test_dkc3_msu1)
+        add_test(NAME dkc3_msu1
+            COMMAND test_dkc3_msu1
+                ${CMAKE_CURRENT_BINARY_DIR}/dkc3-msu1-test)
+        set_tests_properties(dkc3_msu1 PROPERTIES
+            LABELS "unit;desktop;audio;msu1;macos")
+    endif()
 
     if(WIN32)
         if(TARGET SDL2::SDL2)

@@ -70,6 +70,78 @@ static bool CheckMargins(uint16_t camera_x, uint16_t maximum_scroll_x,
 }
 
 int main(void) {
+  {
+    /* Synthetic templates: no cartridge data is part of this fixture. */
+    static uint8_t waterfall_bank[0x10000];
+    static uint16_t waterfall_vram[0x8000];
+    for (unsigned index = 0; index < 10; index++)
+      WriteWord(waterfall_bank, (uint16_t)(0x869b + index * 2),
+                index == 1 ? 0x870e : 0x86ae);
+    const uint8_t groups[] = {0, 1, 7, 2, 3, 4, 5, 6};
+    memcpy(waterfall_bank + 0x86af, groups, sizeof groups);
+    for (unsigned column = 0; column < 29; column++)
+      for (unsigned row = 0; row < 32; row++)
+        WriteWord(waterfall_bank,
+                  (uint16_t)(0x87b6 + column * 64 + row * 2),
+                  (uint16_t)(0x2000 + column * 32 + row));
+    uint16_t column[32];
+    const unsigned probes[] = {32, 35, 36, 39, 40, 43};
+    const unsigned templates[] = {0, 0, 1, 4, 25, 28};
+    for (unsigned probe = 0; probe < sizeof probes / sizeof probes[0]; probe++) {
+      if (!Dkc3VideoDecodeWaterfallColumn(waterfall_bank, sizeof waterfall_bank,
+                                            0x86ae, probes[probe], column))
+        return fprintf(stderr, "FAIL: waterfall column decode\n"), 1;
+      for (unsigned row = 0; row < 32; row++)
+        if (column[row] != 0x2000 + templates[probe] * 32 + row)
+          return fprintf(stderr, "FAIL: waterfall template addressing\n"), 1;
+    }
+    if (!Dkc3VideoUsesWaterfallColumns(0x206, 0x0d, 9, 0x71) ||
+        !Dkc3VideoUsesWaterfallColumns(0x200, 0x17, 1, 0x71) ||
+        !Dkc3VideoUsesWaterfallColumns(0x200, 0x1b, 1, 0x71) ||
+        Dkc3VideoUsesWaterfallColumns(0x006, 0x0d, 9, 0x71) ||
+        Dkc3VideoUsesWaterfallColumns(0x206, 0x0c, 9, 0x71) ||
+        Dkc3VideoUsesWaterfallColumns(0x206, 0x0d, 7, 0x71) ||
+        Dkc3VideoUsesWaterfallColumns(0x206, 0x0d, 9, 0x70))
+      return fprintf(stderr, "FAIL: waterfall scene gate\n"), 1;
+    if (Dkc3VideoDecodeWaterfallColumn(NULL, sizeof waterfall_bank,
+                                         0x86ae, 32, column) ||
+        Dkc3VideoDecodeWaterfallColumn(waterfall_bank, 0xffff, 0x86ae, 32, column) ||
+        Dkc3VideoDecodeWaterfallColumn(waterfall_bank, sizeof waterfall_bank,
+                                         0xffff, 32, column) ||
+        Dkc3VideoDecodeWaterfallColumn(waterfall_bank, sizeof waterfall_bank,
+                                         0x86ae, 31, column) ||
+        Dkc3VideoDecodeWaterfallColumn(waterfall_bank, sizeof waterfall_bank,
+                                         0x86ae, 32 + 96 * 4, column) ||
+        Dkc3VideoDecodeWaterfallColumn(waterfall_bank, sizeof waterfall_bank,
+                                         0x86ae, 32, NULL))
+      return fprintf(stderr, "FAIL: waterfall decoder bounds\n"), 1;
+    waterfall_bank[0x86af] = 8;
+    if (Dkc3VideoDecodeWaterfallColumn(waterfall_bank, sizeof waterfall_bank,
+                                         0x86ae, 32, column))
+      return fprintf(stderr, "FAIL: invalid waterfall template accepted\n"), 1;
+    waterfall_bank[0x86af] = 0;
+    for (unsigned col = 32; col < 64; col++) {
+      Dkc3VideoDecodeWaterfallColumn(waterfall_bank, sizeof waterfall_bank,
+                                       0x86ae, col, column);
+      for (unsigned row = 0; row < 32; row++)
+        waterfall_vram[0x7400 + row * 32 + (col & 31)] = column[row];
+    }
+    unsigned matching = 0, total = 0;
+    if (!Dkc3VideoVerifyWaterfallViewport(waterfall_bank, sizeof waterfall_bank,
+          0x86ae, waterfall_vram, 0x8000, 0x100, &matching, &total) ||
+        matching != 1024 || total != 1024)
+      return fprintf(stderr, "FAIL: waterfall native viewport verification\n"), 1;
+    waterfall_vram[0x7400] ^= 1;
+    if (Dkc3VideoVerifyWaterfallViewport(waterfall_bank, sizeof waterfall_bank,
+          0x86ae, waterfall_vram, 0x8000, 0x100, &matching, &total) ||
+        matching != 1023 || total != 1024 ||
+        !Dkc3VideoVerifyWaterfallViewport(waterfall_bank, sizeof waterfall_bank,
+          0x86ae, waterfall_vram, 0x8000, 0x107, &matching, &total) ||
+        matching != 992 || total != 992 ||
+        Dkc3VideoVerifyWaterfallViewport(waterfall_bank, sizeof waterfall_bank,
+          0x86ae, NULL, 0x8000, 0x100, NULL, NULL))
+      return fprintf(stderr, "FAIL: waterfall mismatch and fine-scroll gates\n"), 1;
+  }
   uint16_t placement_cells[3] = {0xffff, 0xffff, 0xffff};
   if (!Dkc3VideoUsesUnderwaterSubscreenTint(
           0x09, 0x04, 0x13, 0x04, 0x00, 0x00000300, 0x00, 0xff,
@@ -146,6 +218,38 @@ int main(void) {
   }
 
   Dkc3VideoAspect parsed_aspect = kDkc3VideoAspectNative;
+  {
+    uint8_t maps[4] = {0x7c, 0x74, 0, 0};
+    uint16_t opt[0x400] = {0};
+#define SNOW(in_level, level, mode, bases, hdma, words, count) \
+    Dkc3VideoUsesSnowArenaPlanes(in_level, level, mode, maps, bases, hdma, words, count)
+    if (!SNOW(true, 0x21, 2, 0x22, 0, opt, 0x400) ||
+        SNOW(false, 0x21, 2, 0x22, 0, opt, 0x400) ||
+        SNOW(true, 0x20, 2, 0x22, 0, opt, 0x400) ||
+        SNOW(true, 0x21, 1, 0x22, 0, opt, 0x400) ||
+        SNOW(true, 0x21, 0x12, 0x22, 0, opt, 0x400) ||
+        SNOW(true, 0x21, 2, 0x23, 0, opt, 0x400) ||
+        SNOW(true, 0x21, 2, 0x22, 1, opt, 0x400) ||
+        SNOW(true, 0x21, 2, 0x22, 0, opt, 0x3ff) ||
+        SNOW(true, 0x21, 2, 0x22, 0, NULL, 0x400) ||
+        Dkc3VideoUsesSnowArenaPlanes(true, 0x21, 2, NULL, 0x22, 0, opt, 0x400))
+      return fprintf(stderr, "FAIL: snow arena scene gate\n"), 1;
+    for (int layer = 0; layer < 3; layer++) {
+      maps[layer] ^= 1;
+      if (SNOW(true, 0x21, 2, 0x22, 0, opt, 0x400))
+        return fprintf(stderr, "FAIL: snow arena map gate\n"), 1;
+      maps[layer] ^= 1;
+    }
+    for (unsigned word = 0; word < 0x400; word++) {
+      for (unsigned bit = 0x2000; bit <= 0x4000; bit <<= 1) {
+        opt[word] = (uint16_t)bit;
+        if (SNOW(true, 0x21, 2, 0x22, 0, opt, 0x400))
+          return fprintf(stderr, "FAIL: active snow arena OPT\n"), 1;
+      }
+      opt[word] = 0;
+    }
+#undef SNOW
+  }
   if (kDkc3VideoAspectNative != 0 || kDkc3VideoAspect16x10 != 1 ||
       kDkc3VideoAspect16x9 != 2 || kDkc3VideoAspect21x9 != 3 ||
       !Dkc3VideoAspectFromName("16:10", &parsed_aspect) ||
@@ -631,6 +735,43 @@ int main(void) {
       fprintf(stderr, "FAIL: HDMA band dry run (%d bands)\n", bands.count);
       return 1;
     }
+    /* KAOS's body layer is enabled only for a middle HDMA band. Its
+     * 64-column map must qualify before the per-band object-plane policy
+     * runs; bounded BG3 must still repeat and colliding maps stay rejected. */
+    uint8_t *body_table = s_fake_wram + 0x2500;
+    const uint8_t body_enables[] = {19, 0x16, 0, 128, 0x17, 0,
+                                     77, 0x16, 0, 0};
+    memcpy(body_table, body_enables, sizeof body_enables);
+    memset(channels, 0, sizeof channels);
+    channels[0].active = true;
+    channels[0].b_address = 0x2c;
+    channels[0].mode = 1;
+    channels[0].table_address = 0x7e2500;
+    Dkc3HdmaFrameState body_start = start;
+    const uint8_t body_maps[4] = {0x71, 0x79, 0x6c, 0};
+    memcpy(body_start.bg_sc, body_maps, sizeof body_maps);
+    body_start.main_layers = 0x16;
+    body_start.sub_layers = 0;
+    Dkc3HdmaScanBands(channels, &body_start, &memory, &bands);
+    if (bands.count != 3 || bands.band[1].first_line != 20 ||
+        bands.band[1].last_line != 147 ||
+        Dkc3VideoPpuFrameWideLayerMask(9, body_maps, 0x16, 0, NULL) != 2 ||
+        Dkc3VideoPpuFrameWideLayerMask(9, body_maps, 0x16, 0, &bands) != 3 ||
+        Dkc3VideoPpuFrameWideLayerMask(7, body_maps, 0x16, 0, &bands) != 0 ||
+        Dkc3VideoPpuFrameWideLayerMask(9, NULL, 0x16, 0, &bands) != 0) {
+      fprintf(stderr, "FAIL: HDMA-only boss layer widescreen selection\n");
+      return 1;
+    }
+    /* The same late enable may be on the subscreen for color math. */
+    body_table[4] = 0x16;
+    body_table[5] = 1;
+    Dkc3HdmaScanBands(channels, &body_start, &memory, &bands);
+    const uint8_t colliding_maps[4] = {0x71, 0x74, 0x6c, 0};
+    if (Dkc3VideoPpuFrameWideLayerMask(9, body_maps, 0x16, 0, &bands) != 3 ||
+        Dkc3VideoPpuFrameWideLayerMask(9, colliding_maps, 0x16, 0, &bands) != 0) {
+      fprintf(stderr, "FAIL: HDMA subscreen layer and tilemap collision gate\n");
+      return 1;
+    }
     /* Without any active channel the whole frame is one band. */
     memset(channels, 0, sizeof channels);
     Dkc3HdmaScanBands(channels, &start, &memory, &bands);
@@ -947,6 +1088,60 @@ int main(void) {
       Dkc3VideoLevelMapTileY(0x003d, 0x0246, 0) != 39) {
     fprintf(stderr, "FAIL: rolling level-map source page selection\n");
     return 1;
+  }
+  {
+    /* Shape 1 (Pothole Panic): two columns, each with 32 metatile rows.
+     * Distinct upper/lower halves catch the old 16-row addressing. */
+    uint8_t bank[0x10000] = {0};
+    uint16_t tile = 0, id = 0, ids[2], counts[2];
+    const Dkc3VideoLevelLayout layout =
+        Dkc3VideoLevelLayoutForScene(1, 0x45);
+    if (layout != kDkc3VideoLevelLayoutTallHorizontal ||
+        Dkc3VideoLevelLayoutColumnRows(layout) != 32 ||
+        Dkc3VideoLevelLayoutRowBytes(layout) != 0 ||
+        Dkc3VideoLevelLayoutColumnRows(kDkc3VideoLevelLayoutHorizontal) != 16 ||
+        Dkc3VideoLevelLayoutColumnRows(kDkc3VideoLevelLayoutVertical) != 0 ||
+        Dkc3VideoLevelLayoutColumnRows(kDkc3VideoLevelLayoutUnknown) != 0 ||
+        Dkc3VideoLevelLayoutForScene(2, 0x45) != kDkc3VideoLevelLayoutUnknown) {
+      fprintf(stderr, "FAIL: column-major layout selection\n");
+      return 1;
+    }
+    for (unsigned y = 0; y < 32; y++) {
+      WriteWord(bank, (uint16_t)(0x1000 + y * 2), 3);
+      WriteWord(bank, (uint16_t)(0x1040 + y * 2), y < 16 ? 5 : 7);
+    }
+    WriteWord(bank, 0x20b2, 0x1234); /* id 5, sub-tile (1,2) */
+    WriteWord(bank, 0x20f2, 0x2345); /* id 7, sub-tile (1,2) */
+    for (unsigned y = 0; y < 64; y++) {
+      const uint16_t expected = (y & 31) < 16 ? 0x1234 : 0x2345;
+      if (!Dkc3VideoDecodeLevelTile(bank, sizeof bank, 0x1000, 0x2000,
+                                     layout, 5, y * 4 + 2, &tile) ||
+          tile != expected ||
+          !Dkc3VideoReadLevelMetatile(bank, sizeof bank, 0x1000, layout, 0,
+                                       1, y, &id) ||
+          id != ((y & 31) < 16 ? 5 : 7)) {
+        fprintf(stderr, "FAIL: tall horizontal column addressing at row %u\n", y);
+        return 1;
+      }
+    }
+    if (Dkc3VideoMetatileNeighbours(bank, sizeof bank, 0x1000, 0x1080,
+                                     layout, 0, 3, true, ids, counts, 2) != 2 ||
+        counts[0] != 16 || counts[1] != 16 ||
+        !((ids[0] == 5 && ids[1] == 7) || (ids[0] == 7 && ids[1] == 5))) {
+      fprintf(stderr, "FAIL: tall horizontal map extent and neighbours\n");
+      return 1;
+    }
+    /* Double flip and 16-bit column address wrapping use the same source
+     * definition as the native cartridge, including its bit-11 carry. */
+    WriteWord(bank, 0x1064, 0xc803);
+    WriteWord(bank, 0x206d, 0x0567);
+    if (!Dkc3VideoDecodeLevelTile(bank, sizeof bank, 0x1000, 0x2000,
+                                   layout, 5, 74, &tile) || tile != 0xc567 ||
+        !Dkc3VideoDecodeLevelTile(bank, sizeof bank, 0x1000, 0x2000,
+                                   layout, 4101, 74, &tile) || tile != 0xc567) {
+      fprintf(stderr, "FAIL: tall horizontal flips and address wrapping\n");
+      return 1;
+    }
   }
   {
     uint8_t bank[0x10000];

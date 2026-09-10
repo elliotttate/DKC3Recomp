@@ -2,6 +2,7 @@
 #include "dkc3_hdma.h"
 #include "dkc3_video.h"
 #include "dkc3_facts.h"
+#include "dkc3_spc_music.h"
 
 #include "common_cpu_infra.h"
 #include "common_rtl.h"
@@ -54,9 +55,35 @@ enum {
   /* A world band of a second layer whose rows are the terrain ring's rows
    * at a fixed vertical offset (an underwater reflection of the ceiling). */
   kDkc3BandPolicyAlias = 3,
+  kDkc3BandPolicyWaterfall = 4,
 };
 static Dkc3HdmaBands s_frame_bands;
 static uint8_t s_band_policy[2][kDkc3HdmaMaxBands];
+static bool s_waterfall_scene;
+static bool s_waterfall_verified;
+static uint32_t s_waterfall_world_x;
+
+static void Dkc3CheckWaterfallSource(uint8_t wide_mask, int terrain_layer) {
+  s_waterfall_scene = terrain_layer == 0 && (wide_mask & 2u) &&
+      Dkc3VideoUsesWaterfallColumns(Dkc3FactRead16(0x0775),
+          Dkc3FactRead16(0x0056), g_ppu->bgmode, g_ppu->bgXsc[1]) &&
+      !PPU_bigTiles(g_ppu, 1);
+  s_waterfall_verified = false;
+  if (!s_waterfall_scene)
+    return;
+  s_waterfall_world_x = Dkc3VideoTerrainShadowX(
+      g_ppu->hScroll[1], Dkc3FactRead16(kDkc3WramCameraX));
+  unsigned matching = 0, total = 0;
+  /* F3 is the full HiROM mirror of bank B3; B3:0000 itself maps WRAM. */
+  s_waterfall_verified = Dkc3VideoVerifyWaterfallViewport(
+      RomPtr(0xf30000), 0x10000u, Dkc3FactRead16(0x15e4),
+      g_ppu->vram, 0x8000u, (uint16_t)s_waterfall_world_x,
+      &matching, &total);
+  if (getenv("DKC3_WATERFALL_TRACE"))
+    fprintf(stderr, "waterfall frame=%u camera=%u verified=%d cells=%u/%u\n",
+            (unsigned)snes_frame_counter, (unsigned)s_waterfall_world_x,
+            s_waterfall_verified, matching, total);
+}
 /* The terrain layer's rendered scroll phase for the frame
  * (Dkc3VideoSelectTerrainPhase): the key for the world store, the prefill's
  * source rows, and the band classification. */
@@ -109,6 +136,22 @@ static uint16_t s_placement_scan[kDkc3PlacementListWords];
 static size_t s_placement_scan_count;
 static size_t s_placement_scan_index;
 static bool s_placement_scan_combined;
+static uint16_t s_music_transition;
+static bool s_music_transition_pending;
+
+void Dkc3RecordMusicTransition(uint16_t command) {
+  s_music_transition = command;
+  s_music_transition_pending = true;
+}
+
+int Dkc3TakeMusicTransition(uint16_t *command) {
+  if (!s_music_transition_pending)
+    return 0;
+  if (command)
+    *command = s_music_transition;
+  s_music_transition_pending = false;
+  return 1;
+}
 
 int Dkc3GetPlaneBandCount(int layer) {
   return layer >= 0 && layer < 2 ? s_plane_band_count[layer] : 0;
@@ -638,6 +681,13 @@ static void Dkc3LoadExtra(SaveLoadInfo *sli, uint32_t version) {
 
 static void Dkc3OnStateLoaded(uint32_t version) {
   (void)version;
+  /* Pack selection belongs to the current host session, not the snapshot.
+   * Both file loads and in-memory rewind restores pass through this hook. */
+  RtlApuLock();
+  if (g_snes && g_snes->cart)
+    (void)Dkc3RestoreSpcMusicPolicy(
+        g_snes->apu, g_rom, g_snes->cart->romSize);
+  RtlApuUnlock();
   g_cpu.ram = g_ram;
   g_apu_last_sync_master = g_cpu.master_cycles;
   g_snes->beamMasterLast = g_cpu.master_cycles;
@@ -862,7 +912,7 @@ static bool Dkc3DecodeLevelTile(const uint8_t *bank_data, uint16_t map_base,
                                 Dkc3VideoLevelLayout layout,
                                 unsigned row_bytes, uint32_t tile_x,
                                 uint32_t tile_y, uint16_t *entry) {
-  if (layout == kDkc3VideoLevelLayoutHorizontal || row_bytes == 0)
+  if (Dkc3VideoLevelLayoutColumnRows(layout) != 0 || row_bytes == 0)
     return Dkc3VideoDecodeLevelTile(bank_data, 0x10000u, map_base,
                                     metatile_base, layout, tile_x, tile_y,
                                     entry);
@@ -1374,7 +1424,7 @@ static bool Dkc3PrefillWidescreenLevelTerrain(uint8_t layer_mask,
   size_t decoded = 0;
   size_t expected = 0;
   unsigned row_bytes = 0;
-  if (layout != kDkc3VideoLevelLayoutHorizontal) {
+  if (Dkc3VideoLevelLayoutColumnRows(layout) == 0) {
     unsigned percent = 0;
     row_bytes = Dkc3CalibrateRowStride(
         bank_data, map_base, metatile_base, layout, terrain_layer,
@@ -1721,6 +1771,33 @@ static bool Dkc3PrefillWidescreenLevelTerrain(uint8_t layer_mask,
   return expected != 0 && decoded == expected;
 }
 
+/* Decode the waterfall's streamed columns at their world positions. The
+ * native viewport remains authoritative; only the host store is filled. */
+static void Dkc3PrefillWaterfall(int presentation_bias) {
+  if (!s_waterfall_scene)
+    return;
+  const uint8_t *bank = RomPtr(0xf30000);
+  const uint16_t pointer = Dkc3ReadWram16(0x15e4);
+  uint16_t blank = 0;
+  Dkc3VideoFindTransparent4bppTile(g_ppu->vram, 0x8000u,
+                                   (uint16_t)PPU_bgTileAdr(g_ppu, 1), &blank);
+  const int origin = (int)s_waterfall_world_x + presentation_bias;
+  int first = (origin - Dkc3VideoExtra()) / 8 - 1;
+  if (first < 0) first = 0;
+  const int end = (origin + 256 + Dkc3VideoExtra() + 7) / 8 + 1;
+  for (int col = first; col < end; col++) {
+    uint16_t entries[32];
+    const bool decoded = s_waterfall_verified &&
+        Dkc3VideoDecodeWaterfallColumn(bank, 0x10000u, pointer,
+                                         (uint32_t)col, entries);
+    /* HDMA animates the 10-bit vertical phase. The column DMA contains a
+     * full 32-row hardware wrap, so seed all four epochs the PPU can use. */
+    for (unsigned row = 0; row < 128; row++)
+      WsShadowForceTile(1, (uint32_t)col, row,
+                        decoded ? entries[row & 31u] : blank);
+  }
+}
+
 /* Register the terrain owner's world-keyed store (and, when another physical
  * 64-column layer displays the same world map in some HDMA band, that layer
  * as a read-only view of the owner's store), capture the owner's native
@@ -1809,7 +1886,14 @@ static bool Dkc3PrepareWidescreenShadow(uint8_t layer_mask,
   for (int layer = 0; layer < 2; layer++) {
     if (layer == terrain_layer)
       continue;
-    if (have_owner && alias_layer[layer] &&
+    if (have_owner && layer == 1 && s_waterfall_scene) {
+      WsShadowSetWorld(1, s_waterfall_world_x, 0);
+      WsShadowSetScroll(1, g_ppu->hScroll[1], 0);
+      WsShadowSetRespectGameWrites(1, 0);
+      WsShadowSetNativeViewportInset(1,
+          presentation_bias < 0 ? -presentation_bias : 0,
+          presentation_bias > 0 ? presentation_bias : 0);
+    } else if (have_owner && alias_layer[layer] &&
         (layer_mask & (uint8_t)(1u << layer))) {
       /* The view shares the owner's keys. The renderer adds this layer's own
        * per-line scroll delta, so a band that leads the frame anchor by a
@@ -1831,6 +1915,7 @@ static bool Dkc3PrepareWidescreenShadow(uint8_t layer_mask,
   }
 
   WsShadowFrame(g_ppu);
+  Dkc3PrefillWaterfall(presentation_bias);
   if (!have_owner)
     return false;
   return Dkc3PrefillWidescreenLevelTerrain(
@@ -1925,7 +2010,8 @@ static void Dkc3ClassifyBands(uint8_t wide_layer_mask,
     s_plane_band_count[layer] = 0;
     s_alias_offset_rows[layer] = 0;
     const bool wide = (wide_layer_mask & (uint8_t)(1u << layer)) != 0;
-    if (wide && have_owner && layer != terrain_layer) {
+    if (wide && have_owner && layer != terrain_layer &&
+        !(layer == 1 && s_waterfall_scene)) {
       /* Verify against the ring phase of the layer's first band that
        * scrolls with the terrain; a parallax band above the water (the
        * foliage, 130 pixels off) must not stand in for the water bands. */
@@ -1961,6 +2047,10 @@ static void Dkc3ClassifyBands(uint8_t wide_layer_mask,
     }
     for (int index = 0; index < bands->count; index++) {
       const Dkc3HdmaBand *band = &bands->band[index];
+      if (layer == 1 && s_waterfall_scene) {
+        policy[layer][index] = kDkc3BandPolicyWaterfall;
+        continue;
+      }
       const bool at_phase =
           have_owner && wide &&
           Dkc3VideoScrollAtTerrainPhase(
@@ -2007,8 +2097,8 @@ static void Dkc3ClassifyBands(uint8_t wide_layer_mask,
     }
   }
   /* DKC3_BAND_DUMP=1: print every scanline band's scrolls, tilemap
-   * register, and the policy chosen for each wide layer (W world, P plane,
-   * R repeat, - not wide) to stderr each frame. A band whose policy
+   * register, and the policy chosen for each wide layer (W world, A alias,
+   * F waterfall, P plane, R repeat, - not wide) to stderr each frame. A band whose policy
    * alternates between frames shows as a strip that changes texture. */
   if (getenv("DKC3_BAND_DUMP")) {
     fprintf(stderr, "bands %d frame %u:", bands->count, s_plane_frame);
@@ -2021,6 +2111,7 @@ static void Dkc3ClassifyBands(uint8_t wide_layer_mask,
                 !wide ? '-'
                 : policy[layer][index] == kDkc3BandPolicyWorld ? 'W'
                 : policy[layer][index] == kDkc3BandPolicyAlias ? 'A'
+                : policy[layer][index] == kDkc3BandPolicyWaterfall ? 'F'
                 : policy[layer][index] == kDkc3BandPolicyPlane ? 'P' : 'R',
                 band->bg_sc[layer], band->h_scroll[layer],
                 band->v_scroll[layer]);
@@ -2161,11 +2252,15 @@ void Dkc3DrawPpuFrame(void) {
    * reset/state restore deliberately does not serialize presentation
    * geometry.
    */
+  s_frame_bands.count = 0;
+  if (Dkc3VideoIsWidescreen() && layout != kDkc3VideoLevelLayoutUnknown)
+    Dkc3ScanFrameBands(&s_frame_bands);
   uint8_t wide_layer_mask =
       Dkc3VideoIsWidescreen()
-          ? Dkc3VideoPpuWideLayerMask(g_ppu->bgmode, g_ppu->bgXsc,
-                                      g_ppu->screenEnabled[0],
-                                      g_ppu->screenEnabled[1])
+          ? Dkc3VideoPpuFrameWideLayerMask(g_ppu->bgmode, g_ppu->bgXsc,
+                                           g_ppu->screenEnabled[0],
+                                           g_ppu->screenEnabled[1],
+                                           &s_frame_bands)
           : 0;
   if (layout == kDkc3VideoLevelLayoutUnknown)
     wide_layer_mask = 0;
@@ -2181,6 +2276,11 @@ void Dkc3DrawPpuFrame(void) {
   /* DKC3's level-name cards are not yet identified; every card is a
    * bounded screen the layout classifier already centers. */
   const bool name_card = false;
+  const bool snow_arena = Dkc3VideoIsWidescreen() &&
+      Dkc3VideoUsesSnowArenaPlanes(
+          Dkc3InLevel(), Dkc3ReadWram16(kDkc3WramLevelNumber),
+          g_ppu->bgmode, g_ppu->bgXsc, g_ppu->bgTileAdr,
+          g_snesrecomp_last_hdmaen, g_ppu->vram, 0x8000);
   const bool extend_world = wide_layer_mask != 0 && !name_card;
   int presentation_bias = 0;
   bool band_policies_active = false;
@@ -2191,7 +2291,6 @@ void Dkc3DrawPpuFrame(void) {
   PpuSetWidescreenLayerMask(g_ppu, 0);
   PpuSetWidescreenBg3Widen(g_ppu, 0);
   PpuSetWidescreenPresentationXBias(g_ppu, 0);
-  s_frame_bands.count = 0;
   if (extend_world) {
     const int extra = Dkc3VideoExtra();
     PpuSetExtraSpace(g_ppu, (uint8_t)extra);
@@ -2230,9 +2329,6 @@ void Dkc3DrawPpuFrame(void) {
                             bias, &left_margin, &right_margin);
     const int terrain_layer = Dkc3VideoTerrainLayer(
         wide_layer_mask, g_ppu->bgXsc, Dkc3TerrainVramBase());
-    /* The cartridge has already built this frame's HDMA tables. Read the
-     * exact scanline geometry from them before drawing. */
-    Dkc3ScanFrameBands(&s_frame_bands);
     /* The terrain phase the frame renders: the frame-start register unless
      * the cartridge left it off the camera and its HDMA sets the camera
      * phase on the rendered lines. */
@@ -2256,6 +2352,7 @@ void Dkc3DrawPpuFrame(void) {
           (uint8_t)(band_sub_layers | s_frame_bands.band[index].sub_layers);
     }
     bool alias_layer[2] = {false, false};
+    Dkc3CheckWaterfallSource(wide_layer_mask, terrain_layer);
     Dkc3ClassifyBands(wide_layer_mask, terrain_layer, layout, &s_frame_bands,
                       s_band_policy, alias_layer);
     /* WsShadow owns only BG1/BG2 terrain. Establish exact terrain readiness
@@ -2348,6 +2445,12 @@ void Dkc3DrawPpuFrame(void) {
       PpuSetWidescreenLayerClamp(g_ppu, wide_layer_mask);
     }
     Dkc3VideoSetTerrainReady(terrain_ready);
+  } else if (snow_arena) {
+    /* Keep the cartridge camera and object activation unchanged. These
+     * bounded planes have no map stream or world shadow to prefill. */
+    Dkc3ResetWidescreenShadow();
+    PpuSetExtraSpace(g_ppu, (uint8_t)Dkc3VideoExtra());
+    PpuSetWidescreenLayerMask(g_ppu, 0x03);
   } else if (Dkc3VideoIsWidescreen()) {
     Dkc3ResetWidescreenShadow();
     /*

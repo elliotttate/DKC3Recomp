@@ -9,6 +9,11 @@
   subscreen can preserve an already-widened BG1; the legacy default
   remains unchanged.
 - License: see `snesrecomp/LICENSE`.
+- Local adaptation: `cmake/Dkc3Ppu.cmake` changes the Mode 2 BG priority
+  values in a build-directory copy of `runner/src/snes/ppu.c`, retaining its
+  license and leaving the pinned submodule untouched. The unique source
+  anchor is checked at configure time. The runtime's independent scalar PPU
+  at the same revision supplies the priority and pixel oracle.
 
 ## recomp-ui
 
@@ -28,6 +33,20 @@
   addresses, bounded ranges, data regions, and finite dispatch contracts
   into `recomp/*.cfg`. No assembly source, comments, ROM-derived assets, or
   game data are copied into this repository.
+  The SPC music-policy adapter also uses its upload addresses, scheduler range,
+  and music-versus-SFX voice-ownership structure as reference facts. Its
+  scheduler signature is compared directly to the user's verified ROM at
+  runtime; no disassembled engine code is included.
+  The KAOS widescreen check uses the boss-scroll and HDMA screen-enable
+  addresses at the same revision as reference facts; no assembly or game
+  data was copied for that fix.
+  The waterfall reconstruction uses the column streamer's addresses and
+  layout-pointer/template structure at the same revision. Its column entries
+  are read from the user's verified ROM at runtime and checked against native
+  VRAM; no source, templates, or layout data are included here.
+  Bleak's fixed-map policy uses the arena's level ID, register signature,
+  and payload addresses at `$FD:290D` and `$E9:45BC/$4782` as reference facts.
+  No disassembly source or map/tile data is copied.
 
 ## DKC2Recomp
 

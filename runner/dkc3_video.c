@@ -576,6 +576,23 @@ uint8_t Dkc3VideoPpuWideLayerMask(uint8_t bg_mode,
   return mask;
 }
 
+uint8_t Dkc3VideoPpuFrameWideLayerMask(uint8_t bg_mode,
+                                       const uint8_t bg_xsc[4],
+                                       uint8_t main_layers,
+                                       uint8_t sub_layers,
+                                       const Dkc3HdmaBands *bands) {
+  /* KAOS's BG1 body is disabled at frame start and enabled only for its
+   * vertical span by HDMA. It still needs the normal object-plane policy,
+   * rather than a repeated, already-clipped native line. */
+  if (bands && Dkc3VideoCullWidenEnabled()) {
+    for (int index = 0; index < bands->count; index++) {
+      main_layers |= bands->band[index].main_layers;
+      sub_layers |= bands->band[index].sub_layers;
+    }
+  }
+  return Dkc3VideoPpuWideLayerMask(bg_mode, bg_xsc, main_layers, sub_layers);
+}
+
 uint8_t Dkc3VideoPhysicalWideLayerMask(uint8_t bg_mode,
                                        const uint8_t bg_xsc[4],
                                        uint8_t main_layers,
@@ -631,6 +648,104 @@ uint16_t Dkc3VideoScrollPhaseDistance(uint16_t a, uint16_t b) {
   return distance;
 }
 
+bool Dkc3VideoUsesWaterfallColumns(uint16_t level_flags, uint16_t renderer,
+                                    uint8_t bg_mode, uint8_t bg2_sc) {
+  /* $B7:F421 tests the level flag. These $56 dispatch indices call the
+   * column streamer through $B3:858F or $B3:853C. */
+  return (level_flags & 0x0200u) && (bg_mode & 7u) == 1u && bg2_sc == 0x71u &&
+         (renderer == 0x0du || renderer == 0x17u || renderer == 0x1bu) &&
+         Dkc3VideoCullWidenEnabled();
+}
+
+bool Dkc3VideoUsesSnowArenaPlanes(bool in_level, uint16_t level,
+                                 uint8_t mode, const uint8_t maps[4],
+                                 uint16_t character_bases, uint8_t hdma,
+                                 const uint16_t *vram, size_t vram_words) {
+  /* Payload $FD:290D loads two static 32-column maps. The arena has no
+   * terrain stream. BG3's $0000 tilemap supplies disabled OPT entries;
+   * require the entire allocation to stay disabled so every scroll phase
+   * and every margin column obeys the same bounded-map wrap. */
+  if (!in_level || level != 0x21 || mode != 2 || !maps ||
+      maps[0] != 0x7c || maps[1] != 0x74 || maps[2] != 0 ||
+      character_bases != 0x22 || hdma != 0 || !vram || vram_words < 0x400 ||
+      !Dkc3VideoCullWidenEnabled())
+    return false;
+  for (size_t word = 0; word < 0x400; word++) {
+    if (vram[word] & 0x6000)
+      return false;
+  }
+  return true;
+}
+
+bool Dkc3VideoDecodeWaterfallColumn(const uint8_t *bank, size_t bank_size,
+                                     uint16_t layout_pointer,
+                                     uint32_t world_tile_x,
+                                     uint16_t entries[32]) {
+  if (!bank || bank_size < 0x10000u || !entries || world_tile_x < 32u)
+    return false;
+  enum { pointer_table = 0x869b, list_start = 0x86af,
+         templates = 0x87b6, template_end = 0x8ef6 };
+  const unsigned start = (unsigned)layout_pointer + 1u;
+  unsigned end = templates;
+  bool known = false;
+  for (unsigned index = 0; index < 10; index++) {
+    const unsigned address = pointer_table + index * 2u;
+    const unsigned candidate =
+        (unsigned)(bank[address] | ((unsigned)bank[address + 1] << 8)) + 1u;
+    if (candidate < list_start || candidate >= templates)
+      return false;
+    known |= candidate == start;
+    if (candidate > start && candidate < end)
+      end = candidate;
+  }
+  const uint32_t group = (world_tile_x - 32u) / 4u;
+  if (!known || group >= end - start)
+    return false;
+  const unsigned kind = bank[start + group];
+  if (kind > 7u)
+    return false;
+  const unsigned offset = kind ? kind * 256u + (world_tile_x & 3u) * 64u - 192u
+                               : 0u;
+  const unsigned source = templates + offset;
+  if (source + 64u > template_end)
+    return false;
+  for (unsigned row = 0; row < 32; row++) {
+    const unsigned address = source + row * 2u;
+    entries[row] = (uint16_t)(bank[address] | ((uint16_t)bank[address + 1] << 8));
+  }
+  return true;
+}
+
+bool Dkc3VideoVerifyWaterfallViewport(const uint8_t *bank, size_t bank_size,
+                                       uint16_t layout_pointer,
+                                       const uint16_t *vram, size_t words,
+                                       uint16_t camera_x,
+                                       unsigned *matching, unsigned *total) {
+  unsigned matched = 0, checked = 0;
+  bool valid = vram && words >= 0x8000u;
+  /* Only fully uploaded interior columns are the oracle. The partial
+   * edge column can still belong to the previous streamer step. */
+  const unsigned first = ((unsigned)camera_x + 7u) >> 3;
+  const unsigned end = ((unsigned)camera_x + 256u) >> 3;
+  for (unsigned col = first; valid && col < end; col++) {
+    uint16_t entries[32];
+    if (!Dkc3VideoDecodeWaterfallColumn(bank, bank_size, layout_pointer,
+                                         col, entries)) {
+      valid = false;
+      break;
+    }
+    for (unsigned row = 0; row < 32; row++) {
+      const unsigned address = 0x7000u + ((col & 32u) ? 0x400u : 0u) +
+                               row * 32u + (col & 31u);
+      matched += vram[address] == entries[row];
+      checked++;
+    }
+  }
+  if (matching) *matching = matched;
+  if (total) *total = checked;
+  return valid && checked >= 31u * 32u && matched == checked;
+}
+
 bool Dkc3VideoScrollAtTerrainPhase(uint16_t h_scroll,
                                    uint16_t v_scroll,
                                    uint16_t terrain_h_scroll,
@@ -672,9 +787,8 @@ int Dkc3VideoTerrainLayer(uint8_t wide_layer_mask,
  * column-major sixteen-row maps DKC2 calls horizontal; 4, 5, 6/9, and 7
  * are row-major with 64-, 32-, 192-, and 160-byte rows, the vertical,
  * narrow-vertical, square, and ship-hold strides DKC2 already decodes.
- * Shape 1, column-major with thirty-two rows, has no decoder yet and
- * stays unknown, so its margins are black. Any value outside a level is
- * unknown too. */
+ * Shape 1 uses thirty-two rows per column ($B7:BE37-$B7:C067).
+ * Unrecognized shapes remain unknown, so their margins stay black. */
 Dkc3VideoLevelLayout Dkc3VideoLevelLayoutForScene(
     uint16_t map_shape, uint16_t level_number) {
   (void)level_number;
@@ -682,6 +796,8 @@ Dkc3VideoLevelLayout Dkc3VideoLevelLayoutForScene(
     case 0x0:
     case 0x8:
       return kDkc3VideoLevelLayoutHorizontal;
+    case 0x1:
+      return kDkc3VideoLevelLayoutTallHorizontal;
     case 0x4:
       return kDkc3VideoLevelLayoutVertical;
     case 0x5:
@@ -776,12 +892,11 @@ bool Dkc3VideoDecodeLevelTile(const uint8_t *bank_data,
   if (world_tile_x > 0x1fffu || world_tile_y > 0x1fffu)
     return false;
 
-  const uint16_t world_x = (uint16_t)(world_tile_x << 3);
-  const uint16_t world_y = (uint16_t)(world_tile_y << 3);
   uint16_t map_offset = 0;
-  if (layout == kDkc3VideoLevelLayoutHorizontal) {
-    map_offset = (uint16_t)((world_x & 0xffe0u) +
-                            ((world_y & 0x01e0u) >> 4));
+  const unsigned column_rows = Dkc3VideoLevelLayoutColumnRows(layout);
+  if (column_rows != 0) {
+    map_offset = (uint16_t)((world_tile_x >> 2) * column_rows * 2u +
+                            (((world_tile_y >> 2) & (column_rows - 1u)) << 1));
   } else {
     const unsigned row_bytes = Dkc3VideoLevelLayoutRowBytes(layout);
     if (row_bytes == 0)
@@ -1174,6 +1289,17 @@ bool Dkc3VideoSelectTerrainPhase(const Dkc3HdmaBands *bands,
   return true;
 }
 
+unsigned Dkc3VideoLevelLayoutColumnRows(Dkc3VideoLevelLayout layout) {
+  switch (layout) {
+    case kDkc3VideoLevelLayoutHorizontal:
+      return 16u;
+    case kDkc3VideoLevelLayoutTallHorizontal:
+      return 32u;
+    default:
+      return 0u;
+  }
+}
+
 unsigned Dkc3VideoLevelLayoutRowBytes(Dkc3VideoLevelLayout layout) {
   switch (layout) {
     case kDkc3VideoLevelLayoutVertical:
@@ -1237,8 +1363,10 @@ bool Dkc3VideoReadLevelMetatile(const uint8_t *bank_data, size_t bank_size,
   if (metatile_x > 0x7ffu || metatile_y > 0x7ffu)
     return false;
   uint16_t map_offset = 0;
-  if (layout == kDkc3VideoLevelLayoutHorizontal) {
-    map_offset = (uint16_t)((metatile_x << 5) + ((metatile_y & 15u) << 1));
+  const unsigned column_rows = Dkc3VideoLevelLayoutColumnRows(layout);
+  if (column_rows != 0) {
+    map_offset = (uint16_t)(metatile_x * column_rows * 2u +
+                            ((metatile_y & (column_rows - 1u)) << 1));
   } else {
     if (row_bytes == 0)
       row_bytes = Dkc3VideoLevelLayoutRowBytes(layout);
@@ -1260,9 +1388,10 @@ static void Dkc3VideoLevelMapExtent(uint16_t level_map_base, uint16_t map_end,
                             ? (uint32_t)map_end - level_map_base : 0u;
   *columns = 0u;
   *rows = 0u;
-  if (layout == kDkc3VideoLevelLayoutHorizontal) {
-    *columns = span / 32u;
-    *rows = 16u;
+  const unsigned column_rows = Dkc3VideoLevelLayoutColumnRows(layout);
+  if (column_rows != 0) {
+    *columns = span / (column_rows * 2u);
+    *rows = column_rows;
     return;
   }
   if (row_bytes == 0)

@@ -4,6 +4,7 @@
 #include <SDL.h>
 
 #include "dkc3_game.h"
+#include "dkc3_haptics.h"
 #include "dkc3_video.h"
 #include "diagnostics.h"
 #include "desktop_filter.h"
@@ -20,6 +21,7 @@
 #include "verified_rom.h"
 
 #ifdef __APPLE__
+#include "dkc3_msu1.h"
 #include "macos_display_link.h"
 #include "macos_host.h"
 #endif
@@ -80,6 +82,22 @@ static const double kAudioFillWeight = 0.02;
 static const double kDisplayLockTolerance = 0.02;
 static const double kDisplayTickTimeoutSeconds = 0.05;
 
+typedef enum Dkc3HapticRequest {
+  kDkc3HapticRequestNone = 0,
+  kDkc3HapticRequestStompPulse,
+  kDkc3HapticRequestTestPulse,
+} Dkc3HapticRequest;
+
+typedef struct Dkc3HapticWorker {
+  SDL_mutex *mutex;
+  SDL_cond *condition;
+  SDL_Thread *thread;
+  SDL_GameController *controller;
+  Dkc3HapticRequest request;
+  bool busy;
+  bool shutdown;
+} Dkc3HapticWorker;
+
 typedef struct SdlHost {
 #ifdef _WIN32
   Dkc3WindowsMenu *menu;
@@ -108,13 +126,19 @@ typedef struct SdlHost {
   int assist_key_bind[RECOMP_LAUNCHER_MAX_ASSIST_BINDINGS];
   int assist_pad_bind[RECOMP_LAUNCHER_MAX_ASSIST_BINDINGS];
   int audio_volume;
+  Dkc3HapticWorker haptic_worker;
+  Dkc3EnemyDefeatProbe enemy_defeat_probe;
   Dkc3DesktopOverlay *overlay;
   bool audio_available;
   bool audio_primed;
+  bool haptics_enabled;
   bool running;
   bool hidden;
   bool menu_chord_previous;
   bool escaped_fullscreen;
+#ifdef __APPLE__
+  Dkc3Msu1 *msu1;
+#endif
 } SdlHost;
 
 typedef struct SdlControls {
@@ -141,6 +165,56 @@ static bool EnvironmentEnabled(const char *name) {
   const char *value = getenv(name);
   return value && *value && *value != '0';
 }
+
+#ifdef __APPLE__
+static char *CopyString(const char *source) {
+  if (!source)
+    return NULL;
+  const size_t size = strlen(source) + 1u;
+  char *copy = (char *)malloc(size);
+  if (copy)
+    memcpy(copy, source, size);
+  return copy;
+}
+
+static char *ConfiguredMusicPackPath(void) {
+  if (EnvironmentEnabled("DKC3_MSU1_DISABLE"))
+    return NULL;
+  const char *configured = getenv("DKC3_MSU1_PACK");
+  if (configured && *configured)
+    return CopyString(configured);
+  return Dkc3MacSavedMsu1();
+}
+
+static uint16_t ReadWram16(size_t address) {
+  return (uint16_t)(g_ram[address] | ((uint16_t)g_ram[address + 1u] << 8));
+}
+
+static void ObserveReplacementMusic(SdlHost *host) {
+  if (!host || !host->msu1)
+    return;
+  const unsigned previous = Dkc3Msu1CurrentTrack(host->msu1);
+  Dkc3Msu1ObserveSong(host->msu1, ReadWram16(0x0008));
+  uint16_t transition = 0;
+  if (Dkc3TakeMusicTransition(&transition))
+    Dkc3Msu1ObserveTransition(host->msu1, transition);
+  const unsigned current = Dkc3Msu1CurrentTrack(host->msu1);
+  if (current != previous) {
+    if (current)
+      fprintf(stderr, "msu1: playing track %u (DKC3 song $%02x)\n",
+              current, ReadWram16(0x0008));
+    else
+      fprintf(stderr, "msu1: stopped\n");
+  }
+}
+
+static void ResetReplacementMusic(SdlHost *host) {
+  if (!host || !host->msu1)
+    return;
+  Dkc3Msu1Reset(host->msu1);
+  ObserveReplacementMusic(host);
+}
+#endif
 
 static int ClampInt(int value, int minimum, int maximum) {
   if (value < minimum) return minimum;
@@ -179,9 +253,104 @@ static bool WriteFramePpm(const char *path, const uint8_t *pixels) {
   return ok;
 }
 
+static int SDLCALL HapticWorkerMain(void *context) {
+  Dkc3HapticWorker *worker = (Dkc3HapticWorker *)context;
+  SDL_LockMutex(worker->mutex);
+  while (!worker->shutdown) {
+    while (!worker->shutdown && worker->request == kDkc3HapticRequestNone)
+      SDL_CondWait(worker->condition, worker->mutex);
+    if (worker->shutdown) break;
+
+    const Dkc3HapticRequest request = worker->request;
+    SDL_GameController *controller = worker->controller;
+    worker->request = kDkc3HapticRequestNone;
+    worker->busy = true;
+    SDL_UnlockMutex(worker->mutex);
+    int rumble_result = 0;
+    if (controller && request == kDkc3HapticRequestStompPulse)
+      rumble_result =
+          SDL_GameControllerRumble(controller, 0x2800, 0x5000, 55);
+    else if (controller && request == kDkc3HapticRequestTestPulse)
+      rumble_result =
+          SDL_GameControllerRumble(controller, 0x5000, 0x7000, 500);
+    if (rumble_result != 0)
+      fprintf(stderr, "warning: controller rumble failed: %s\n",
+              SDL_GetError());
+    SDL_LockMutex(worker->mutex);
+    worker->busy = false;
+    SDL_CondBroadcast(worker->condition);
+  }
+  worker->busy = false;
+  SDL_CondBroadcast(worker->condition);
+  SDL_UnlockMutex(worker->mutex);
+  return 0;
+}
+
+static bool HapticWorkerStart(SdlHost *host) {
+  Dkc3HapticWorker *worker = &host->haptic_worker;
+  worker->mutex = SDL_CreateMutex();
+  worker->condition = SDL_CreateCond();
+  if (!worker->mutex || !worker->condition) goto fail;
+  worker->thread = SDL_CreateThread(HapticWorkerMain, "DKC3 haptics", worker);
+  if (!worker->thread) goto fail;
+  return true;
+
+fail:
+  if (worker->condition) SDL_DestroyCond(worker->condition);
+  if (worker->mutex) SDL_DestroyMutex(worker->mutex);
+  *worker = (Dkc3HapticWorker){0};
+  return false;
+}
+
+static void HapticWorkerRequest(SdlHost *host,
+                                SDL_GameController *controller,
+                                Dkc3HapticRequest request) {
+  Dkc3HapticWorker *worker = &host->haptic_worker;
+  if (!worker->thread || !worker->mutex || !controller ||
+      request == kDkc3HapticRequestNone)
+    return;
+  SDL_LockMutex(worker->mutex);
+  worker->controller = controller;
+  worker->request = request;
+  SDL_CondSignal(worker->condition);
+  SDL_UnlockMutex(worker->mutex);
+}
+
+static void HapticWorkerDetachControllers(SdlHost *host) {
+  Dkc3HapticWorker *worker = &host->haptic_worker;
+  if (!worker->mutex) return;
+  SDL_LockMutex(worker->mutex);
+  worker->request = kDkc3HapticRequestNone;
+  while (worker->busy)
+    SDL_CondWait(worker->condition, worker->mutex);
+  worker->controller = NULL;
+  SDL_UnlockMutex(worker->mutex);
+}
+
+static void HapticWorkerStop(SdlHost *host) {
+  Dkc3HapticWorker *worker = &host->haptic_worker;
+  if (!worker->thread) return;
+  SDL_LockMutex(worker->mutex);
+  worker->request = kDkc3HapticRequestNone;
+  while (worker->busy)
+    SDL_CondWait(worker->condition, worker->mutex);
+  worker->controller = NULL;
+  worker->shutdown = true;
+  SDL_CondSignal(worker->condition);
+  SDL_UnlockMutex(worker->mutex);
+  SDL_WaitThread(worker->thread, NULL);
+  SDL_DestroyCond(worker->condition);
+  SDL_DestroyMutex(worker->mutex);
+  *worker = (Dkc3HapticWorker){0};
+}
+
 static void CloseControllers(SdlHost *host) {
+  HapticWorkerDetachControllers(host);
   for (int i = 0; i < kMaximumControllers; i++) {
-    if (host->controllers[i]) SDL_GameControllerClose(host->controllers[i]);
+    if (host->controllers[i]) {
+      (void)SDL_GameControllerRumble(host->controllers[i], 0, 0, 0);
+      SDL_GameControllerClose(host->controllers[i]);
+    }
     host->controllers[i] = NULL;
   }
 }
@@ -195,6 +364,23 @@ static void RefreshControllers(SdlHost *host) {
     if (!SDL_IsGameController(device)) continue;
     SDL_GameController *controller = SDL_GameControllerOpen(device);
     if (controller) host->controllers[opened++] = controller;
+  }
+  if (opened > 0) {
+    const char *name = SDL_GameControllerName(host->controllers[0]);
+#if SDL_VERSION_ATLEAST(2, 0, 18)
+    const bool rumble_supported =
+        SDL_GameControllerHasRumble(host->controllers[0]) == SDL_TRUE;
+#else
+    const bool rumble_supported = true;
+#endif
+    Dkc3DesktopOverlaySetHapticsDevice(
+        host->overlay, name, rumble_supported);
+    fprintf(stdout, "Controller: %s; rumble %s.\n",
+            name && name[0] ? name : "(unnamed)",
+            rumble_supported ? "available" : "unavailable");
+  } else {
+    Dkc3DesktopOverlaySetHapticsDevice(host->overlay, NULL, false);
+    fprintf(stdout, "Controller: none detected.\n");
   }
 }
 
@@ -397,13 +583,45 @@ static void ShutdownHost(SdlHost *host) {
   Dkc3WindowsMenuDestroy(host->menu);
   host->menu = NULL;
 #endif
+  HapticWorkerStop(host);
   CloseControllers(host);
+#ifdef __APPLE__
+  Dkc3Msu1Close(host->msu1);
+  host->msu1 = NULL;
+#endif
   if (host->audio_device) SDL_CloseAudioDevice(host->audio_device);
   Dkc3DesktopOverlayDestroy(host->overlay);
   host->overlay = NULL;
   Dkc3SdlPresenterDestroy(&host->presenter);
   Dkc3DesktopColorFilterDestroy(&host->color_filter);
   SDL_Quit();
+}
+
+static SDL_GameController *ControllerForPlayer(const SdlHost *host,
+                                                unsigned player) {
+  int controller_index = 0;
+  for (unsigned candidate = 0; candidate < kDkc3DesktopPlayerCount;
+       candidate++) {
+    if (host->player_source[candidate] != kDkc3InputSourceGamepad) continue;
+    if (candidate == player) {
+      return controller_index < kMaximumControllers
+          ? host->controllers[controller_index]
+          : NULL;
+    }
+    controller_index++;
+  }
+  return NULL;
+}
+
+static void PulseStompHaptic(SdlHost *host) {
+  enum { kActivePlayer = 0x04C6 };
+  if (!host->haptics_enabled) return;
+  const uint16_t active_player =
+      (uint16_t)(g_ram[kActivePlayer] |
+                 ((uint16_t)g_ram[kActivePlayer + 1] << 8));
+  if (active_player >= kDkc3DesktopPlayerCount) return;
+  HapticWorkerRequest(host, ControllerForPlayer(host, active_player),
+                      kDkc3HapticRequestStompPulse);
 }
 
 static void PaceFrame(SdlHost *host, uint64_t *deadline,
@@ -492,6 +710,21 @@ static uint32_t ApplyMacCommands(SdlHost *host,
     host_actions |= kDkc3HostSaveState;
   if (commands & kDkc3MacCommandQuickLoad)
     host_actions |= kDkc3HostLoadState;
+  if (commands & kDkc3MacCommandChooseMusicPack) {
+    char *path = Dkc3MacChooseMsu1();
+    if (path) {
+      Dkc3DesktopOverlaySetStatus(
+          host->overlay,
+          "Music pack selected; restart DKC3Recomp to apply.", true);
+      free(path);
+    }
+  }
+  if (commands & kDkc3MacCommandDisableMusicPack) {
+    Dkc3MacClearMsu1();
+    Dkc3DesktopOverlaySetStatus(
+        host->overlay,
+        "Replacement music will be disabled after restart.", true);
+  }
   if (commands & kDkc3MacCommandToggleFullscreen) {
     bool fullscreen = !Dkc3SdlPresenterIsFullscreen(&host->presenter);
     if (Dkc3SdlPresenterSetFullscreen(&host->presenter, fullscreen)) {
@@ -625,6 +858,8 @@ static void ApplyOverlaySettings(SdlHost *host,
       (float)Dkc3LauncherReconstructSoftness() / 100.0f,
       (float)Dkc3LauncherReconstructShading() / 100.0f);
   host->audio_volume = updated.volume;
+  host->haptics_enabled =
+      host->haptic_worker.thread && Dkc3LauncherHaptics() != 0;
   for (int player = 0; player < kDkc3DesktopPlayerCount; player++) {
     host->player_source[player] =
         ClampInt(updated.player_src[player], 0, 2);
@@ -658,6 +893,11 @@ static int RunGame(const char *rom_path,
   host.running = true;
   host.hidden = EnvironmentEnabled("DKC3_DESKTOP_TEST_HIDDEN");
   host.audio_volume = ClampInt(settings->volume, 0, 100);
+  host.haptics_enabled = Dkc3LauncherHaptics() != 0;
+  if (getenv("DKC3_HAPTICS")) {
+    host.haptics_enabled = EnvironmentEnabled("DKC3_HAPTICS");
+    Dkc3LauncherSetHaptics(host.haptics_enabled);
+  }
   for (int player = 0; player < kDkc3DesktopPlayerCount; player++) {
     host.player_source[player] = ClampInt(settings->player_src[player], 0, 2);
     host.player_deadzone[player] = ClampInt(settings->deadzone[player], 0, 100);
@@ -742,9 +982,29 @@ static int RunGame(const char *rom_path,
     ShowError(rom_error);
     return 2;
   }
+#ifdef __APPLE__
+  char *music_pack_path = ConfiguredMusicPackPath();
+  if (music_pack_path) {
+    host.msu1 = Dkc3Msu1Open(
+        music_pack_path, rom_error, sizeof rom_error);
+    if (!host.msu1 || !Dkc3Msu1ApplySpcMusicMute(
+            rom, rom_size, rom_error, sizeof rom_error)) {
+      fprintf(stderr, "warning: MSU-1 music disabled: %s\n", rom_error);
+      Dkc3Msu1Close(host.msu1);
+      host.msu1 = NULL;
+    } else {
+      fprintf(stderr, "msu1: replacement music active from %s\n",
+              music_pack_path);
+    }
+    free(music_pack_path);
+  }
+#endif
   RtlRegisterGame(Dkc3GameInfo());
   if (!SnesInit(rom, (int)rom_size)) {
     free(rom);
+#ifdef __APPLE__
+    Dkc3Msu1Close(host.msu1);
+#endif
     ShowError("snesrecomp rejected the verified ROM");
     return 3;
   }
@@ -754,6 +1014,9 @@ static int RunGame(const char *rom_path,
   }
   if (!Dkc3DesktopColorFilterInit(&host.color_filter, screen_filter)) {
     free(rom);
+#ifdef __APPLE__
+    Dkc3Msu1Close(host.msu1);
+#endif
     ShowError("Unable to initialize the selected screen-color filter");
     return 4;
   }
@@ -761,8 +1024,16 @@ static int RunGame(const char *rom_path,
                SDL_INIT_TIMER) != 0) {
     free(rom);
     Dkc3DesktopColorFilterDestroy(&host.color_filter);
+#ifdef __APPLE__
+    Dkc3Msu1Close(host.msu1);
+#endif
     ShowError(SDL_GetError());
     return 4;
+  }
+  if (!HapticWorkerStart(&host)) {
+    fprintf(stderr, "warning: haptic worker unavailable: %s\n",
+            SDL_GetError());
+    host.haptics_enabled = false;
   }
   char video_error[256] = {0};
   if (!Dkc3SdlPresenterInit(
@@ -843,7 +1114,8 @@ static int RunGame(const char *rom_path,
     Dkc3MacInstallMenu();
     Dkc3MacUpdateMenu(
         Dkc3SdlPresenterIsFullscreen(&host.presenter),
-        settings->texture_filter != 0, settings->aspect_index);
+        settings->texture_filter != 0, settings->aspect_index,
+        host.msu1 != NULL);
   }
 #endif
   RefreshControllers(&host);
@@ -871,9 +1143,11 @@ static int RunGame(const char *rom_path,
           "Controls: gameplay and Assist bindings are configurable in the "
           "pre-boot launcher. Escape=Exit Fullscreen/Overlay. "
           "SDL game controllers are "
-          "detected automatically.\n");
+          "detected automatically; enemy-stomp haptics are %s.\n",
+          host.haptics_enabled ? "on" : "off");
 
 #ifdef __APPLE__
+  ResetReplacementMusic(&host);
   Dkc3DesktopPacer pacer;
   Dkc3DesktopPacerInit(&pacer, kVideoRate, kDisplayLockTolerance);
   bool display_link = false;
@@ -1015,6 +1289,9 @@ static int RunGame(const char *rom_path,
       test_load_state_done = true;
       if (RtlLoadSnapshot(test_load_state_path)) {
         ResetAudio(&host);
+#ifdef __APPLE__
+        ResetReplacementMusic(&host);
+#endif
         audio_fraction = 0.0;
         deadline = SDL_GetPerformanceCounter();
         deadline_fraction = 0.0;
@@ -1048,6 +1325,10 @@ static int RunGame(const char *rom_path,
       controls.host_actions |= kDkc3HostSaveState;
     if (overlay_actions & kDkc3OverlayActionLoadState)
       controls.host_actions |= kDkc3HostLoadState;
+    if ((overlay_actions & kDkc3OverlayActionTestHaptics) &&
+        host.haptics_enabled)
+      HapticWorkerRequest(&host, host.controllers[0],
+                          kDkc3HapticRequestTestPulse);
     ApplyOverlaySettings(&host, settings, &screen_filter);
 #ifdef _WIN32
     Dkc3MenuState menu_state = WindowsMenuState(&host, settings);
@@ -1068,7 +1349,8 @@ static int RunGame(const char *rom_path,
     if (!host.hidden)
       Dkc3MacUpdateMenu(
           Dkc3SdlPresenterIsFullscreen(&host.presenter),
-          host.presenter.linear_filter, settings->aspect_index);
+          host.presenter.linear_filter, settings->aspect_index,
+          host.msu1 != NULL);
 #endif
     controls.host_actions = Dkc3ApplyAssistGate(
         controls.host_actions, platform_host_actions, assist_tools);
@@ -1107,6 +1389,9 @@ static int RunGame(const char *rom_path,
         (void)snprintf(status, sizeof status, "Slot %d loaded.", slot + 1);
         Dkc3DesktopOverlaySetStatus(host.overlay, status, true);
         ResetAudio(&host);
+#ifdef __APPLE__
+        ResetReplacementMusic(&host);
+#endif
         audio_fraction = 0.0;
         deadline = SDL_GetPerformanceCounter();
         deadline_fraction = 0.0;
@@ -1139,11 +1424,19 @@ static int RunGame(const char *rom_path,
     else if (controls.host_actions & kDkc3HostFastForward)
       mode = kSdlSpeedFastForward;
     if (mode != previous_mode) {
+      const bool resumed_from_rewind =
+          previous_mode == kSdlSpeedRewind && mode != kSdlSpeedRewind;
       ResetAudio(&host);
       audio_fraction = 0.0;
       deadline = SDL_GetPerformanceCounter();
       deadline_fraction = 0.0;
       previous_mode = mode;
+#ifdef __APPLE__
+      if (resumed_from_rewind)
+        ResetReplacementMusic(&host);
+#else
+      (void)resumed_from_rewind;
+#endif
     }
 
     bool frame_ready = overlay_open;
@@ -1184,6 +1477,7 @@ static int RunGame(const char *rom_path,
 #ifdef __APPLE__
         const uint64_t emulate_start = SDL_GetPerformanceCounter();
 #endif
+        Dkc3EnemyDefeatProbeCapture(&host.enemy_defeat_probe, g_ram);
         (void)RtlRunFrame(controls.controller);
         if (g_fail || !Dkc3LastLleResult()) {
           fprintf(stderr, "Runtime stopped at frame %llu (resume PC $%06x).\n",
@@ -1192,6 +1486,11 @@ static int RunGame(const char *rom_path,
           runtime_failure = true;
           break;
         }
+        if (Dkc3EnemyDefeatProbeAccepted(&host.enemy_defeat_probe, g_ram))
+          PulseStompHaptic(&host);
+#ifdef __APPLE__
+        ObserveReplacementMusic(&host);
+#endif
         host_frame++;
         rewind_capture_counter++;
         if (rewind_available &&
@@ -1212,6 +1511,10 @@ static int RunGame(const char *rom_path,
         int audio_frames = (int)audio_fraction;
         audio_fraction -= audio_frames;
         RtlRenderAudio(frame_audio, audio_frames, kAudioChannels);
+#ifdef __APPLE__
+        Dkc3Msu1Mix(host.msu1, frame_audio, audio_frames, kAudioChannels,
+                    kAudioRate);
+#endif
         if (mode == kSdlSpeedNormal) {
           host.audio_fill_average = Dkc3AudioFillAverage(
               host.audio_fill_average, AudioQueuedFrames(&host),

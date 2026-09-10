@@ -14,6 +14,7 @@ enum {
   kDkc3OverlayActionQuit = 1u << 1,
   kDkc3OverlayActionSaveState = 1u << 2,
   kDkc3OverlayActionLoadState = 1u << 3,
+  kDkc3OverlayActionTestHaptics = 1u << 4,
 };
 
 typedef enum Dkc3OverlayBindingCapture {

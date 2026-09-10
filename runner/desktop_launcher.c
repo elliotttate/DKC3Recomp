@@ -52,6 +52,7 @@ static int s_reconstruct_mode = 3;
 static int s_reconstruct_strength = 100;
 static int s_reconstruct_softness = 50;
 static int s_reconstruct_shading = 60;
+static int s_haptics_enabled = 1;
 
 int Dkc3LauncherUpscaler(void) { return s_upscaler; }
 void Dkc3LauncherSetUpscaler(int upscaler) {
@@ -72,6 +73,10 @@ void Dkc3LauncherSetReconstructSoftness(int percent) {
 int Dkc3LauncherReconstructShading(void) { return s_reconstruct_shading; }
 void Dkc3LauncherSetReconstructShading(int percent) {
   s_reconstruct_shading = ClampInt(percent, 0, 100);
+}
+int Dkc3LauncherHaptics(void) { return s_haptics_enabled; }
+void Dkc3LauncherSetHaptics(int enabled) {
+  s_haptics_enabled = enabled != 0;
 }
 
 int Dkc3LauncherWidescreenEdge(void) {
@@ -185,6 +190,8 @@ void Dkc3LauncherSettingsLoad(RecompLauncherCSettings *settings) {
       Dkc3LauncherSetReconstructSoftness(value);
     else if (strcmp(key, "ReconstructShading") == 0)
       Dkc3LauncherSetReconstructShading(value);
+    else if (strcmp(key, "HapticsEnabled") == 0)
+      Dkc3LauncherSetHaptics(value);
     else if (strcmp(key, "EnableAudio") == 0)
       settings->enable_audio = value != 0;
     else if (strcmp(key, "AudioFrequency") == 0)
@@ -251,6 +258,7 @@ bool Dkc3LauncherSettingsSave(const RecompLauncherCSettings *settings) {
                     "Upscaler=%d\nReconstructMode=%d\n"
                     "ReconstructStrength=%d\n"
                     "ReconstructSoftness=%d\nReconstructShading=%d\n"
+                    "HapticsEnabled=%d\n"
                     "EnableAudio=%d\n"
                     "AudioFrequency=%d\n"
                     "Volume=%d\nPlayer1Source=%d\nPlayer2Source=%d\n"
@@ -271,6 +279,7 @@ bool Dkc3LauncherSettingsSave(const RecompLauncherCSettings *settings) {
                     s_widescreen_edge,
                     s_upscaler, s_reconstruct_mode, s_reconstruct_strength,
                     s_reconstruct_softness, s_reconstruct_shading,
+                    s_haptics_enabled,
                     settings->enable_audio != 0,
                     ClampInt(settings->audio_freq, 8000, 192000),
                     ClampInt(settings->volume, 0, 100),

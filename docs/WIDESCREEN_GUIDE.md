@@ -60,7 +60,7 @@ the audits expect it to be zero.
 **Prefill.** The adapter decodes the decompressed level map and metatile
 definitions from WRAM (DKC2: bank `$9A`; DKC3: `$7F:0000`) into the store
 for every tile the widened view can reach, one guard tile beyond each
-margin. The decoder knows the map layouts (column-major with 16 rows, and
+margin. The decoder knows the map layouts (column-major with 16 or 32 rows, and
 row-major with 32, 64, 160, or 192-byte rows) and a per-frame stride
 calibrator confirms a row-major stride against the staged native window.
 
@@ -107,7 +107,7 @@ the disassembly before use.
 | Level map | bank `$9A` | `$7F:0000`, base `$0000` | a base of `$FF00` compensated the `$100` world origin twice |
 | Metatile table | fixed | word `$1967` | 32-byte definitions, DKC2's form |
 | Ring VRAM base | `$17B6` | word `$1969` | `$04F8` is a moving upload pointer |
-| Map shape | scroll sub-mode `$0529` | nibble `$0470` | shape 1 (32-row column-major) has no decoder |
+| Map shape | scroll sub-mode `$0529` | nibble `$0470` | shape 1 needs 32 rows per column, not the 16-row horizontal formula |
 | World origin | `$100` | `$100` | the presentation subtracts it itself |
 | Sprite table | own | `$0878`, stride `$6E`, x `+$12`, y `+$16`, param `+$0A` | |
 
@@ -189,9 +189,15 @@ and the value survives a few screens of movement. The DKC3 ring base at
 Run the offline stride matcher over WRAM and VRAM dumps: decode the native
 window's tiles from the map with the camera (not the PPU scroll), the
 metatile base from the trace, and the one-screen origin, for column-major
-16 rows and row-major strides 32 to 256 in steps of 32, and take the one
+16/32 rows and row-major strides 32 to 256 in steps of 32, and take the one
 that reproduces the ring. Add the case to the layout classifier with a
-test line; the live calibrator (90% gate) then confirms it every frame.
+test line; for row-major layouts the live calibrator (90% gate) then
+confirms the stride every frame. Column-major layouts use their audited
+row count directly. DKC3 shape 1 dispatches to `$B7:BE37`: its column
+builder doubles the masked X offset, masks Y to `$03E0`, and its row
+builder advances `$40` bytes per metatile column. Both the tile decoder
+and map-neighbour scan must use 32 rows. The reported Pothole Panic save
+crosses the 16-row boundary, so the old horizontal formula cannot serve it.
 
 ### 6.3 Phase
 
@@ -257,6 +263,18 @@ Accept the cartridge's own DMA quirks in the verifier (the rigging row DMA
 lands high bytes one word late) or the whole margin drops out after each
 vertical move.
 
+The waterfall BG2 ring at `$7000` is one such zero-lead streamer. It can look
+like a static plane just after restoring a state, then classify as a repeating
+line after camera movement. Neither supplies the correct margin columns.
+`Dkc3VideoDecodeWaterfallColumn` follows its ROM layout pointer and column
+templates; `Dkc3VideoVerifyWaterfallViewport` requires all 31 or 32 complete
+native columns to match before the host store receives the decode. Exclude
+partial edge columns, which can precede the next DMA. Repeat the 32-row column
+over the four vertical epochs reached by its 10-bit HDMA animation. The `F`
+band policy preserves the native viewport and leaves unsupported margin
+columns transparent. Test camera travel in both directions, not only a fresh
+restore. `DKC3_CULL_WIDEN=0` disables this path for the native-behavior oracle.
+
 ### 6.7 Object windows
 
 Find every camera-relative window by cataloguing each subtraction of the
@@ -289,6 +307,20 @@ narrow compare decides.
 
 ### 6.8 Not presentation
 
+If an object is present in an OBJ-only capture but absent from the composite,
+check the mode-specific priority order before changing its behavior or OAM.
+Bleak's arena uses Mode 2: front to back is OBJ3, BG1 high, OBJ2, BG2 high,
+OBJ1, BG1 low, OBJ0, BG2 low. Reusing Mode 1's background priorities hides
+the boss behind BG2. Compare the independent scalar PPU with
+`DKC3_PPU_LEGACY=1`; a broken 4:3 render is not a correctness oracle.
+
+The same arena has two fixed 32-column maps rather than a terrain stream.
+Its exact level/register signature and an entirely disabled BG3 offset map
+permit the hardware's 256-pixel wrap in the margins. This path keeps terrain
+readiness false, so it cannot widen gameplay culls or inherit camera glide.
+`DKC3_CULL_WIDEN=0` disables the margin policy while retaining correct native
+priority. Unknown signatures and active offset tables still use black margins.
+
 A `JSR (abs,X)` dispatcher whose table holds a null slot in the middle is
 cut at that slot by the recompiler; declare the full count in the cfg.
 Symptoms: an object frozen at one behavior-script command in every aspect.
@@ -303,6 +335,7 @@ START must be a multiple of STEP), `DKC3_WRAM_OUTPUT`, `DKC3_VRAM_OUTPUT`,
 matching per frame), `DKC3_PREFILL_DUMP=<frame counter>` (ring, decode,
 store, status per disagreeing or margin cell; the counter is the host
 frame plus the restored state's own counter), `DKC3_BAND_DUMP=1`,
+`DKC3_WATERFALL_TRACE=1` (source verification and matching native cells),
 `DKC3_TERRAIN_FILL_MAP=1|2`, `DKC3_TRACE_PC=<pc24>` (fires only for
 interpreted opcodes: zero hits means the generated unit runs, not that the
 routine never runs), `DKC3_OAM_TRACE=1`, `DKC3_SPAWN_TRACE=1`,

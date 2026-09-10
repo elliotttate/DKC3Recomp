@@ -2,6 +2,9 @@
 #include "dkc3_video.h"
 #include "input_playback.h"
 #include "verified_rom.h"
+#ifdef __APPLE__
+#include "dkc3_msu1.h"
+#endif
 
 #include "common_cpu_infra.h"
 #include "common_rtl.h"
@@ -29,8 +32,11 @@
  *   DKC3_FRAME_PPM_PREFIX=<prefix>  per-frame PPMs, with
  *   DKC3_FRAME_PPM_START/END/STEP   the frame range and stride
  *   DKC3_AUDIO_PCM=<file>           rendered audio as raw 16-bit stereo
+ *   DKC3_MSU1_PACK=<directory>      optional replacement music (macOS)
+ *   DKC3_MSU1_GAIN=0               isolate original SFX for an audio check
  *   DKC3_WRAM_OUTPUT / DKC3_VRAM_OUTPUT / DKC3_OAM_OUTPUT  memory dumps
  *   DKC3_STATE_TRACE=1              print game-state transitions
+ *   DKC3_PPU_LEGACY=1              compare against the scalar PPU renderer
  *   DKC3_PREFILL_TRACE=1            print the widescreen prefill per frame
  *   DKC3_TRACE_PC=<hex pc24>        print CPU state at each hit of a PC
  *   DKC3_OAM_TRACE=1                print, per frame, every sprite whose X
@@ -137,6 +143,20 @@ int main(int argc, char **argv) {
     }
   }
   Dkc3VideoSetAspect(aspect);
+#ifdef __APPLE__
+  Dkc3Msu1 *msu1 = NULL;
+  const char *music_pack = getenv("DKC3_MSU1_PACK");
+  if (music_pack && *music_pack) {
+    msu1 = Dkc3Msu1Open(music_pack, rom_error, sizeof rom_error);
+    if (!msu1 || !Dkc3Msu1ApplySpcMusicMute(
+            rom, rom_size, rom_error, sizeof rom_error)) {
+      fprintf(stderr, "MSU-1 validation failed: %s\n", rom_error);
+      Dkc3Msu1Close(msu1);
+      free(rom);
+      return 19;
+    }
+  }
+#endif
   RtlRegisterGame(Dkc3GameInfo());
   if (!SnesInit(rom, (int)rom_size)) {
     fprintf(stderr, "snesrecomp rejected the verified ROM\n");
@@ -275,6 +295,9 @@ int main(int argc, char **argv) {
       }
       fprintf(stderr, "savestate: restored %s at host frame %ld\n",
               savestate_input, frame);
+#ifdef __APPLE__
+      Dkc3Msu1Reset(msu1);
+#endif
     }
     uint32_t _in = Dkc3InputPlaybackFrame(&input_playback, (size_t)frame);
     RtlRunFrame(_in);
@@ -376,6 +399,8 @@ int main(int argc, char **argv) {
       free(rom);
       return 5;
     }
+    if (getenv("DKC3_PPU_LEGACY"))
+      g_ppu->renderFlags &= ~kPpuRenderFlags_NewRenderer;
     Dkc3DrawPpuFrame();
     if (prefill_trace) {
       Dkc3TerrainPrefillStats prefill;
@@ -463,6 +488,15 @@ int main(int argc, char **argv) {
         (size_t)audio_frames_this_frame * 2u;
     memset(audio, 0, audio_samples_this_frame * sizeof audio[0]);
     RtlRenderAudio(audio, audio_frames_this_frame, 2);
+#ifdef __APPLE__
+    if (msu1) {
+      Dkc3Msu1ObserveSong(msu1, ReadWram16(0x0008));
+      uint16_t transition = 0;
+      if (Dkc3TakeMusicTransition(&transition))
+        Dkc3Msu1ObserveTransition(msu1, transition);
+      Dkc3Msu1Mix(msu1, audio, audio_frames_this_frame, 2, 32040);
+    }
+#endif
     audio_rendered_frames += (unsigned)audio_frames_this_frame;
     int audio_active = 0;
     for (size_t i = 0; i < audio_samples_this_frame; i++) {
@@ -625,5 +659,8 @@ int main(int argc, char **argv) {
   printf("\nresult=completed frames=%ld\n", frame_limit);
   free(rom);
   Dkc3InputPlaybackFree(&input_playback);
+#ifdef __APPLE__
+  Dkc3Msu1Close(msu1);
+#endif
   return 0;
 }

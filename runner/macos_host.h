@@ -17,6 +17,8 @@ enum {
   kDkc3MacCommandAspect16x9 = 1u << 8,
   kDkc3MacCommandQuit = 1u << 9,
   kDkc3MacCommandAspect21x9 = 1u << 10,
+  kDkc3MacCommandChooseMusicPack = 1u << 11,
+  kDkc3MacCommandDisableMusicPack = 1u << 12,
 };
 
 /* Select a writable per-user directory and return the absolute launcher asset
@@ -29,7 +31,15 @@ bool Dkc3MacPrepareRuntimeDirectory(char *assets_path,
 
 void Dkc3MacInstallMenu(void);
 uint32_t Dkc3MacTakeCommands(void);
-void Dkc3MacUpdateMenu(bool fullscreen, bool linear_filter, int aspect);
+void Dkc3MacUpdateMenu(bool fullscreen, bool linear_filter, int aspect,
+                       bool replacement_music);
+
+/* Selects an extracted MSU-1 directory or extracts a .msu1 archive into the
+ * app's Application Support directory, saves the selection, and returns a
+ * malloc-owned directory path. */
+char *Dkc3MacChooseMsu1(void);
+char *Dkc3MacSavedMsu1(void);
+void Dkc3MacClearMsu1(void);
 
 /* Wait one relative interval on an absolute Mach target. The final 1.5 ms is
  * a bounded CPU spin so scheduler coalescing cannot turn a stable deadline

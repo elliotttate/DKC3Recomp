@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Apply source-owned DKC3 widescreen adaptations to private generated C.
+"""Apply source-owned DKC3 adaptations to private generated C.
 
-The helpers are DKC2Recomp's; the routine-specific adaptations are added
-as DKC3's activation and clipping code is identified."""
+The widescreen helpers are DKC2Recomp's; the routine-specific adaptations are
+added as DKC3's activation and clipping code is identified. The MSU-1 music
+transition observer also lives here because generated code is never edited by
+hand."""
 
 from __future__ import annotations
 
@@ -304,6 +306,31 @@ def adapt_grid_renderer(sources: dict, generated_dir: Path) -> None:
     sources[draw_path] = draw
 
 
+def adapt_music_transition(sources: dict, generated_dir: Path) -> None:
+    """Record the stock transition-song command without changing it.
+
+    $B2:800F is a three-byte trampoline into the stock transition handler.
+    The host uses its accumulator value to select DKC3 MSU-1 tracks 49-58;
+    cartridge registers, control flow, and sound effects remain untouched.
+    """
+    path = find_unit(generated_dir, "CODE_B2800F_M0X0")
+    if path in sources:
+        raise ValueError(f"{path.name} already adapted for another site")
+    text = add_include(path.read_text(encoding="utf-8"), GAME_INCLUDE)
+    hook = "Dkc3RecordMusicTransition(cpu->A);"
+    if hook in text:
+        if text.count(hook) != 1:
+            raise ValueError("ambiguous existing music transition observer")
+        sources[path] = text
+        return
+    marker = "    cpu_trace_block(cpu, 0xB2800F);"
+    if text.count(marker) != 1:
+        raise ValueError(
+            "expected one $B2:800F music transition block; "
+            f"found {text.count(marker)}")
+    sources[path] = text.replace(marker, marker + "\n    " + hook, 1)
+
+
 def apply_overrides(generated_dir: Path) -> list[Path]:
     """Widen DKC3's object activation and sprite culls to the presented view.
 
@@ -333,6 +360,7 @@ def apply_overrides(generated_dir: Path) -> list[Path]:
     scan = wrap_single_read(
         scan, "0x7e4180", "Dkc3PlacementScanNext")
     sources[scan_path] = scan
+    adapt_music_transition(sources, generated_dir)
 
     found: set[str] = set()
     for path in sorted(generated_dir.glob("*.c")):

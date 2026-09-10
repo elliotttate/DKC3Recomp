@@ -71,3 +71,9 @@ int Dkc3GetPlaneBandCount(int layer);
 uint16_t Dkc3PlacementScanBegin(uint16_t native_head,
                                 uint16_t native_cell_offset);
 uint16_t Dkc3PlacementScanNext(uint16_t native_placement);
+
+/* The generated $B2:800F transition-song trampoline records the command that
+ * reached it. The desktop MSU-1 player consumes the last command after the
+ * cartridge frame; other hosts may ignore it without changing game state. */
+void Dkc3RecordMusicTransition(uint16_t command);
+int Dkc3TakeMusicTransition(uint16_t *command);

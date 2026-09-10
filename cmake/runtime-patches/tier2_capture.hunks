@@ -1,0 +1,44 @@
+# Tier-2 coverage journals are promotion telemetry for the recompiler's
+# burn-down loop, not a player-facing feature; upstream snesrecomp 8d12911
+# made them opt in. Every DKC3 run appended a JSONL journal beside the
+# working directory and wrote a manifest at exit. Both now require
+# SNESRECOMP_TIER2_CAPTURE=1 (or SNESRECOMP_TIER2=1).
+file: runner/src/snes/tier2_capture.c
+
+@@ capture-enabled-query
+<<<<
+static void sanitize_romid(const char *title, char *out, size_t cap) {
+====
+static int tier2_env_truthy(const char *value) {
+    if (!value || !*value) return 0;
+    return value[0] != '0' && value[0] != 'f' && value[0] != 'F' &&
+           value[0] != 'n' && value[0] != 'N' && value[0] != 'o' &&
+           value[0] != 'O';
+}
+
+int tier2_capture_enabled(void) {
+    static int s_enabled = -1;
+    if (s_enabled < 0) {
+        const char *value = getenv("SNESRECOMP_TIER2_CAPTURE");
+        if (!value || !*value)
+            value = getenv("SNESRECOMP_TIER2");
+        s_enabled = tier2_env_truthy(value);
+    }
+    return s_enabled;
+}
+
+static void sanitize_romid(const char *title, char *out, size_t cap) {
+>>>>
+
+@@ journal-opt-in
+<<<<
+                                   int outcome,
+                                   int32_t frame) {
+    init_paths(rom_title);
+====
+                                   int outcome,
+                                   int32_t frame) {
+    if (!tier2_capture_enabled())
+        return 1;
+    init_paths(rom_title);
+>>>>

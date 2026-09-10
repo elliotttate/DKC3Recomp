@@ -1,0 +1,87 @@
+# Per-call instrumentation on the generated-function entry/exit hooks.
+file: runner/src/common_cpu_infra.c
+
+# Every generated function entry compared its name against the write-log
+# scope prefix, but a scope can only open when SNESRECOMP_WLOG names an
+# output file (wlog_scope_enter returns before doing anything otherwise).
+# Resolve that once and skip the compare when no log is armed. Ported from
+# DKC1Recomp's snesrecomp b46b940.
+@@ wlog-prefix-latch
+<<<<
+static int wlog_func_matches(const char *name) {
+  static const char *prefix;
+  static size_t prefix_len;
+  static int initialized;
+  if (!initialized) {
+    prefix = getenv("SNESRECOMP_WLOG_FUNC_PREFIX");
+    if (!prefix || !*prefix) prefix = "vram_payload_handler_M";
+    prefix_len = strlen(prefix);
+    initialized = 1;
+  }
+  return name && strncmp(name, prefix, prefix_len) == 0;
+}
+====
+static FORCEINLINE int wlog_func_matches(const char *name) {
+  static const char *prefix;
+  static size_t prefix_len;
+  static int enabled;
+  static int initialized;
+  if (!initialized) {
+    const char *output = getenv("SNESRECOMP_WLOG");
+    enabled = output && *output;
+    if (enabled) {
+      prefix = getenv("SNESRECOMP_WLOG_FUNC_PREFIX");
+      if (!prefix || !*prefix) prefix = "vram_payload_handler_M";
+      prefix_len = strlen(prefix);
+    }
+    initialized = 1;
+  }
+  return enabled && name && strncmp(name, prefix, prefix_len) == 0;
+}
+>>>>
+
+# The stack-balance auditor probed an open-addressed hash table on every
+# generated function return purely to accumulate a diagnostic report. It is
+# now armed by SNESRECOMP_STACKBAL_AUDIT; the watchdog report says so when
+# it was off. DKC1Recomp compiled the auditor out; DKC3 keeps it available
+# at run time.
+@@ stackbal-audit-latch
+<<<<
+  if (g_recomp_stack_top > 0) {
+    const char *fn = g_recomp_stack[g_recomp_stack_top - 1];
+    int slot = g_recomp_stack_top - 1;
+    int delta = (int)(int16_t)(g_cpu.S - g_cpu_entry_s[slot]) -
+                (int)g_cpu_entry_return_frame[slot];
+    StackBalEntry *e = stackbal_find(fn);
+    if (e) {
+      e->calls++;
+      if (delta) { e->total_delta += delta; e->nonzero++; e->last_delta = delta; }
+    }
+    boundary_audit_record_exit(g_recomp_stack[g_recomp_stack_top - 1]);
+====
+  if (g_recomp_stack_top > 0) {
+    static int s_stackbal_audit = -1;
+    if (s_stackbal_audit < 0)
+      s_stackbal_audit = getenv("SNESRECOMP_STACKBAL_AUDIT") != NULL;
+    if (s_stackbal_audit) {
+      const char *fn = g_recomp_stack[g_recomp_stack_top - 1];
+      int slot = g_recomp_stack_top - 1;
+      int delta = (int)(int16_t)(g_cpu.S - g_cpu_entry_s[slot]) -
+                  (int)g_cpu_entry_return_frame[slot];
+      StackBalEntry *e = stackbal_find(fn);
+      if (e) {
+        e->calls++;
+        if (delta) { e->total_delta += delta; e->nonzero++; e->last_delta = delta; }
+      }
+    }
+    boundary_audit_record_exit(g_recomp_stack[g_recomp_stack_top - 1]);
+>>>>
+
+@@ stackbal-report-hint
+<<<<
+  fprintf(stderr, "=== stack-balance auditor: top %d net-imbalanced funcs ===\n", n);
+====
+  fprintf(stderr, "=== stack-balance auditor: top %d net-imbalanced funcs ===\n", n);
+  if (!getenv("SNESRECOMP_STACKBAL_AUDIT"))
+    fprintf(stderr, "  (auditor was not armed; set SNESRECOMP_STACKBAL_AUDIT=1 to collect)\n");
+>>>>

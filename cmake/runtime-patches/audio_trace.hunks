@@ -1,0 +1,16 @@
+# The always-on audio statistics ring took a monotonic clock reading for
+# every generated DSP sample (32 kHz) to decide whether a one-second
+# snapshot was due. Poll the clock every 64 samples instead; the snapshot
+# cadence stays one second within two milliseconds.
+file: runner/src/audio_trace.c
+
+@@ snapshot-clock-throttle
+<<<<
+static void maybe_snap(uint32_t ring_fill) {
+  uint64_t now = wall_ms();
+====
+static void maybe_snap(uint32_t ring_fill) {
+  static uint32_t s_snap_poll;
+  if (++s_snap_poll & 63u) return;
+  uint64_t now = wall_ms();
+>>>>

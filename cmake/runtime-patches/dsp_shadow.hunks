@@ -1,0 +1,19 @@
+# Companion to dsp.hunks: the shadow mixer's reference renderer, Gaussian
+# and echo-FIR comparisons were selected with defined(SNESRECOMP_TRACE),
+# which a production define of 0 satisfies. Test the value instead so the
+# opt-in shadow path stays the only production work.
+file: runner/src/snes/dsp_shadow.c
+
+@@ trace-value-gate count=4
+<<<<
+#if defined(SNESRECOMP_TRACE)
+====
+#if SNESRECOMP_TRACE
+>>>>
+
+@@ trace-value-gate-negated
+<<<<
+#if !defined(SNESRECOMP_TRACE)
+====
+#if !SNESRECOMP_TRACE
+>>>>

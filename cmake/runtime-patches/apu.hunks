@@ -1,0 +1,60 @@
+# SPC700 core adaptations.
+file: runner/src/snes/apu.c
+
+# The per-opcode SPC program-counter histogram (a 512 KiB array touched on
+# every SPC instruction) and the per-write port counters are read only by
+# the TCP debug server, which exists in SNESRECOMP_TRACE builds alone.
+# Keep them for those builds and drop the traffic from production.
+@@ pc-histogram-trace-only
+<<<<
+    g_spc_pc_histogram[apu->spc->pc]++;
+    if (apu->spc->pc > g_spc_pc_max_seen) g_spc_pc_max_seen = apu->spc->pc;
+    apu->cpuCyclesLeft = spc_runOpcode(apu->spc);
+====
+#if SNESRECOMP_TRACE
+    g_spc_pc_histogram[apu->spc->pc]++;
+    if (apu->spc->pc > g_spc_pc_max_seen) g_spc_pc_max_seen = apu->spc->pc;
+#endif
+    apu->cpuCyclesLeft = spc_runOpcode(apu->spc);
+>>>>
+
+@@ write-counters-trace-only
+<<<<
+void apu_cpuWrite(Apu* apu, uint16_t adr, uint8_t val) {
+  if (adr < 0x100) g_spc_write_counts[adr]++;
+  if (adr >= 0xF4 && adr <= 0xF7) {
+    int port = adr - 0xF4;
+    g_spc_outport_value_counts[port * 256 + val]++;
+    int i = g_spc_recent_outport_idx++ & 31;
+    g_spc_recent_outport_writes[i].adr = (uint8_t)adr;
+    g_spc_recent_outport_writes[i].val = val;
+  }
+====
+void apu_cpuWrite(Apu* apu, uint16_t adr, uint8_t val) {
+#if SNESRECOMP_TRACE
+  if (adr < 0x100) g_spc_write_counts[adr]++;
+  if (adr >= 0xF4 && adr <= 0xF7) {
+    int port = adr - 0xF4;
+    g_spc_outport_value_counts[port * 256 + val]++;
+    int i = g_spc_recent_outport_idx++ & 31;
+    g_spc_recent_outport_writes[i].adr = (uint8_t)adr;
+    g_spc_recent_outport_writes[i].val = val;
+  }
+#endif
+>>>>
+
+# Every SPC fetch and data access goes through apu_cpuRead. Plain RAM below
+# the register page and the IPL window is the common case; answer it before
+# the register switch. The switch covers all of $00F0-$00FF and the
+# boot-ROM test still governs $FFC0-$FFFF, so every other address is
+# decided exactly as before.
+@@ ram-read-fast-path
+<<<<
+uint8_t apu_cpuRead(Apu* apu, uint16_t adr) {
+  switch(adr) {
+====
+uint8_t apu_cpuRead(Apu* apu, uint16_t adr) {
+  if ((uint16_t)(adr - 0xf0) >= 0x10 && adr < 0xffc0)
+    return apu->ram[adr];
+  switch(adr) {
+>>>>

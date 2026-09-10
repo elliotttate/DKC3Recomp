@@ -25,7 +25,7 @@ option(DKC3_ENABLE_IPO
 if(NOT DEFINED SNESRECOMP_ROOT)
     set(SNESRECOMP_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/snesrecomp)
 endif()
-include(cmake/Dkc3Ppu.cmake)
+include(cmake/Dkc3RuntimePatches.cmake)
 
 function(dkc3_enable_project_warnings target_name)
     if(MSVC)
@@ -68,11 +68,9 @@ if(DKC3_BUILD_SNESRECOMP)
             "snesrecomp is not initialized; run git submodule update --init --recursive")
     endif()
     include(${SNESRECOMP_ROOT}/runner/runner.cmake)
-    list(REMOVE_ITEM SNESRECOMP_RUNNER_SOURCES "${DKC3_PPU_SOURCE}")
-    list(APPEND SNESRECOMP_RUNNER_SOURCES "${DKC3_PATCHED_PPU}")
-    include(cmake/Dkc3RuntimePerf.cmake)
-    list(REMOVE_ITEM SNESRECOMP_RUNNER_SOURCES "${DKC3_BRIDGE_SOURCE}")
-    list(APPEND SNESRECOMP_RUNNER_SOURCES "${DKC3_PATCHED_BRIDGE}")
+    # Swap the pinned runtime sources that carry DKC3 adaptations for their
+    # build-directory copies (see cmake/Dkc3RuntimePatches.cmake).
+    dkc3_use_patched_runtime_sources(SNESRECOMP_RUNNER_SOURCES)
     # SDL2 and recomp-ui are portable dependencies shared by the launcher and
     # the gameplay host on Windows, Linux, and macOS. Prefer a package config
     # (vcpkg/Homebrew commonly provide one), then accept a distribution module.
@@ -445,11 +443,10 @@ if(BUILD_TESTING)
     set_tests_properties(dkc3_ppu_mode2 PROPERTIES LABELS "unit;video;ppu")
     find_package(Python3 QUIET COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
-        add_test(NAME dkc3_runtime_perf_adaptation
+        add_test(NAME dkc3_runtime_patches
             COMMAND ${Python3_EXECUTABLE}
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_runtime_perf_adaptation.py
-                ${CMAKE_COMMAND})
-        set_tests_properties(dkc3_runtime_perf_adaptation PROPERTIES
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_apply_dkc3_runtime_patches.py)
+        set_tests_properties(dkc3_runtime_patches PROPERTIES
             LABELS "unit;tooling;performance;portable")
         add_test(NAME dkc3_pacing_log_tool
             COMMAND ${Python3_EXECUTABLE}

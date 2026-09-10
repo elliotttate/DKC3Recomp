@@ -1,0 +1,88 @@
+# Cartridge ROM fast path for the shared bus. Every generated memory access
+# and every interpreted fetch calls cpu_read8/cpu_read16. For an address
+# that can only be ROM on a plain LoROM or HiROM cartridge (no coprocessor,
+# so no register or work-RAM window can shadow it), the original walked the
+# hardware-register test, four coprocessor tests, the save-RAM mapping and
+# the RomPtr/cart_getRomPtr pair before returning the byte. The fast path
+# resolves the same pointer directly; every other address, including the
+# save-RAM window and every coprocessor cartridge type, takes the original
+# route unchanged.
+file: runner/src/cpu_state.c
+
+@@ plain-rom-helper
+<<<<
+static uint8 cpu_latch_read8(CpuState *cpu, uint8 value) {
+====
+/* Direct pointer to a plain LoROM/HiROM cartridge byte, or NULL when the
+ * address must take the full route. Mirrors cart_getRomPtr for those two
+ * types: HiROM maps the upper half of every bank and the whole of banks
+ * $40-$7D/$C0-$FF; LoROM maps only the upper half (its lower half in banks
+ * $70-$7D/$F0-$FF may be battery RAM, so that stays on the full route).
+ * WRAM banks $7E/$7F never reach here: cpu_wram_offset claims them first. */
+static inline const uint8 *cpu_plain_rom_ptr(uint8 bank, uint16 addr) {
+    const Cart *cart = g_snes ? g_snes->cart : NULL;
+    if (!cart || !cart->rom || cart->romSize == 0) return NULL;
+    const uint8 canonical = (uint8)(bank & 0x7F);
+    uint32 off;
+    if (cart->type == CART_HIROM) {
+        if (addr < 0x8000 && canonical < 0x40) return NULL;
+        off = ((uint32)(canonical & 0x3F) << 16) | addr;
+    } else if (cart->type == CART_LOROM) {
+        if (addr < 0x8000) return NULL;
+        off = ((uint32)canonical << 15) | (addr & 0x7FFF);
+    } else {
+        return NULL;
+    }
+    const uint32 size = cart->romSize;
+    off = (size & (size - 1)) == 0 ? (off & (size - 1)) : (off % size);
+    return &cart->rom[off];
+}
+
+static uint8 cpu_latch_read8(CpuState *cpu, uint8 value) {
+>>>>
+
+@@ plain-rom-read8
+<<<<
+    int off = cpu_wram_offset(bank, addr);
+    if (off >= 0) return cpu_latch_read8(cpu, cpu->ram[off]);
+    if (is_hw_reg(bank, addr)) {
+        cpu_pace_cycles(addr);
+        cpu_hw_log(addr, 1, 0);
+        return cpu_latch_read8(cpu, ReadRegOpenBus(addr, cpu->open_bus));
+    }
+====
+    int off = cpu_wram_offset(bank, addr);
+    if (off >= 0) return cpu_latch_read8(cpu, cpu->ram[off]);
+    {
+        const uint8 *rom = cpu_plain_rom_ptr(bank, addr);
+        if (rom) return cpu_latch_read8(cpu, *rom);
+    }
+    if (is_hw_reg(bank, addr)) {
+        cpu_pace_cycles(addr);
+        cpu_hw_log(addr, 1, 0);
+        return cpu_latch_read8(cpu, ReadRegOpenBus(addr, cpu->open_bus));
+    }
+>>>>
+
+# The word read composed its ROM word from RomPtr(addr) as p[0] | p[1] << 8;
+# the fast path returns the identical pointer.
+@@ plain-rom-read16
+<<<<
+        return cpu_latch_read16(cpu, (uint16)lo | ((uint16)hi << 8));
+    }
+    if (is_hw_reg(bank, addr)) {
+        uint8 lo;
+        uint8 hi;
+        cpu_pace_cycles_word(addr);
+====
+        return cpu_latch_read16(cpu, (uint16)lo | ((uint16)hi << 8));
+    }
+    {
+        const uint8 *rom = cpu_plain_rom_ptr(bank, addr);
+        if (rom) return cpu_latch_read16(cpu, (uint16)rom[0] | ((uint16)rom[1] << 8));
+    }
+    if (is_hw_reg(bank, addr)) {
+        uint8 lo;
+        uint8 hi;
+        cpu_pace_cycles_word(addr);
+>>>>

@@ -150,10 +150,19 @@ the app and select the ROM in its launcher.
 Release builds enable interprocedural optimization when CMake's compiler
 and linker check succeeds, allowing optimization across the generated game
 code and runtime. Set `-DDKC3_ENABLE_IPO=OFF` when configuring to disable it;
-unsupported toolchains retain ordinary Release optimization. The local
-macOS performance pass also removes unnecessary diagnostic lookups from
-ordinary interpreter memory accesses. Measurements and validation limits
-are recorded in [docs/BRINGUP.md](docs/BRINGUP.md).
+unsupported toolchains retain ordinary Release optimization. The
+project's runtime adaptations live as literal hunks under
+`cmake/runtime-patches/`; `scripts/apply_dkc3_runtime_patches.py` applies
+them to build-directory copies of the pinned snesrecomp sources at
+configure time and fails closed when an anchor moves. They keep the
+scalar PPU's widescreen merge and composite off per-pixel branch chains,
+give the shared bus a direct path for plain cartridge ROM reads, stop the
+interpreter prefetching poll bytes it never consults, and compile out
+audio reference diagnostics that a zero-valued trace define had left
+running on every sample. Tier-2 coverage journals are now opt in
+(`SNESRECOMP_TIER2_CAPTURE=1`), as is the stack-balance auditor
+(`SNESRECOMP_STACKBAL_AUDIT=1`). Measurements and validation limits are
+recorded in [docs/BRINGUP.md](docs/BRINGUP.md).
 
 The SDL host gives the active player's game controller a short haptic pulse
 when a descending jump both defeats an enemy and rebounds upward. The trigger
@@ -198,8 +207,9 @@ in `runner/headless_main.c` write frames as PPM (`DKC3_FRAME_PPM`,
 save (`DKC3_SRAM_INPUT`, `DKC3_SAVESTATE_INPUT`), and replay scripted
 input (`SNESRECOMP_INPUT_PLAY`).
 `DKC3_PPU_LEGACY=1` selects the independent scalar renderer for pixel-oracle
-comparisons. CMake applies the checked Mode 2 priority adaptation to a build
-copy of the pinned PPU source; the submodule stays unchanged.
+comparisons. CMake applies the checked Mode 2 priority adaptation, with the
+other runtime hunks, to build copies of the pinned sources; the submodule
+stays unchanged.
 
 ## Regenerating the bank configuration
 

@@ -10,16 +10,23 @@
   remains unchanged.
 - License: PolyForm Noncommercial License 1.0.0; full pinned text below,
   also retained in `snesrecomp/LICENSE`.
-- Local adaptation: `cmake/Dkc3Ppu.cmake` changes the Mode 2 BG priority
-  values in a build-directory copy of `runner/src/snes/ppu.c`, retaining its
-  license and leaving the pinned submodule untouched. The unique source
-  anchor is checked at configure time. The runtime's independent scalar PPU
-  at the same revision supplies the priority and pixel oracle.
-- Local performance adaptation: `cmake/Dkc3RuntimePerf.cmake` reorders three
-  diagnostic predicates in a build-directory copy of `interp_bridge.c` so
-  non-APU accesses skip environment lookup. It retains the original source
-  and license, requires each source anchor exactly once, and leaves the
-  submodule unchanged. Diagnostic presence semantics are preserved.
+- Local adaptations: the hunk files under `cmake/runtime-patches/` are
+  applied by `scripts/apply_dkc3_runtime_patches.py` to build-directory
+  copies of eight runtime sources (`ppu.c`, `interp_bridge.c`, `cpu_state.c`,
+  `common_cpu_infra.c`, `dsp.c`, `dsp_shadow.c`, `audio_trace.c`,
+  `tier2_capture.c`). Each copy retains the original source and license,
+  every anchor must match exactly the stated number of times, and the
+  pinned submodule is left untouched. They comprise the Mode 2 BG priority
+  change (the runtime's independent scalar PPU at the same revision supplies
+  the priority and pixel oracle), the active-span priority-buffer clear
+  ported from upstream snesrecomp `4020e47`, the opt-in tier-2 capture
+  ported from upstream `8d12911`, the write-log prefix latch ported from
+  the DKC1Recomp snesrecomp fork (`b46b940`), and DKC3's own measured
+  changes to the padded widescreen merge, the line composite, the 4bpp
+  viewport test, the plain-ROM bus path, the interpreter's poll prefetch
+  and entry options, the DSP diagnostic gating, the audio statistics clock
+  and the stack-balance auditor. Diagnostic presence semantics of
+  `SNESRECOMP_APU_PORT_DIAG` are preserved.
 
 <details>
 <summary>snesrecomp license text at the pinned revision</summary>

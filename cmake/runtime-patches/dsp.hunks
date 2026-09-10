@@ -1,0 +1,12 @@
+# The DKC3 hosts define SNESRECOMP_TRACE=0 for production builds, but the
+# DSP's faithful-reference diagnostics test the macro with defined(), so
+# they compiled in and ran on every generated sample. Test the value, like
+# the rest of the runtime does.
+file: runner/src/snes/dsp.c
+
+@@ trace-value-gate count=3
+<<<<
+#if defined(SNESRECOMP_TRACE)
+====
+#if SNESRECOMP_TRACE
+>>>>

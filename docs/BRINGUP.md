@@ -1339,3 +1339,154 @@ ropes, enemies, terrain, and widened view visible; the normal MSU-1 pack
 and CoreAudio path are active. The user's original quick-save SHA-256 is
 unchanged. The inspected native window is retained outside Git as
 `dkc3-optimize-20260910/live-window.png` in the diagnostics directory above.
+
+## 2026-09-10 - second runtime performance pass: profile-led, byte-identical
+
+The owner asked for a further optimization pass and for a comparison with
+the other recompilation projects. Three inputs set the direction:
+
+- A 10-second `sample` of the optimized 21:9 boot run from the previous
+  pass had been attract-mode work. A new profile of the 30,000-frame
+  Pothole Panic replay (`cave.sav` + `flaps.txt`, 16:9, the workload a
+  player actually sees) split differently: 54% of headless time in
+  `Dkc3DrawPpuFrame` (the scalar PPU: `PpuDrawBackground_4bpp`, the
+  line composite inlined into `ppu_runLine`, and
+  `PpuMergePaddedBackground` at 11% by itself), 31% in
+  `Dkc3RunOneFrame` (interpreter, bus, compiled bodies), and 13% in the
+  SPC/DSP catch-up.
+- Reading the sibling projects. DKC1Recomp's measured pass (its
+  snesrecomp fork `b46b940`) had removed a stack-balance hash probe from
+  every generated-function return and a `strncmp` from every entry.
+  Upstream snesrecomp `main` (not an ancestor of DKC3's pin, which branches
+  at `fe6045c`) had added the active-span priority-buffer clear
+  (`4020e47`) and made tier-2 coverage journals opt in (`8d12911`).
+  zelda3's `ppu.c` is the origin of this renderer; its composite is the
+  plain loop DKC3's world-span and HUD tests were added to.
+- Two defects found in DKC3's own build: the hosts define
+  `SNESRECOMP_TRACE=0`, but `dsp.c` and `dsp_shadow.c` test the macro
+  with `defined()`, so the shadow mixer's reference renderer, the
+  reference Gaussian per voice, the reference echo FIR and the reference
+  BRR decode all ran on every DSP sample in release builds (the
+  substitution stays disabled, so audio was unaffected, only time was
+  lost); and `audio_trace_on_sample` read the monotonic clock for every
+  sample (about 1.5% of the profile in `mach_absolute_time`).
+
+### Mechanism
+
+The two ad-hoc CMake string patches (`Dkc3Ppu.cmake`,
+`Dkc3RuntimePerf.cmake`) are replaced by `cmake/runtime-patches/*.hunks`,
+literal old/new replacements per pinned source, applied at configure
+time by `scripts/apply_dkc3_runtime_patches.py` to copies under
+`build/.../dkc3-runtime/`. Each anchor must match exactly the stated
+number of times, so a moved pin fails the configure step instead of
+dropping an adaptation. `cmake/Dkc3RuntimePatches.cmake` swaps the copies
+into the runtime source list and exports `DKC3_PATCHED_PPU` for the Mode 2
+unit test. `tests/test_apply_dkc3_runtime_patches.py` applies the set to
+the pinned submodule, reverses every hunk to recover the original byte for
+byte, and rejects missing, duplicated and malformed anchors. The submodule
+pin is unchanged.
+
+### Changes (nine runtime sources)
+
+- `ppu.c`: the existing Mode 2 priority change; the upstream active-span
+  clear and overlay merge; `PpuMergePaddedBackground` rewritten as three
+  straight passes (authentic window as a restrict-qualified max-merge with
+  the edge-repair columns as shifted runs, each margin as a running index
+  that wraps at the period or reflects) with the original per-pixel
+  formula retained as the fallback whenever a pass cannot prove its source
+  columns stay inside the clamp range; the line composite skips the
+  per-pixel world-span and HUD tests when no full-width exception is
+  active on the line (columns outside the world span are zero-filled,
+  inside are composited by the plain loop; the original loops remain for
+  lines with an active exception and for an empty span); the 4bpp
+  renderer computes `PpuViewportAllows` once per window span as a column
+  interval and decodes each tile row through two 256-entry spread tables
+  into eight nibbles, so a pixel is a shift, a mask and a nonzero test.
+- `interp_bridge.c`: the previous APU diagnostic predicate reorders; the
+  write-log state option resolved once instead of per bridge entry; the
+  quiescent ring cleared only for auto-quiescent runs; the two poll
+  prefetch bus reads per interpreted instruction skipped unless a yield-PC
+  run can consult them (neither DKC3 entry point can: the frame scheduler
+  is auto-quiescent and tier dispatch has no yield PC; the reads were
+  untimed and never touched a device window); the tier-2 exit manifest
+  gated on `SNESRECOMP_TIER2_CAPTURE`.
+- `cpu_state.c`: `cpu_read8`/`cpu_read16` resolve an address that can only
+  be cartridge ROM on a plain LoROM or HiROM cartridge directly (DKC3 is
+  HiROM, map mode `$31`, with the save-RAM window left on the full route)
+  instead of walking the register, coprocessor, save-RAM and
+  `RomPtr`/`cart_getRomPtr` chain. Every other address and cartridge type
+  is unchanged.
+- `common_cpu_infra.c`: the write-log prefix compare is skipped unless
+  `SNESRECOMP_WLOG` names an output (DKC1's change); the stack-balance
+  auditor runs only with `SNESRECOMP_STACKBAL_AUDIT` set and its watchdog
+  report says when it was off.
+- `dsp.c`, `dsp_shadow.c`: `#if defined(SNESRECOMP_TRACE)` becomes
+  `#if SNESRECOMP_TRACE`.
+- `audio_trace.c`: the snapshot clock is polled every 64 samples.
+- `apu.c`: SPC RAM below `$00F0` and the IPL window is answered before the
+  register switch; the per-opcode PC histogram and per-write port counters,
+  read only by the trace-build debug server, are compiled out of
+  production.
+- `tier2_capture.c`: the discovery journal requires
+  `SNESRECOMP_TIER2_CAPTURE=1` (or `SNESRECOMP_TIER2=1`). Release runs no
+  longer write `tier2_*.json`/`.jsonl` beside the working directory.
+
+Not changed, after measurement or on review: the interpreter's per-step
+quiescent ring compare and bus timing (correctness-load-bearing), the
+world-shadow tile lookup per margin tile, the sprite evaluator, the SPC
+timer loop, and a converted-palette cache for the composite (DKC1Recomp
+measured that slower because of mid-frame palette writes).
+
+### Evidence
+
+Baseline is the committed `3877929` build (headless SHA-256
+`ff1cf592…`), optimized is this tree (`920917b5…`). Every comparison
+below is byte-for-byte against that baseline:
+
+- 48 headless cases, all identical stdout (frame, WRAM, VRAM, CGRAM and
+  OAM hashes, audio hash and activity, state-event counts) and stderr:
+  eight private saved scenes in 4:3, 16:10, 16:9 and 21:9 for 123 frames;
+  the cave replay in the four aspects with default and native
+  (`DKC3_CULL_WIDEN=0`) culling, 843 frames with every third frame dumped
+  and compared (2,248 frame pairs identical); boot runs of 600 frames in
+  the four aspects; and `SNESRECOMP_APU_PORT_DIAG` absent, empty, `0` and
+  `1`.
+- The native SDL app, 240 paced frames from the cave save in the four
+  aspects with CoreAudio active: the presented capture at frame 89 and
+  the source-resolution frame are pixel-identical in all four.
+- All 27 project CTest checks pass; the ROM-free configuration
+  (`DKC3_BUILD_SNESRECOMP=OFF`) passes its 21.
+
+Throughput, Apple M3 Max, macOS 27.0, three order-alternating pairs per
+workload, medians, no other load:
+
+| Workload | Baseline | Optimized | Time reduction | Speedup |
+| --- | ---: | ---: | ---: | ---: |
+| Cave replay, 843 frames, 16:9 | 0.805 s / 0.955 ms per frame | 0.508 s / 0.602 ms per frame | 36.9% | 58.5% |
+| Cave replay, 843 frames, 21:9 | 0.938 s / 1.113 ms per frame | 0.592 s / 0.703 ms per frame | 36.8% | 58.3% |
+| Boot/attract, 4,801 frames, 4:3 | 3.904 s / 0.813 ms per frame | 2.712 s / 0.565 ms per frame | 30.5% | 44.0% |
+| Boot/attract, 4,801 frames, 21:9 | 4.491 s / 0.935 ms per frame | 3.060 s / 0.637 ms per frame | 31.9% | 46.8% |
+
+The first round (everything except the spread-table decode, the
+restrict-qualified merge and the SPC changes) measured 28.0% to 32.3%;
+the second round added the rest. The native app's per-run mean emulation
+time over 240 frames fell in every wide aspect (16:9: 1.23 to 0.69 ms;
+21:9: 1.60 to 1.05 ms) but those are single short paced runs and are
+noisy; the headless medians are the measurement.
+
+The profile of the optimized cave replay now splits about evenly between
+`Dkc3DrawPpuFrame` (50%) and `Dkc3RunOneFrame` plus audio (49%). The
+largest remaining items are the 4bpp tile renderer (about 16%), the line
+composite (about 10%, three table lookups per pixel), the interpreter
+core loop (about 10%), the SPC/DSP (about 15%) and the world-shadow tile
+lookup (about 3%). A no-inline attribution build used for this pass is
+under `build/profile` (not shipped).
+
+Scripts (`verify.py`, `bench.py`, `native_check.py`), build/test logs,
+the four `sample` profiles, both headless binaries and the baseline app
+are outside Git under
+`/Users/briantate/Documents/Codex/diagnostics/dkc3-optimize2-20260910`.
+Windows and other compilers are unverified for this pass; the hunks are
+plain C11 and the patch step needs Python 3 at configure time, which the
+Windows instructions already require. The existing `tier2_*` files in the
+repository root are ignored artifacts of earlier runs and can be deleted.

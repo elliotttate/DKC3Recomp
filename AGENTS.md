@@ -42,3 +42,10 @@ make every milestone reproducible.
    closed when a generated anchor moves. Every widened window must be
    shown against the native behavior (`DKC3_CULL_WIDEN=0`) before it is
    recorded.
+8. Adaptations of the pinned snesrecomp runtime live only as literal
+   hunks under `cmake/runtime-patches/`, applied to build-directory copies
+   by `scripts/apply_dkc3_runtime_patches.py` at configure time. Never
+   edit the submodule in place. A performance hunk must be shown
+   byte-identical against the previous build on the saved-scene corpus,
+   the cave replay in every aspect, and a boot run before it is recorded,
+   and its measurement must be a paired, order-alternating A/B.

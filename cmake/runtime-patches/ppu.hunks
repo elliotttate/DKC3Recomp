@@ -1,0 +1,656 @@
+# DKC3 adaptations of the pinned snesrecomp scalar PPU. Applied by
+# scripts/apply_dkc3_runtime_patches.py to a build-directory copy; the
+# submodule is untouched. Every anchor must match exactly once (or the
+# stated count) or the configure step fails.
+file: runner/src/snes/ppu.c
+
+# Mode 2, front to back: OBJ3 BG1H OBJ2 BG2H OBJ1 BG1L OBJ0 BG2L. OBJ retains
+# the runtime's priorities 14/10/6/2; BG priorities fit between them.
+@@ mode2-bg-priority
+<<<<
+    PpuDrawBackground_4bpp_opt(ppu, y, sub, 0, 0xc000, 0x8000);
+    PpuDrawBackground_4bpp_opt(ppu, y, sub, 1, 0xb100, 0x7100);
+====
+    PpuDrawBackground_4bpp_opt(ppu, y, sub, 0, 0xc000, 0x4000);
+    PpuDrawBackground_4bpp_opt(ppu, y, sub, 1, 0x8100, 0x1100);
+>>>>
+
+# Upstream snesrecomp 4020e47 ("Clear only the columns the frame can use"):
+# the priority buffers are sized for the widest border the runtime supports,
+# but nothing reads past 256 plus the host's per-side budget. Clear and merge
+# only that span. At the full ultrawide budget this is the whole buffer.
+@@ active-span-helper
+<<<<
+static inline void ClearBackdrop(PpuPixelPrioBufs *buf) {
+  for (size_t i = 0; i != arraysize(buf->data); i += 4)
+    *(uint64*)&buf->data[i] = 0x0500050005000500;
+}
+====
+// The columns anything can reach this frame: the 256 hardware ones plus the
+// per-side budget the host asked for. Every read of a priority buffer is
+// bounded by a window edge, and PpuWidescreenLayerExtra never hands out more
+// than extraLeftRight, so nothing outside this span is ever looked at.
+// Rounded out to whole uint64 stores, because that is how ClearBackdrop
+// writes.
+static inline void PpuActiveSpan(const Ppu *ppu, size_t *begin,
+                                 size_t *end) {
+  size_t extra = ppu->extraLeftRight;
+  if (extra > kPpuExtraLeftRight)
+    extra = kPpuExtraLeftRight;
+  size_t b = ((size_t)kPpuExtraLeftRight - extra) & ~(size_t)3;
+  size_t e = ((size_t)kPpuExtraLeftRight + kPpuXPixels + extra + 3) &
+             ~(size_t)3;
+  if (e > kPpuBufWidth)
+    e = kPpuBufWidth;
+  *begin = b;
+  *end = e;
+}
+
+// Fills the active span only. Below the full budget the rest of the buffer
+// is never read, so clearing it charged every consumer for a border it did
+// not ask for: three buffers a line, 224 lines, in every aspect.
+static inline void ClearBackdrop(const Ppu *ppu, PpuPixelPrioBufs *buf) {
+  size_t begin, end;
+  PpuActiveSpan(ppu, &begin, &end);
+  for (size_t i = begin; i < end; i += 4)
+    *(uint64*)&buf->data[i] = 0x0500050005000500;
+}
+>>>>
+
+@@ active-span-obj-clear
+<<<<
+    ClearBackdrop(&ppu->objBuffer);
+====
+    ClearBackdrop(ppu, &ppu->objBuffer);
+>>>>
+
+@@ active-span-layerbuf-clear count=2
+<<<<
+  ClearBackdrop(&layerbuf);
+====
+  ClearBackdrop(ppu, &layerbuf);
+>>>>
+
+@@ active-span-main-clear
+<<<<
+  ClearBackdrop(&ppu->bgBuffers[0]);
+====
+  ClearBackdrop(ppu, &ppu->bgBuffers[0]);
+>>>>
+
+@@ active-span-sub-clear
+<<<<
+    ClearBackdrop(&ppu->bgBuffers[1]);
+====
+    ClearBackdrop(ppu, &ppu->bgBuffers[1]);
+>>>>
+
+@@ active-span-overlay-merge
+<<<<
+  bool remove = (capture->flags & kPpuOverlayFlag_RemoveFromGame) != 0;
+  for (int i = 0; i < kPpuBufWidth; i++) {
+    int x = i - kPpuExtraLeftRight;
+====
+  bool remove = (capture->flags & kPpuOverlayFlag_RemoveFromGame) != 0;
+  // Same span as the backdrop clear: outside it dst holds last line's
+  // pixels and nothing reads either buffer there.
+  size_t span_begin, span_end;
+  PpuActiveSpan(ppu, &span_begin, &span_end);
+  for (int i = (int)span_begin; i < (int)span_end; i++) {
+    int x = i - kPpuExtraLeftRight;
+>>>>
+
+# The padded merge walked every presented column through a per-pixel
+# branch chain with two modulo operations. The same source column sequence
+# is now produced with three straight passes: the authentic window (a
+# contiguous max-merge, with the edge-repair columns as their own shifted
+# runs) and each margin as a running index that wraps at the period or
+# reflects. Any source range the original clamp could touch falls back to
+# the original per-pixel formula, so the output is identical by
+# construction. The straight passes read one buffer and write the other
+# (the isolated layer render and the live priority buffer never alias), so
+# their pointers are restrict-qualified and the merge is an unconditional
+# max store, which lets the compiler vectorize it.
+@@ merge-padded-fast
+<<<<
+  const bool interior_period = repeat && repeat_period < kPpuXPixels;
+  for (int x = -left_extra; x < kPpuXPixels + right_extra; x++) {
+    const int di = x + kPpuExtraLeftRight;
+    int sx;
+    if (x >= copy_lo && x < copy_hi) {
+      sx = x;
+      if (repeat && edge_repair != 0) {
+        if (x >= a0 && x < a0 + edge_repair)
+          sx += repeat_period;
+        else if (x < a1 && x >= a1 - edge_repair)
+          sx -= repeat_period;
+      }
+    } else if (x < copy_lo) {
+      if (interior_period)
+        sx = interior_first +
+             ((x - interior_first) % repeat_period + repeat_period) %
+                 repeat_period;
+      else if (repeat)
+        sx = a0 + ((x - a0) % repeat_period + repeat_period) % repeat_period;
+      else
+        sx = 2 * a0 - x;
+    } else {
+      if (interior_period)
+        sx = (interior_last - repeat_period) +
+             (x - (interior_last - repeat_period)) % repeat_period;
+      else if (repeat)
+        sx = a0 + (x - a0) % repeat_period;
+      else
+        sx = 2 * (a1 - 1) - x;
+    }
+    if (sx < -left_extra) sx = -left_extra;
+    if (sx >= kPpuXPixels + right_extra) sx = kPpuXPixels + right_extra - 1;
+    const int si = sx + kPpuExtraLeftRight;
+    if (src[si] > dst[di]) dst[di] = src[si];
+  }
+}
+====
+  const bool interior_period = repeat && repeat_period < kPpuXPixels;
+  const int x_first = -left_extra;
+  const int x_end = kPpuXPixels + right_extra;
+  const int sx_min = -left_extra;
+  const int sx_max = kPpuXPixels + right_extra - 1;
+  // Exact per-pixel formula of the original merge, used where a fast pass
+  // cannot prove its source columns stay inside the clamp range.
+#define DKC3_MERGE_PADDED_SLOW(x_begin, x_stop) \
+  for (int x = (x_begin); x < (x_stop); x++) { \
+    const int di = x + kPpuExtraLeftRight; \
+    int sx; \
+    if (x >= copy_lo && x < copy_hi) { \
+      sx = x; \
+      if (repeat && edge_repair != 0) { \
+        if (x >= a0 && x < a0 + edge_repair) \
+          sx += repeat_period; \
+        else if (x < a1 && x >= a1 - edge_repair) \
+          sx -= repeat_period; \
+      } \
+    } else if (x < copy_lo) { \
+      if (interior_period) \
+        sx = interior_first + \
+             ((x - interior_first) % repeat_period + repeat_period) % \
+                 repeat_period; \
+      else if (repeat) \
+        sx = a0 + ((x - a0) % repeat_period + repeat_period) % repeat_period; \
+      else \
+        sx = 2 * a0 - x; \
+    } else { \
+      if (interior_period) \
+        sx = (interior_last - repeat_period) + \
+             (x - (interior_last - repeat_period)) % repeat_period; \
+      else if (repeat) \
+        sx = a0 + (x - a0) % repeat_period; \
+      else \
+        sx = 2 * (a1 - 1) - x; \
+    } \
+    if (sx < -left_extra) sx = -left_extra; \
+    if (sx >= kPpuXPixels + right_extra) sx = kPpuXPixels + right_extra - 1; \
+    const int si = sx + kPpuExtraLeftRight; \
+    if (src[si] > dst[di]) dst[di] = src[si]; \
+  }
+  // A straight run: dst[x] = max(dst[x], src[x + shift]) for x in
+  // [x_begin, x_stop). Only used when every source column is in range.
+#define DKC3_MERGE_PADDED_RUN(x_begin, x_stop, shift) \
+  do { \
+    const int run_begin = (x_begin), run_stop = (x_stop), run_shift = (shift); \
+    if (run_begin < run_stop) { \
+      if (run_begin + run_shift < sx_min || \
+          run_stop - 1 + run_shift > sx_max) { \
+        DKC3_MERGE_PADDED_SLOW(run_begin, run_stop) \
+      } else { \
+        PpuZbufType *__restrict run_dst = dst + run_begin + kPpuExtraLeftRight; \
+        const PpuZbufType *__restrict run_src = \
+            src + run_begin + run_shift + kPpuExtraLeftRight; \
+        for (int n = run_stop - run_begin; n > 0; n--, run_dst++, run_src++) { \
+          const PpuZbufType s_ = *run_src, d_ = *run_dst; \
+          *run_dst = s_ > d_ ? s_ : d_; \
+        } \
+      } \
+    } \
+  } while (0)
+  // A margin continued from a period: the source column starts at the
+  // original formula's value for the first pixel and then advances by one,
+  // wrapping from base + period back to base, exactly as the modulo did.
+#define DKC3_MERGE_PADDED_CYCLE(x_begin, x_stop, base, sx_start) \
+  do { \
+    const int cyc_begin = (x_begin), cyc_stop = (x_stop); \
+    const int cyc_base = (base); \
+    if (cyc_begin < cyc_stop) { \
+      if (cyc_base < sx_min || cyc_base + repeat_period - 1 > sx_max) { \
+        DKC3_MERGE_PADDED_SLOW(cyc_begin, cyc_stop) \
+      } else { \
+        int cyc_sx = (sx_start); \
+        PpuZbufType *__restrict cyc_dst = dst + cyc_begin + kPpuExtraLeftRight; \
+        const PpuZbufType *cyc_src_base = src + cyc_base + kPpuExtraLeftRight; \
+        const PpuZbufType *__restrict cyc_src = src + cyc_sx + kPpuExtraLeftRight; \
+        for (int n = cyc_stop - cyc_begin; n > 0; n--, cyc_dst++) { \
+          const PpuZbufType s_ = *cyc_src, d_ = *cyc_dst; \
+          *cyc_dst = s_ > d_ ? s_ : d_; \
+          cyc_src++; \
+          if (cyc_src == cyc_src_base + repeat_period) cyc_src = cyc_src_base; \
+        } \
+      } \
+    } \
+  } while (0)
+  // A mirrored margin: dst[x] = max(dst[x], src[axis - x]).
+#define DKC3_MERGE_PADDED_MIRROR(x_begin, x_stop, axis) \
+  do { \
+    const int mir_begin = (x_begin), mir_stop = (x_stop), mir_axis = (axis); \
+    if (mir_begin < mir_stop) { \
+      if (mir_axis - (mir_stop - 1) < sx_min || mir_axis - mir_begin > sx_max) { \
+        DKC3_MERGE_PADDED_SLOW(mir_begin, mir_stop) \
+      } else { \
+        PpuZbufType *__restrict mir_dst = dst + mir_begin + kPpuExtraLeftRight; \
+        const PpuZbufType *__restrict mir_src = \
+            src + mir_axis - mir_begin + kPpuExtraLeftRight; \
+        for (int n = mir_stop - mir_begin; n > 0; n--, mir_dst++, mir_src--) { \
+          const PpuZbufType s_ = *mir_src, d_ = *mir_dst; \
+          *mir_dst = s_ > d_ ? s_ : d_; \
+        } \
+      } \
+    } \
+  } while (0)
+
+  // Left margin: x in [x_first, copy_lo).
+  {
+    const int m_begin = x_first;
+    const int m_stop = IntMin(copy_lo, x_end);
+    if (m_begin < m_stop) {
+      if (interior_period) {
+        DKC3_MERGE_PADDED_CYCLE(
+            m_begin, m_stop, interior_first,
+            interior_first +
+                ((m_begin - interior_first) % repeat_period + repeat_period) %
+                    repeat_period);
+      } else if (repeat) {
+        DKC3_MERGE_PADDED_CYCLE(
+            m_begin, m_stop, a0,
+            a0 + ((m_begin - a0) % repeat_period + repeat_period) %
+                     repeat_period);
+      } else {
+        DKC3_MERGE_PADDED_MIRROR(m_begin, m_stop, 2 * a0);
+      }
+    }
+  }
+  // Authentic window: x in [copy_lo, copy_hi), split around the edge-repair
+  // columns when they apply.
+  {
+    const int c_begin = IntMax(copy_lo, x_first);
+    const int c_stop = IntMin(copy_hi, x_end);
+    if (c_begin < c_stop) {
+      if (repeat && edge_repair != 0) {
+        const int l_begin = IntMax(c_begin, a0);
+        const int l_stop = IntMin(c_stop, a0 + edge_repair);
+        const int r_begin = IntMax(c_begin, a1 - edge_repair);
+        const int r_stop = IntMin(c_stop, a1);
+        int plain_begin = c_begin;
+        if (l_begin < l_stop) {
+          DKC3_MERGE_PADDED_RUN(c_begin, l_begin, 0);
+          DKC3_MERGE_PADDED_RUN(l_begin, l_stop, repeat_period);
+          plain_begin = l_stop;
+        }
+        if (r_begin < r_stop) {
+          DKC3_MERGE_PADDED_RUN(plain_begin, IntMax(plain_begin, r_begin), 0);
+          DKC3_MERGE_PADDED_RUN(IntMax(plain_begin, r_begin), r_stop,
+                                -repeat_period);
+          plain_begin = IntMax(plain_begin, r_stop);
+        }
+        DKC3_MERGE_PADDED_RUN(plain_begin, c_stop, 0);
+      } else {
+        DKC3_MERGE_PADDED_RUN(c_begin, c_stop, 0);
+      }
+    }
+  }
+  // Right margin: x in [copy_hi, x_end).
+  {
+    const int m_begin = IntMax(copy_hi, x_first);
+    const int m_stop = x_end;
+    if (m_begin < m_stop) {
+      if (interior_period) {
+        DKC3_MERGE_PADDED_CYCLE(
+            m_begin, m_stop, interior_last - repeat_period,
+            (interior_last - repeat_period) +
+                (m_begin - (interior_last - repeat_period)) % repeat_period);
+      } else if (repeat) {
+        DKC3_MERGE_PADDED_CYCLE(m_begin, m_stop, a0,
+                                a0 + (m_begin - a0) % repeat_period);
+      } else {
+        DKC3_MERGE_PADDED_MIRROR(m_begin, m_stop, 2 * (a1 - 1));
+      }
+    }
+  }
+#undef DKC3_MERGE_PADDED_MIRROR
+#undef DKC3_MERGE_PADDED_CYCLE
+#undef DKC3_MERGE_PADDED_RUN
+#undef DKC3_MERGE_PADDED_SLOW
+}
+>>>>
+
+# The composite loop tested every pixel for the world span and the
+# full-width HUD exceptions. When no full-width exception is active on the
+# line, the exceptions never keep a pixel, so the columns outside the world
+# span are simply black and the columns inside need no per-pixel test.
+# The original per-pixel loops remain for lines with an active exception and
+# for the degenerate empty-span case, so the composite is unchanged.
+@@ composite-world-span
+<<<<
+  uint32 windex = 0;
+  do {
+    uint32 left = cwin.edges[windex] + kPpuExtraLeftRight, right = cwin.edges[windex + 1] + kPpuExtraLeftRight;
+    // If clip is set, then zero out the rgb values from the main screen.
+    uint32 clip_color_mask = (cw_clip_math & 1) ? 0x1f : 0;
+    uint32 math_enabled_cur = PPU_mathEnabled(ppu) & ((cw_clip_math & 0x100) ? -1 : 0);
+    uint32 fixed_color = ppu->fixedColor;
+    if (math_enabled_cur == 0 || fixed_color == 0 && !PPU_halfColor(ppu) && !rendered_subscreen) {
+      // Math is disabled (or has no effect), so can avoid the per-pixel maths check
+      uint32 i = left;
+      do {
+====
+  uint32 windex = 0;
+  do {
+    uint32 left = cwin.edges[windex] + kPpuExtraLeftRight, right = cwin.edges[windex + 1] + kPpuExtraLeftRight;
+    // If clip is set, then zero out the rgb values from the main screen.
+    uint32 clip_color_mask = (cw_clip_math & 1) ? 0x1f : 0;
+    uint32 math_enabled_cur = PPU_mathEnabled(ppu) & ((cw_clip_math & 0x100) ? -1 : 0);
+    uint32 fixed_color = ppu->fixedColor;
+    if (!any_hud_full_width && left < right) {
+      // No full-width exception on this line: every column outside the
+      // world span is black and every column inside is composited plainly.
+      uint32 world_lo = hud_world_left > left ? hud_world_left : left;
+      uint32 world_hi = hud_world_right < right ? hud_world_right : right;
+      if (world_lo > right) world_lo = right;
+      if (world_hi < world_lo) world_hi = world_lo;
+      uint32 i = left;
+      for (; i < world_lo; i++)
+        *dst++ = 0;
+      if (math_enabled_cur == 0 || fixed_color == 0 && !PPU_halfColor(ppu) && !rendered_subscreen) {
+        for (; i < world_hi; i++) {
+          uint16 pixel = ppu->bgBuffers[0].data[i];
+          uint32 color = ppu->cgram[pixel & 0xff];
+          *dst++ = ppu->brightnessMult[color & clip_color_mask] << 16 |
+            ppu->brightnessMult[(color >> 5) & clip_color_mask] << 8 |
+            ppu->brightnessMult[(color >> 10) & clip_color_mask];
+        }
+      } else {
+        uint8 *half_color_map = PPU_halfColor(ppu) ? ppu->brightnessMultHalf : ppu->brightnessMult;
+        uint32 math_flags = math_enabled_cur | PPU_addSubscreen(ppu) << 8 | PPU_subtractColor(ppu) << 9;
+        for (; i < world_hi; i++) {
+          uint16 pixel = ppu->bgBuffers[0].data[i];
+          uint8 main_layer = (pixel >> 8) & 0xf;
+          uint32 color = ppu->cgram[pixel & 0xff], color2;
+          uint32 r = color & clip_color_mask;
+          uint32 g = (color >> 5) & clip_color_mask;
+          uint32 b = (color >> 10) & clip_color_mask;
+          uint8 *color_map = ppu->brightnessMult;
+          if (math_flags & (1 << main_layer)) {
+            if (math_flags & 0x100) {  // addSubscreen ?
+              if ((ppu->bgBuffers[1].data[i] & 0xff) != 0)
+                color2 = ppu->cgram[ppu->bgBuffers[1].data[i] & 0xff], color_map = half_color_map;
+              else  // Don't halve if PPU_addSubscreen(ppu) && backdrop
+                color2 = fixed_color;
+            } else {
+              color2 = fixed_color, color_map = half_color_map;
+            }
+            uint32 r2 = (color2 & 0x1f), g2 = ((color2 >> 5) & 0x1f), b2 = ((color2 >> 10) & 0x1f);
+            if (math_flags & 0x200) {  // subtractColor?
+              r = (r >= r2) ? r - r2 : 0;
+              g = (g >= g2) ? g - g2 : 0;
+              b = (b >= b2) ? b - b2 : 0;
+            } else {
+              r += r2;
+              g += g2;
+              b += b2;
+            }
+          }
+          *dst++ = color_map[b] | color_map[g] << 8 | color_map[r] << 16;
+        }
+      }
+      for (; i < right; i++)
+        *dst++ = 0;
+    } else if (math_enabled_cur == 0 || fixed_color == 0 && !PPU_halfColor(ppu) && !rendered_subscreen) {
+      // Math is disabled (or has no effect), so can avoid the per-pixel maths check
+      uint32 i = left;
+      do {
+>>>>
+
+# The 4bpp renderer asked PpuViewportAllows about every opaque pixel. Its
+# answer is an interval of screen columns per window span (the source-space
+# inset shifts by that span's bias), so the interval is computed once per
+# span and each pixel makes one range compare. The cheap opacity test now
+# runs before the range compare; both are side-effect free.
+#
+# The per-pixel planar decode (four shifts, four masks, three ors and a
+# separate opacity mask per pixel) is replaced by one table lookup per
+# bitplane byte per tile row, producing the eight pixels as nibbles; each
+# pixel is then a shift and a mask, and a nonzero nibble is the opacity
+# test. The tables are built by the preprocessor from the same bit
+# mappings the old macros used.
+@@ viewport-4bpp-macros
+<<<<
+#define VIEWPORT_ALLOWED(i) \
+  PpuViewportAllows(ppu, layer, \
+      (int)(dstz + (i) - dstbuf->data - kPpuExtraLeftRight), \
+      (int)(dstz + (i) - dstbuf->data - kPpuExtraLeftRight) + \
+          ws_bias[windex])
+#define DO_PIXEL(i) do { \
+  pixel = (bits >> i) & 1 | (bits >> (7 + i)) & 2 | (bits >> (14 + i)) & 4 | (bits >> (21 + i)) & 8; \
+  if (VIEWPORT_ALLOWED(i) && (bits & (0x01010101 << i)) && z > dstz[i]) dstz[i] = z + pixel; } while (0)
+#define DO_PIXEL_HFLIP(i) do { \
+  pixel = (bits >> (7 - i)) & 1 | (bits >> (14 - i)) & 2 | (bits >> (21 - i)) & 4 | (bits >> (28 - i)) & 8; \
+  if (VIEWPORT_ALLOWED(i) && (bits & (0x80808080 >> i)) && z > dstz[i]) dstz[i] = z + pixel; } while (0)
+====
+#define VIEWPORT_ALLOWED(i) \
+  (vp_all || \
+   (unsigned)((int)(dstz + (i) - dstbuf->data - kPpuExtraLeftRight) - vp_lo) < \
+       (unsigned)vp_len)
+/* One tile row as eight 4-bit pixels in screen order, nibble i = screen
+ * pixel i, built from the four bitplane bytes through the spread tables.
+ * A tile with X flip (bit 14) reads source bit i for screen pixel i; an
+ * unflipped tile reads source bit 7 - i. */
+#define CHUNKY_FROM_BITS(bits, flipped) \
+  ((flipped) \
+       ? (kDkc3Spread4bppFlip[(bits) & 0xffu] | \
+          kDkc3Spread4bppFlip[((bits) >> 8) & 0xffu] << 1 | \
+          kDkc3Spread4bppFlip[((bits) >> 16) & 0xffu] << 2 | \
+          kDkc3Spread4bppFlip[(bits) >> 24] << 3) \
+       : (kDkc3Spread4bppNorm[(bits) & 0xffu] | \
+          kDkc3Spread4bppNorm[((bits) >> 8) & 0xffu] << 1 | \
+          kDkc3Spread4bppNorm[((bits) >> 16) & 0xffu] << 2 | \
+          kDkc3Spread4bppNorm[(bits) >> 24] << 3))
+#define DO_PIXEL(i) do { \
+  pixel = (int)((chunky >> (4 * (i))) & 0xfu); \
+  if (pixel && VIEWPORT_ALLOWED(i) && z > dstz[i]) dstz[i] = z + pixel; } while (0)
+#define DO_PIXEL_HFLIP(i) DO_PIXEL(i)
+>>>>
+
+@@ viewport-4bpp-span-range
+<<<<
+    const uint16 *tp_next = tps[(x >> 8 & 1) ^ 1];
+#define NEXT_TP() if (tp != tp_last) tp += 1; else tp = tp_next, tp_next = tp_last - 31, tp_last = tp + 31;
+====
+    const uint16 *tp_next = tps[(x >> 8 & 1) ^ 1];
+    // Screen columns PpuViewportAllows accepts for this span. The span's
+    // bias is a constant offset between screen and source columns, so the
+    // source-space inset is one screen interval too.
+    int vp_lo = 0, vp_len = 0;
+    bool vp_all = true;
+    if (ppu->widescreenLineEnhancer &&
+        !(ppu->wsLineEnhancerWideLayers & (uint8_t)(1u << layer))) {
+      if (ppu->wsViewportInsetL[layer] | ppu->wsViewportInsetR[layer]) {
+        vp_lo = (int)ppu->wsViewportInsetL[layer] - ws_bias[windex];
+        vp_len = (kPpuXPixels - (int)ppu->wsViewportInsetR[layer] -
+                  ws_bias[windex]) - vp_lo;
+        vp_all = false;
+      } else if (layer == 0) {
+        vp_lo = 0;
+        vp_len = kPpuXPixels;
+        vp_all = false;
+      }
+    }
+    if (!vp_all) {
+      if (vp_len < 0) vp_len = 0;
+      vp_all = win.edges[windex] >= vp_lo &&
+               win.edges[windex + 1] <= vp_lo + vp_len;
+    }
+#define NEXT_TP() if (tp != tp_last) tp += 1; else tp = tp_next, tp_next = tp_last - 31, tp_last = tp + 31;
+>>>>
+
+@@ chunky-4bpp-tables
+<<<<
+// Draw a whole line of a 4bpp background layer into bgBuffers
+static void PpuDrawBackground_4bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf,
+                                   uint y, bool sub, uint layer,
+                                   PpuZbufType zhi, PpuZbufType zlo) {
+====
+/* Spread tables for the 4bpp tile decode: entry b places each bit of the
+ * bitplane byte b in the low bit of one nibble. Norm maps source bit 7 - i
+ * to nibble i (an unflipped tile); Flip maps source bit i to nibble i. */
+#define DKC3_SPREAD_NORM(b) \
+  ((uint32)(((b) >> 7) & 1) | (uint32)(((b) >> 6) & 1) << 4 | \
+   (uint32)(((b) >> 5) & 1) << 8 | (uint32)(((b) >> 4) & 1) << 12 | \
+   (uint32)(((b) >> 3) & 1) << 16 | (uint32)(((b) >> 2) & 1) << 20 | \
+   (uint32)(((b) >> 1) & 1) << 24 | (uint32)((b) & 1) << 28)
+#define DKC3_SPREAD_FLIP(b) \
+  ((uint32)((b) & 1) | (uint32)(((b) >> 1) & 1) << 4 | \
+   (uint32)(((b) >> 2) & 1) << 8 | (uint32)(((b) >> 3) & 1) << 12 | \
+   (uint32)(((b) >> 4) & 1) << 16 | (uint32)(((b) >> 5) & 1) << 20 | \
+   (uint32)(((b) >> 6) & 1) << 24 | (uint32)(((b) >> 7) & 1) << 28)
+#define DKC3_SPREAD_8(F, b) \
+  F(b), F((b) + 1), F((b) + 2), F((b) + 3), F((b) + 4), F((b) + 5), F((b) + 6), F((b) + 7)
+#define DKC3_SPREAD_64(F, b) \
+  DKC3_SPREAD_8(F, b), DKC3_SPREAD_8(F, (b) + 8), DKC3_SPREAD_8(F, (b) + 16), \
+  DKC3_SPREAD_8(F, (b) + 24), DKC3_SPREAD_8(F, (b) + 32), DKC3_SPREAD_8(F, (b) + 40), \
+  DKC3_SPREAD_8(F, (b) + 48), DKC3_SPREAD_8(F, (b) + 56)
+#define DKC3_SPREAD_256(F) \
+  DKC3_SPREAD_64(F, 0), DKC3_SPREAD_64(F, 64), DKC3_SPREAD_64(F, 128), DKC3_SPREAD_64(F, 192)
+static const uint32 kDkc3Spread4bppNorm[256] = { DKC3_SPREAD_256(DKC3_SPREAD_NORM) };
+static const uint32 kDkc3Spread4bppFlip[256] = { DKC3_SPREAD_256(DKC3_SPREAD_FLIP) };
+#undef DKC3_SPREAD_256
+#undef DKC3_SPREAD_64
+#undef DKC3_SPREAD_8
+#undef DKC3_SPREAD_FLIP
+#undef DKC3_SPREAD_NORM
+
+// Draw a whole line of a 4bpp background layer into bgBuffers
+static void PpuDrawBackground_4bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf,
+                                   uint y, bool sub, uint layer,
+                                   PpuZbufType zhi, PpuZbufType zlo) {
+>>>>
+
+@@ chunky-4bpp-clipped-left
+<<<<
+        uint32 bits = READ_BITS(ta, tile & 0x3ff);
+        if (bits) {
+          z += ((tile & 0x1c00) >> kPaletteShift);
+          if (tile & 0x4000) {
+            bits >>= (x & 7), x += curw;
+            do DO_PIXEL(0); while (bits >>= 1, dstz++, --curw);
+          } else {
+            bits <<= (x & 7), x += curw;
+            do DO_PIXEL_HFLIP(0); while (bits <<= 1, dstz++, --curw);
+          }
+        } else {
+          dstz += curw;
+        }
+====
+        uint32 bits = READ_BITS(ta, tile & 0x3ff);
+        if (bits) {
+          z += ((tile & 0x1c00) >> kPaletteShift);
+          uint32 chunky = CHUNKY_FROM_BITS(bits, tile & 0x4000) >> (4 * (x & 7));
+          x += curw;
+          do DO_PIXEL(0); while (chunky >>= 4, dstz++, --curw);
+        } else {
+          dstz += curw;
+        }
+>>>>
+
+@@ chunky-4bpp-full-tiles
+<<<<
+            0, 8, real_tile, (uint16)tile,
+            tileadr0, tileadr1, zhi, zlo);
+        dstz += 8, w -= 8, ws_sx += 8;
+        continue;
+      }
+      int ta = (tile & 0x8000) ? tileadr1 : tileadr0;
+      PpuZbufType z = (tile & 0x2000) ? zhi : zlo;
+      uint32 bits = READ_BITS(ta, tile & 0x3ff);
+      if (bits) {
+        z += ((tile & 0x1c00) >> kPaletteShift);
+        if (tile & 0x4000) {
+          DO_PIXEL(0); DO_PIXEL(1); DO_PIXEL(2); DO_PIXEL(3);
+          DO_PIXEL(4); DO_PIXEL(5); DO_PIXEL(6); DO_PIXEL(7);
+        } else {
+          DO_PIXEL_HFLIP(0); DO_PIXEL_HFLIP(1); DO_PIXEL_HFLIP(2); DO_PIXEL_HFLIP(3);
+          DO_PIXEL_HFLIP(4); DO_PIXEL_HFLIP(5); DO_PIXEL_HFLIP(6); DO_PIXEL_HFLIP(7);
+        }
+      }
+      dstz += 8, w -= 8, ws_sx += 8;
+====
+            0, 8, real_tile, (uint16)tile,
+            tileadr0, tileadr1, zhi, zlo);
+        dstz += 8, w -= 8, ws_sx += 8;
+        continue;
+      }
+      int ta = (tile & 0x8000) ? tileadr1 : tileadr0;
+      PpuZbufType z = (tile & 0x2000) ? zhi : zlo;
+      uint32 bits = READ_BITS(ta, tile & 0x3ff);
+      if (bits) {
+        z += ((tile & 0x1c00) >> kPaletteShift);
+        const uint32 chunky = CHUNKY_FROM_BITS(bits, tile & 0x4000);
+        DO_PIXEL(0); DO_PIXEL(1); DO_PIXEL(2); DO_PIXEL(3);
+        DO_PIXEL(4); DO_PIXEL(5); DO_PIXEL(6); DO_PIXEL(7);
+      }
+      dstz += 8, w -= 8, ws_sx += 8;
+>>>>
+
+@@ chunky-4bpp-remaining
+<<<<
+            0, (int)w, real_tile, (uint16)tile,
+            tileadr0, tileadr1, zhi, zlo);
+        continue;
+      }
+      int ta = (tile & 0x8000) ? tileadr1 : tileadr0;
+      PpuZbufType z = (tile & 0x2000) ? zhi : zlo;
+      uint32 bits = READ_BITS(ta, tile & 0x3ff);
+      if (bits) {
+        z += ((tile & 0x1c00) >> kPaletteShift);
+        if (tile & 0x4000) {
+          do DO_PIXEL(0); while (bits >>= 1, dstz++, --w);
+        } else {
+          do DO_PIXEL_HFLIP(0); while (bits <<= 1, dstz++, --w);
+        }
+      }
+====
+            0, (int)w, real_tile, (uint16)tile,
+            tileadr0, tileadr1, zhi, zlo);
+        continue;
+      }
+      int ta = (tile & 0x8000) ? tileadr1 : tileadr0;
+      PpuZbufType z = (tile & 0x2000) ? zhi : zlo;
+      uint32 bits = READ_BITS(ta, tile & 0x3ff);
+      if (bits) {
+        z += ((tile & 0x1c00) >> kPaletteShift);
+        uint32 chunky = CHUNKY_FROM_BITS(bits, tile & 0x4000);
+        do DO_PIXEL(0); while (chunky >>= 4, dstz++, --w);
+      }
+>>>>
+
+@@ chunky-4bpp-undef
+<<<<
+#undef WS_TILE
+#undef READ_BITS
+#undef DO_PIXEL
+#undef DO_PIXEL_HFLIP
+#undef VIEWPORT_ALLOWED
+====
+#undef WS_TILE
+#undef READ_BITS
+#undef DO_PIXEL
+#undef DO_PIXEL_HFLIP
+#undef CHUNKY_FROM_BITS
+#undef VIEWPORT_ALLOWED
+>>>>

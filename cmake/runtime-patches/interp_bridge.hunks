@@ -1,0 +1,88 @@
+# DKC3 adaptations of the pinned interpreter bridge. Applied to a
+# build-directory copy by scripts/apply_dkc3_runtime_patches.py.
+file: runner/src/snes/interp_bridge.c
+
+# Ordinary RAM/ROM/PPU accesses need no environment lookup. Keep the
+# original presence semantics (even an empty value enables diagnostics)
+# and allow an in-process diagnostic client to change the environment.
+@@ apu-diag-byte-write
+<<<<
+    if (getenv("SNESRECOMP_APU_PORT_DIAG") && bridge_is_apu_port(adr)) {
+====
+    if (bridge_is_apu_port(adr) && getenv("SNESRECOMP_APU_PORT_DIAG")) {
+>>>>
+
+@@ apu-diag-word-read
+<<<<
+    if (getenv("SNESRECOMP_APU_PORT_DIAG") && (uint16_t)adrl == 0x2140) {
+====
+    if ((uint16_t)adrl == 0x2140 && getenv("SNESRECOMP_APU_PORT_DIAG")) {
+>>>>
+
+@@ apu-diag-word-write
+<<<<
+    if (getenv("SNESRECOMP_APU_PORT_DIAG") && bridge_is_apu_port(adrl)) {
+====
+    if (bridge_is_apu_port(adrl) && getenv("SNESRECOMP_APU_PORT_DIAG")) {
+>>>>
+
+# Every interpreter entry (each compiled-to-interpreted bounce) walked the
+# environment for the write-log state option and zeroed the quiescent-state
+# ring even when the run is not an auto-quiescent scheduler run. Resolve the
+# option once; clear the ring only for the runs that read it.
+@@ entry-option-latch
+<<<<
+    in.brkHookEnabled = true;
+    const int wlog_state_sync = getenv("SNESRECOMP_WLOG_STATE") != NULL;
+====
+    in.brkHookEnabled = true;
+    static int s_wlog_state_sync = -1;
+    if (s_wlog_state_sync < 0)
+        s_wlog_state_sync = getenv("SNESRECOMP_WLOG_STATE") != NULL;
+    const int wlog_state_sync = s_wlog_state_sync;
+>>>>
+
+@@ quiescent-ring-clear
+<<<<
+    QuiescentState qring[64];
+    memset(qring, 0, sizeof qring);
+====
+    QuiescentState qring[64];
+    if (auto_quiescent)
+        memset(qring, 0, sizeof qring);
+>>>>
+
+# The cooperative-poll recognizers read the opcode and branch bytes ahead of
+# every interpreted instruction, but only consult them for a yield-PC run
+# that is not auto-quiescent. Neither DKC3 entry point is such a run (the
+# frame scheduler is auto-quiescent; tier dispatch has no yield PC), so the
+# two extra bus walks per instruction were pure overhead. The reads happen
+# exactly as before when a recognizer can use them. They are untimed
+# (bus timing is armed only around the executed opcode) and never touch a
+# device window, so skipping them leaves guest state and timing unchanged.
+@@ poll-prefetch-gate
+<<<<
+        const uint8_t _poll_op = bridge_bus_read(cpu, pc_before);
+        const uint8_t _poll_branch = bridge_bus_read(cpu, pc_before + 3);
+====
+        const int _poll_mode = yield_pc && !auto_quiescent;
+        const uint8_t _poll_op =
+            _poll_mode ? bridge_bus_read(cpu, pc_before) : 0;
+        const uint8_t _poll_branch =
+            _poll_mode ? bridge_bus_read(cpu, pc_before + 3) : 0;
+>>>>
+
+# Tier-2 coverage artifacts are developer telemetry (upstream snesrecomp
+# 8d12911 made them opt in). Write the exit manifest only when capture is
+# enabled with SNESRECOMP_TIER2_CAPTURE=1.
+@@ tier2-manifest-opt-in
+<<<<
+void Tier2CoverageWriteDefaultManifest(const char *rom_title) {
+    const char *path = tier2_capture_manifest_path(rom_title);
+====
+int tier2_capture_enabled(void);
+void Tier2CoverageWriteDefaultManifest(const char *rom_title) {
+    if (!tier2_capture_enabled())
+        return;
+    const char *path = tier2_capture_manifest_path(rom_title);
+>>>>

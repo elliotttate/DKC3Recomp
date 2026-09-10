@@ -1206,3 +1206,136 @@ No private inputs, generated sources, captures, or build products were
 added to the commit. Earlier uncommitted-status notes record their state
 at the time; this authorization supersedes those holds. The combined
 changes have not been built or exercised on Windows in this local run.
+
+## 2026-09-10 - investigate a report that LLE functions are too slow
+
+The report supplied no CPU, OS, release, scene, settings, or measured frame
+rate, so its particular slowdown remains unverified. The current generated
+manifest lists 4,756 variants: 3,035 `aot_eligible` and 1,721 `lle_only`.
+These are static coverage counts, not percentages of execution time.
+`Dkc3RunOneFrame` enters the interpreter bridge, which calls compiled bodies
+when a matching variant exists. The bridge preserves registers and guest
+return frames across those transitions; hardware, graphics, and audio still
+have runtime costs after a function is compiled.
+
+A preliminary benchmark used the existing September 10 00:06 Release
+headless binary on an Apple M3 Max, macOS 27.0 (26A428). At checkout
+`750c081`, with snesrecomp `3b24b9d`, one 4,801-frame boot/attract run per
+case completed at 4.496 seconds in 4:3 (0.936 ms/frame) and 5.035 seconds
+in 21:9 (1.049 ms/frame). Those runs explicitly set
+`SNESRECOMP_LLE_BOUNCE=1`, the runtime default. They include software PPU
+rendering and synthesized audio, but exclude desktop presentation, GPU
+effects, live audio-device contention, and player-driven/full-game coverage.
+They do not reproduce a failure to sustain the approximately 16.64 ms game
+frame budget on this machine. This was not a fresh rebuild or a Windows test.
+
+The diagnostic `SNESRECOMP_LLE_BOUNCE=0` runs took 7.625 seconds in 4:3 and
+8.173 seconds in 21:9, but reached different game states and final hashes.
+They are not equivalent workloads, cannot establish a clean recompilation
+speedup, and are not a validated alternative setting. The default runs also
+logged `interp_cap` / `unresolved-abandon` at `$808CAD`, frame 58; their
+successful host completion is not a new correctness qualification.
+
+An eight-second macOS `sample` capture of a separate 30,000-frame default
+21:9 run collected 6,523 main-thread samples; that run completed. It shows
+compiled bodies executing inside the interpreter bridge, substantial
+interpreter/bus work, and PPU/audio work. Environment lookup alone occupied
+373 leaf samples (`__findenv_locked` plus `getenv`, about 5.7%). Sampled
+stacks include `bridge_bus_write`, which checks `SNESRECOMP_APU_PORT_DIAG`
+on each write before checking whether the address is an APU port. Caching
+that diagnostic setting is an optimization candidate, not a tested fix or
+an established cause of the user's reported slowdown. Inclusive bridge
+samples must not be labeled interpreter-only time: they include compiled
+bodies and hardware calls beneath the bridge.
+
+Reproduce the throughput check by running
+`DKC3_ASPECT=4:3 SNESRECOMP_LLE_BOUNCE=1 build/macos/dkc3_snesrecomp_headless /private/path/dkc3.sfc 4801`
+with unrelated `DKC3_*` / `SNESRECOMP_*` overrides cleared; repeat at
+`DKC3_ASPECT=21:9`. Time the process externally. Private stdout/stderr,
+binary SHA-256, measurements, and CPU sample are outside Git under
+`/Users/briantate/Documents/Codex/diagnostics/dkc3-performance-20260910-1434`.
+No runtime code was changed. The next useful evidence is the reporter's
+hardware, OS, exact build, slow scene, display settings, actual FPS, and a
+profile from that configuration.
+
+## 2026-09-10 - measured runtime performance pass
+
+The owner requested a performance optimization pass. A fresh Release
+baseline was built from `750c081` before the runtime/build changes, and its
+headless executable and native app were retained outside Git. Two changes
+were measured separately:
+
+- `cmake/Dkc3RuntimePerf.cmake` moves the APU-port/address predicate ahead
+  of `getenv("SNESRECOMP_APU_PORT_DIAG")` in three bridge diagnostic checks.
+  Ordinary memory accesses avoid the environment lookup. APU diagnostics
+  retain their presence-based semantics, including empty and `0` values;
+  there is no cached environment value. The build-directory adaptation
+  requires each source anchor exactly once and preserves the pinned
+  submodule, guest instruction execution, timing, and bus operations.
+- Release game executables enable CMake interprocedural optimization after
+  `check_ipo_supported` succeeds for C and C++. AppleClang selected ThinLTO,
+  allowing optimization across the generated C/runtime boundary. The
+  `DKC3_ENABLE_IPO` option defaults on; unsupported toolchains retain their
+  ordinary Release flags, and an explicit `OFF` disables IPO. Debug builds
+  do not receive the Release property. No fast-math flags were added.
+
+On the same Apple M3 Max, a diagnostic-only build reduced median elapsed
+time by 7.5% in 4:3 and 6.9% in 21:9. With both changes, a new paired test
+gave the following medians across three 4,801-frame runs per configuration.
+The before/after order alternates between repetitions; the processes run
+serially with unrelated diagnostic overrides removed and no build running.
+
+| Boot/attract aspect | Baseline | Optimized | Time reduction |
+| --- | ---: | ---: | ---: |
+| 4:3 | 4.306 s / 0.897 ms per frame | 3.760 s / 0.783 ms per frame | 12.7% |
+| 21:9 | 4.776 s / 0.995 ms per frame | 4.263 s / 0.888 ms per frame | 10.7% |
+
+All stdout fields, including frame/WRAM/VRAM/CGRAM/OAM hashes, audio hash,
+audio activity, and state-event counts, are identical before/after each
+aspect. A separate 2,403-frame Pothole Panic run using the bidirectional
+Squawks replay, again three alternating pairs per aspect, improved from
+1.798 to 1.573 seconds in 4:3 (12.5%) and 2.754 to 2.495 seconds in 21:9
+(9.4%), with identical reported state and audio. These are headless
+throughput measurements, not new desktop FPS limits.
+
+Correctness comparisons cover nine private saved scenes in all four
+aspects, plus the cave replay with `DKC3_CULL_WIDEN=0` in all four aspects:
+40 before/after cases. The eight cave comparisons each sample 281 full
+frames over an 843-frame replay; all 2,248 frame pairs are byte-identical.
+All final state/audio fields and stderr diagnostics also match. Four
+600-frame boot comparisons with `SNESRECOMP_APU_PORT_DIAG` absent, empty,
+`0`, and `1` produce identical stdout and stderr, including the expected
+trace output whenever the variable is present. Existing boot dispatch
+diagnostics remain unchanged; this pass does not claim to fix those.
+
+All 27 project CTest checks pass. A separate build configured with
+`DKC3_BUILD_SNESRECOMP=OFF` and an empty ROM path passes all 21 available
+tests. The new ROM-free adaptation test checks the exact transformation
+and rejects both missing and duplicated anchors. The final bundle was
+rebuilt, packaged with SDL2, and passed deep strict signature verification.
+Its headless executable matches the one used in the comparisons.
+
+The baseline and optimized native SDL apps each completed 240 frames from
+the cave save in 4:3, 16:10, 16:9, and 21:9 with CoreAudio enabled and the
+user's reconstruction settings. All four pairs of full presented captures
+and final source-resolution frames are byte-identical. Those short paced
+checks did not show a consistent timing improvement. A follow-up using
+three alternating 600-frame pairs in 4:3, discarding the first 60 pacing
+rows, reduced the median of each run's mean emulation/render time from
+1.083 to 1.042 ms (3.8%); individual runs varied. This is a smaller and
+noisier desktop result than the sustained headless throughput improvement.
+
+Private baseline/candidate binaries, scripts (`benchmark.py`, `verify.py`,
+`native_check.py`), timings, captures, build/test logs, and comparison
+reports are outside Git under
+`/Users/briantate/Documents/Codex/diagnostics/dkc3-optimize-20260910`.
+Windows/other compilers and full-game traversal are unverified. The source
+changes were held uncommitted after validation; the owner subsequently
+authorized committing and pushing this performance pass.
+
+The final canonical app was launched as PID 94390 with the user's current
+quick-save loaded. Its live window was inspected at 60 FPS with the Kongs,
+ropes, enemies, terrain, and widened view visible; the normal MSU-1 pack
+and CoreAudio path are active. The user's original quick-save SHA-256 is
+unchanged. The inspected native window is retained outside Git as
+`dkc3-optimize-20260910/live-window.png` in the diagnostics directory above.

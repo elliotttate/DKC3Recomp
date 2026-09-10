@@ -19,6 +19,8 @@ option(DKC3_BUILD_SNESRECOMP
     "Build the snesrecomp headless and desktop runners" ON)
 option(DKC3_FETCH_SDL2
     "Fetch the pinned SDL2 source when no system package is available" ON)
+option(DKC3_ENABLE_IPO
+    "Optimize Release runtime and generated code together when supported" ON)
 
 if(NOT DEFINED SNESRECOMP_ROOT)
     set(SNESRECOMP_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/snesrecomp)
@@ -40,6 +42,10 @@ function(dkc3_enable_project_warnings target_name)
 endfunction()
 
 function(dkc3_enable_release_optimization target_name)
+    if(DKC3_ENABLE_IPO AND DKC3_IPO_SUPPORTED)
+        set_property(TARGET ${target_name} PROPERTY
+            INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+    endif()
     if(MSVC)
         # MSVC has no /O3 level; /O2 is its maximum supported speed preset.
         target_compile_options(${target_name} PRIVATE
@@ -64,6 +70,9 @@ if(DKC3_BUILD_SNESRECOMP)
     include(${SNESRECOMP_ROOT}/runner/runner.cmake)
     list(REMOVE_ITEM SNESRECOMP_RUNNER_SOURCES "${DKC3_PPU_SOURCE}")
     list(APPEND SNESRECOMP_RUNNER_SOURCES "${DKC3_PATCHED_PPU}")
+    include(cmake/Dkc3RuntimePerf.cmake)
+    list(REMOVE_ITEM SNESRECOMP_RUNNER_SOURCES "${DKC3_BRIDGE_SOURCE}")
+    list(APPEND SNESRECOMP_RUNNER_SOURCES "${DKC3_PATCHED_BRIDGE}")
     # SDL2 and recomp-ui are portable dependencies shared by the launcher and
     # the gameplay host on Windows, Linux, and macOS. Prefer a package config
     # (vcpkg/Homebrew commonly provide one), then accept a distribution module.
@@ -84,6 +93,16 @@ if(DKC3_BUILD_SNESRECOMP)
     endif()
     set(SNESRECOMP_SDL_BACKEND SDL2)
     include(${CMAKE_CURRENT_SOURCE_DIR}/recomp-ui/recomp_ui.cmake)
+    if(DKC3_ENABLE_IPO)
+        include(CheckIPOSupported)
+        check_ipo_supported(RESULT DKC3_IPO_SUPPORTED
+            OUTPUT DKC3_IPO_ERROR LANGUAGES C CXX)
+        if(DKC3_IPO_SUPPORTED)
+            message(STATUS "DKC3: Release interprocedural optimization enabled")
+        else()
+            message(STATUS "DKC3: IPO unavailable; retaining ordinary Release optimization: ${DKC3_IPO_ERROR}")
+        endif()
+    endif()
     file(GLOB DKC3_SNESRECOMP_GEN_SOURCES CONFIGURE_DEPENDS
         "${DKC3_SNESRECOMP_GEN_DIR}/*.c")
     if(NOT DKC3_SNESRECOMP_GEN_SOURCES)
@@ -426,6 +445,12 @@ if(BUILD_TESTING)
     set_tests_properties(dkc3_ppu_mode2 PROPERTIES LABELS "unit;video;ppu")
     find_package(Python3 QUIET COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
+        add_test(NAME dkc3_runtime_perf_adaptation
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_runtime_perf_adaptation.py
+                ${CMAKE_COMMAND})
+        set_tests_properties(dkc3_runtime_perf_adaptation PROPERTIES
+            LABELS "unit;tooling;performance;portable")
         add_test(NAME dkc3_pacing_log_tool
             COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_analyze_pacing_log.py)

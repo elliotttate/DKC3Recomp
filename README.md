@@ -147,6 +147,14 @@ and emits the private recompiled units under `generated/` (ignored by Git).
 runner, bundles SDL2, embeds the project icon, and ad-hoc signs the app. Open
 the app and select the ROM in its launcher.
 
+Release builds enable interprocedural optimization when CMake's compiler
+and linker check succeeds, allowing optimization across the generated game
+code and runtime. Set `-DDKC3_ENABLE_IPO=OFF` when configuring to disable it;
+unsupported toolchains retain ordinary Release optimization. The local
+macOS performance pass also removes unnecessary diagnostic lookups from
+ordinary interpreter memory accesses. Measurements and validation limits
+are recorded in [docs/BRINGUP.md](docs/BRINGUP.md).
+
 The SDL host gives the active player's game controller a short haptic pulse
 when a descending jump both defeats an enemy and rebounds upward. The trigger
 observes the enemy's actual defeated-sprite transition, so ordinary jumps,

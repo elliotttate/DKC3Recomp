@@ -166,6 +166,21 @@ running on every sample. Tier-2 coverage journals are now opt in
 (`SNESRECOMP_STACKBAL_AUDIT=1`). Measurements and validation limits are
 recorded in [docs/BRINGUP.md](docs/BRINGUP.md).
 
+On macOS a visible game window presents through a Metal layer driven by
+`CAMetalDisplayLink` on its own thread (`runner/macos_metal_presenter.m`):
+the emulation thread hands each frame to a mailbox and never enters the
+window system, which removes the WindowServer round trip inside the legacy
+OpenGL swap from the frame loop. The display link's callbacks also supply
+the pacing ticks, so frames stay locked to the refresh as before. The
+OpenGL path remains for the settings overlay, for hidden test windows and
+their drawable captures, and when `DKC3_METAL_PRESENTER=0` is set.
+
+The bank configurations carry exit-width contracts (`exit_mx_at`) and
+function splits that let the recompiler compile routines whose exits it
+cannot derive; they are tables in `tools/ingest_dkc3_disasm.py`
+(`EXIT_MX_AT`, `FUNC_SPLITS`) with the disassembly structure that
+justifies each, so a re-ingest reproduces them.
+
 The SDL host gives the active player's game controller a short haptic pulse
 when a descending jump both defeats an enemy and rebounds upward. The trigger
 observes the enemy's actual defeated-sprite transition, so ordinary jumps,

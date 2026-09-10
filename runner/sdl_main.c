@@ -24,6 +24,8 @@
 #include "dkc3_msu1.h"
 #include "macos_display_link.h"
 #include "macos_host.h"
+#include "macos_metal_presenter.h"
+#include <pthread.h>
 #endif
 
 #include "common_rtl.h"
@@ -663,6 +665,21 @@ static void PaceFrame(SdlHost *host, uint64_t *deadline,
 }
 
 #ifdef __APPLE__
+/* Display ticks come from the Metal presenter's display link when it is
+ * presenting, otherwise from the CADisplayLink; both share one contract. */
+static bool DisplayTickLatest(Dkc3MacDisplayTick *tick) {
+  if (Dkc3MacMetalPresenterActive())
+    return Dkc3MacMetalPresenterLatestTick(tick);
+  return Dkc3MacDisplayLinkLatest(tick);
+}
+
+static bool DisplayTickWait(uint64_t sequence, double timeout_seconds,
+                            Dkc3MacDisplayTick *tick) {
+  if (Dkc3MacMetalPresenterActive())
+    return Dkc3MacMetalPresenterWaitTick(sequence, timeout_seconds, tick);
+  return Dkc3MacDisplayLinkWait(sequence, timeout_seconds, tick);
+}
+
 /* Pace on the display's refresh ticks. Until the pacer has measured a
  * refresh it can lock to, the latest tick is only observed and the caller
  * keeps the host clock; once locked, the frame waits for the tick that is
@@ -676,7 +693,7 @@ static bool WaitForDisplayTick(bool link, Dkc3DesktopPacer *pacer,
   memset(tick, 0, sizeof *tick);
   if (!link) return false;
   if (!Dkc3DesktopPacerLocked(pacer)) {
-    if (!Dkc3MacDisplayLinkLatest(tick)) return false;
+    if (!DisplayTickLatest(tick)) return false;
     if (tick->sequence > *seen) {
       if (tick->interval > 0.0) (void)Dkc3DesktopPacerObserve(pacer, tick->interval);
       *seen = tick->sequence;
@@ -685,7 +702,7 @@ static bool WaitForDisplayTick(bool link, Dkc3DesktopPacer *pacer,
     return false;
   }
   const uint64_t wanted = *presented + pacer->ticks_per_frame;
-  if (!Dkc3MacDisplayLinkWait(wanted, kDisplayTickTimeoutSeconds, tick)) {
+  if (!DisplayTickWait(wanted, kDisplayTickTimeoutSeconds, tick)) {
     Dkc3DesktopPacerReset(pacer);
     *presented = tick->sequence;
     *seen = tick->sequence;
@@ -888,6 +905,12 @@ static void ApplyOverlaySettings(SdlHost *host,
 
 static int RunGame(const char *rom_path,
                    RecompLauncherCSettings *settings) {
+#ifdef __APPLE__
+  /* The frame loop sleeps most of each refresh and wakes for under a
+   * millisecond of work; without an explicit class the scheduler may park it
+   * on an efficiency core after the long waits. */
+  (void)pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#endif
   SdlHost host;
   memset(&host, 0, sizeof host);
   host.running = true;
@@ -1157,7 +1180,24 @@ static int RunGame(const char *rom_path,
    * the display's ticks to measure against; DKC3_DISPLAY_LOCK=0 keeps the
    * frames on the host clock while still recording them. */
   const bool display_lock = !EnvironmentDisabled("DKC3_DISPLAY_LOCK");
-  if (Dkc3SdlPresenterUsesSoftwarePacing(&host.presenter)) {
+  /* A visible window presents through the Metal display-link presenter,
+   * whose callbacks also supply the pacing ticks; DKC3_METAL_PRESENTER=0
+   * keeps the OpenGL swap and the CADisplayLink. The hidden test window
+   * always uses OpenGL so its drawable capture is unchanged. */
+  bool metal_presenter = false;
+  if (Dkc3SdlPresenterUsesSoftwarePacing(&host.presenter) &&
+      !EnvironmentDisabled("DKC3_METAL_PRESENTER")) {
+    char metal_error[160] = {0};
+    metal_presenter = Dkc3MacMetalPresenterStart(
+        Dkc3SdlPresenterNativeWindow(&host.presenter), 60.0, metal_error,
+        sizeof metal_error);
+    if (!metal_presenter)
+      fprintf(stdout, "Metal presenter unavailable (%s); presenting through "
+              "OpenGL.\n", metal_error);
+  }
+  if (metal_presenter) {
+    display_link = true;
+  } else if (Dkc3SdlPresenterUsesSoftwarePacing(&host.presenter)) {
     char link_error[128] = {0};
     display_link = Dkc3MacDisplayLinkStart(
         Dkc3SdlPresenterNativeWindow(&host.presenter), 60.0, link_error,
@@ -1166,10 +1206,11 @@ static int RunGame(const char *rom_path,
       fprintf(stdout, "Display link unavailable (%s); pacing on the host "
               "clock.\n", link_error);
   }
-  fprintf(stdout, "Frame pacing: %s\n",
+  fprintf(stdout, "Frame pacing: %s%s\n",
           display_link && display_lock
               ? "display link (DKC3_DISPLAY_LOCK=0 keeps the host clock)"
-              : "host clock");
+              : "host clock",
+          metal_presenter ? "; presentation: Metal display link" : "");
   /* DKC3_PACING_LOG: one line per presented frame with the pacing mode,
    * the present time, the display tick it followed, the tick's target
    * refresh time and interval, the emulation time, the audio queue's
@@ -1588,24 +1629,63 @@ static int RunGame(const char *rom_path,
         Dkc3SdlPresenterDrawableSize(&host.presenter, &dw, &dh);
         if (dw > 0 && dh > 0) {
           screenshot_rgb = (uint8_t *)malloc((size_t)dw * (size_t)dh * 3u);
-          if (screenshot_rgb)
+          if (screenshot_rgb) {
+#ifdef __APPLE__
+            if (metal_presenter && !overlay_open) {
+              Dkc3MacMetalPresenterArmCapture(screenshot_rgb, dw, dh);
+              host.presenter.capture_width = dw;
+              host.presenter.capture_height = dh;
+            } else
+#endif
             Dkc3SdlPresenterArmCapture(&host.presenter, screenshot_rgb, dw,
                                        dh);
+          }
         }
       }
-      if (!present_pixels ||
-          !Dkc3SdlPresenterPresent(&host.presenter, present_pixels,
-                                   Dkc3VideoWidth(), kFrameHeight,
-                                   Dkc3DesktopOverlayRenderOpenGl,
-                                   host.overlay)) {
+      if (!present_pixels) {
         fprintf(stderr, "SDL video presentation failed: %s\n", SDL_GetError());
         Dkc3DiagnosticsFatal("SDL video presentation failed");
         runtime_failure = true;
         break;
       }
 #ifdef __APPLE__
+      if (metal_presenter && !overlay_open) {
+        /* The Metal view shows the game; the OpenGL swap and its
+         * WindowServer round trip are skipped entirely. */
+        Dkc3MacMetalPresenterSetVisible(true);
+        Dkc3MacMetalFrameSettings metal_settings;
+        metal_settings.upscaler = host.presenter.upscaler;
+        metal_settings.reconstruct_mode = host.presenter.reconstruct_mode;
+        metal_settings.reconstruct_strength =
+            host.presenter.reconstruct_strength;
+        metal_settings.reconstruct_softness =
+            host.presenter.reconstruct_softness;
+        metal_settings.reconstruct_shading = host.presenter.reconstruct_shading;
+        metal_settings.linear_filter = host.presenter.linear_filter;
+        Dkc3MacMetalPresenterQueueFrame(present_pixels, Dkc3VideoWidth(),
+                                        kFrameHeight, &metal_settings);
+      } else
+#endif
+      {
+#ifdef __APPLE__
+        /* The overlay is OpenGL: hide the Metal view and draw through the
+         * OpenGL path until it closes. */
+        if (metal_presenter) Dkc3MacMetalPresenterSetVisible(false);
+#endif
+        if (!Dkc3SdlPresenterPresent(&host.presenter, present_pixels,
+                                     Dkc3VideoWidth(), kFrameHeight,
+                                     Dkc3DesktopOverlayRenderOpenGl,
+                                     host.overlay)) {
+          fprintf(stderr, "SDL video presentation failed: %s\n",
+                  SDL_GetError());
+          Dkc3DiagnosticsFatal("SDL video presentation failed");
+          runtime_failure = true;
+          break;
+        }
+      }
+#ifdef __APPLE__
       if (pacing_log) {
-        if (!display_paced) (void)Dkc3MacDisplayLinkLatest(&tick);
+        if (!display_paced) (void)DisplayTickLatest(&tick);
         const double stage_presented = Dkc3MacHostSeconds();
         fprintf(pacing_log,
                 "%llu %s %.6f %llu %.6f %.6f %.6f %.1f %.5f %.6f %.6f %.6f %.6f\n",
@@ -1617,8 +1697,12 @@ static int RunGame(const char *rom_path,
                 stage_paced - stage_before_pace, stage_presented - stage_paced);
       }
 #endif
-      if (screenshot_rgb && host.presenter.capture_done &&
-          !screenshot_written) {
+      if (screenshot_rgb && !screenshot_written &&
+          (host.presenter.capture_done
+#ifdef __APPLE__
+           || Dkc3MacMetalPresenterCaptureDone()
+#endif
+           )) {
         FILE *shot = fopen(screenshot_path, "wb");
         if (shot) {
           fprintf(shot, "P6\n%d %d\n255\n", host.presenter.capture_width,
@@ -1666,6 +1750,16 @@ static int RunGame(const char *rom_path,
   }
 
 #ifdef __APPLE__
+  if (metal_presenter) {
+    uint64_t callbacks = 0, presented = 0, repeated = 0, dropped = 0;
+    Dkc3MacMetalPresenterStats(&callbacks, &presented, &repeated, &dropped);
+    fprintf(stdout,
+            "Metal presenter: callbacks=%llu presented=%llu repeated=%llu "
+            "dropped=%llu\n",
+            (unsigned long long)callbacks, (unsigned long long)presented,
+            (unsigned long long)repeated, (unsigned long long)dropped);
+    Dkc3MacMetalPresenterStop();
+  }
   Dkc3MacDisplayLinkStop();
   if (pacing_log) fclose(pacing_log);
 #endif

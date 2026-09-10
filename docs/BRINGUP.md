@@ -1608,3 +1608,174 @@ three alternating pairs, cumulative for the day:
 Artifacts (both verification logs, the benchmark JSON, the x86-64
 build log) are under
 `/Users/briantate/Documents/Codex/diagnostics/dkc3-optimize2-20260910/pass4`.
+
+## 2026-09-10 - fifth pass: exit-width contracts promote the hot interpreted routines
+
+The interpreted-PC histogram of the third pass named four regions. The
+recompiler's manifest explained each with `truncated_call_continuation`
+and `unproven_callee_exit`: a `JSR`/`JSL` whose callee's exit width the
+analysis could not derive stops the decode at the call, and a node that
+stops at a call is never compiled (`snesrecomp/recompiler-rs/src/analyze.rs`,
+lines 466-472 and 670-676 at the pinned revision). The cfg directive
+`exit_mx_at <pc24> <m> <x>` supplies that width as a declared fact; it is
+an assertion, so each one below names the disassembly structure behind it.
+
+### Contracts
+
+`tools/ingest_dkc3_disasm.py` now carries two tables, `EXIT_MX_AT` and
+`FUNC_SPLITS`, and re-emits them after the automatic contracts, so a
+re-ingest reproduces the committed cfg byte for byte (the previous hand
+edit for `$BB:A6B2` from `bc2856e` is the first entry). Added, with the
+structural facts from `H4v0c21/DKC3-Disassembly` (addresses and mnemonics
+only):
+
+- `exit_mx_at B7D078 0 0`: `$B7:D078` is one instruction, `JMP ($009E)`;
+  callers stage a handler address from `DATA_B7D07B` into `$9E` first, and
+  every handler returns to the caller's 16-bit `CMP.w #$001F` at
+  `$B7:CFC3`. Promoted six nodes: `B7C942`, `B7CB2B`, `B7CC25`, `B7CD1F`,
+  `B7CE43` and `B7CF68`.
+- `exit_mx_at BB8FDD 0 0`: `$BB:8FDD` falls through its declared end into
+  the init-script parser at `$BB:8FF1`, whose command dispatch at
+  `$BB:9015` recurses through `$BB:8FF9`, so the exit equation never
+  closes; the caller at `$BB:A71B` resumes with `AND #$0100` and
+  `LDA #$0134`.
+- `exit_mx_at BBA786/BBA7E7/BBA853/BBA85F 0 0`: the four placement handlers
+  dispatched from `$BB:A778` through `DATA_BBA992` contain no `REP`/`SEP`,
+  call `CODE_BB8F8B`/`CODE_BB8FC8`/`CODE_BB8F78` and the parser, and `RTS`
+  into the caller's 16-bit loop (`AND #$3FFF`/`AND #$000F`/`ASL`/`TAX` at
+  `$BB:A76C`-`$BB:A777`, `PLB`/`PLX`/`INX` at `$BB:A77B`). With them
+  `BBA6B2` compiles to its declared end.
+- `exit_mx_at B8806C 0 0` and the split `func sprite_handler_direct B8A5
+  end:B9B0`: `$B8:806C` is a `JMP` stub into the interaction dispatcher at
+  `$B8:8304` (`indirect_dispatch 8304 45 ptrtail`). A scan of all 45
+  handlers found no `REP`/`SEP` and `RTL` exits in every one; two
+  (`$B8:8A23`, `$B8:8978`) also leave through `JML [$001A]`, which is why
+  the equation stays open. Both sprite-handler call sites (`$BB:B8F9`,
+  `$BB:B983`) resume 16-bit (`ADC #$0063` at `$BB:B9A9`). The loop at
+  `$BB:B8CE` belongs to `sprite_handler_direct` at `$BB:B8A5`, reached by
+  `JMP` from `$BB:85C1`; the split gives it its own node.
+
+Manifest: 3,035 `aot_eligible` / 1,721 `lle_only` before; 3,044 / 1,713
+after (the sprite handler is a new node), 66,255 to 67,169 compiled
+instructions. Regenerated with `scripts/generate_snesrecomp.py` (native
+analyzer) after each table change; the ingester test and the cfg diff
+were checked at each step.
+
+### What changed at run time
+
+The interpreted-PC histogram over the 843-frame cave replay fell from
+1,447,604 instructions (1,717 per frame) to 1,104,759 (1,310 per frame):
+`$B7:CF68` and its family, `$BB:A6B2`, and the `$BB:B8CE` loop's callers
+now run compiled. Two promoted routines are still entered by the
+interpreter: `CODE_B7CE43` (a handler address read from `DATA_B7B01B` at
+`$B7:F293` and jumped to through RAM) and `sprite_handler_direct` (entered
+by `JMP` from `$BB:85C1`). The bridge bounces only `JSR`/`JSL` arrivals into
+compiled bodies, never `JMP` arrivals, because a jump target has no return
+frame to host-return through; the frame handler at `$00:80C4` and the main
+loop at `$80:89CA` (entered by `JMP` at `$80:8015`) are interpreted for the
+same reason. Moving that trunk to compiled execution needs a bridge
+contract for jump arrivals, not another cfg fact, and was not attempted.
+
+### Evidence
+
+Each generation was compared against the pre-promotion binary on the
+48-case corpus. Game state is identical everywhere: every frame, WRAM,
+VRAM, CGRAM and OAM hash, every sampled cave frame (2,248 pairs), every
+stderr line. What changed is the `run_stats` audio line in some runs: the
+Lakeside Limbo scene after the first contract (37,214 to 36,324 nonzero
+samples over 123 frames, peak 6,920 to 6,923), and the boot runs after the
+sprite-handler contract. A routine that moves from the interpreter to a
+compiled body accounts its cycles by the compiled model, so the SPC catch-up
+lands on different instructions and the audio samples shift by a few
+positions; the interpreter-versus-compiled split already produces this
+difference (`SNESRECOMP_LLE_BOUNCE=0` reaches different states), so it is
+the expected tier-timing effect and not a state divergence. The cave
+replay's audio hash is unchanged. All 27 CTest checks pass.
+
+Headless throughput, medians of three alternating pairs against the day's
+`3877929` baseline (the state hashes still match; the benchmark now ignores
+the `run_stats` audio line for the reason above): cave replay 0.956 to
+0.532 ms per frame in 16:9 (44.3% less time) and 1.107 to 0.624 ms in 21:9
+(43.6%); boot/attract 0.819 to 0.534 ms in 4:3 (34.7%) and 0.935 to 0.604
+ms in 21:9 (35.5%). Against the fourth pass alone the contracts are worth
+about 4.5% in the cave replay.
+
+Binaries, manifests and verification logs for each step are outside Git
+under `/Users/briantate/Documents/Codex/diagnostics/dkc3-optimize2-20260910/pass5`.
+
+## 2026-09-10 - sixth pass: Metal display-link presenter on macOS
+
+The third pass attributed the desktop present call to a synchronous
+WindowServer round trip inside the legacy OpenGL swap. DKC1Recomp had
+already moved its presentation onto a `CAMetalLayer` driven by a
+`CAMetalDisplayLink` thread; `runner/macos_metal_presenter.m` adapts that
+design (and its Metal translation of the reconstruction upscaler) to DKC3.
+
+### Design
+
+- The presenter adds a `CAMetalLayer`-backed `NSView` above the SDL
+  OpenGL view, with `displaySyncEnabled = NO` and three drawables, and
+  runs a `CAMetalDisplayLink` on its own `NSQualityOfServiceUserInteractive`
+  thread. Each callback first publishes a display tick with the fields the
+  CADisplayLink path reports (sequence, host time, refresh target, and the
+  interval between the link's refresh targets), then presents.
+- The emulation thread keeps its existing pacing: `WaitForDisplayTick`
+  and the pacing log now take ticks from the presenter when it is active
+  (`DisplayTickLatest`/`DisplayTickWait` in `sdl_main.c`), so the refresh
+  divisor lock and the 60.0988 Hz behavior are unchanged. After emulating
+  it copies the frame into a three-slot mailbox (`QueueFrame`) and returns;
+  the next callback uploads the newest frame into one of three rotating
+  shared input textures (never one still read by an in-flight command
+  buffer), draws a fitted quad through `dkc3_flat` (nearest or bilinear)
+  or `dkc3_reconstruct`, and presents. A callback without a newer frame
+  re-presents the current texture without re-uploading.
+- The settings overlay is Dear ImGui on OpenGL. While it is open the host
+  hides the Metal view and presents through the OpenGL path exactly as
+  before, then unhides it when the overlay closes; `DKC3_DESKTOP_TEST_OVERLAY`
+  exercises that transition. Hidden test windows never start the
+  presenter, so the hidden-mode drawable captures and all desktop tests
+  keep the OpenGL path. `DKC3_METAL_PRESENTER=0` keeps OpenGL for a visible
+  window too. `DKC3_DESKTOP_SCREENSHOT` on a visible Metal window reads the
+  presented drawable back through a blit into a shared texture.
+- The frame loop is pinned to `QOS_CLASS_USER_INTERACTIVE`; this did not
+  change the measurement below but is kept as the correct class for it.
+
+### Evidence
+
+Visible 16:9 window, the owner's settings (window scale 4, reconstruction
+upscaler), cave save, 1,200 frames, rows after the first 90; the same
+build with `DKC3_METAL_PRESENTER=0` beside it:
+
+| | OpenGL swap | Metal presenter |
+| --- | ---: | ---: |
+| present call, mean / p95 / max | 2.229 / 7.680 / 10.93 ms | 0.018 / 0.031 / 0.10 ms |
+| emulation, mean / p95 | 0.394 / 0.559 ms | 0.787 / 1.398 ms |
+| tick interval p95 / max | 16.728 / 29.21 ms | 16.667 / 33.33 ms |
+| display-locked frames | 1,065 of 1,110 | 1,089 of 1,110 |
+
+The present call is the emulation thread's cost of handing over a frame;
+the Metal path's memory copy replaces two milliseconds of window-system
+time per frame and the 8 to 11 ms spikes. Emulation time reads higher on
+the Metal path in every run; the thread now sleeps about 15.8 ms of each
+refresh instead of 13.9 and wakes into a colder core, and the QoS pin did
+not change that. It is still under 1.5 ms at the 95th percentile against a
+16.7 ms budget. The presenter's counters for that run: 1,214 callbacks,
+1,112 uploads, 100 repeats, 86 drops; the drops are the unpaced start
+before the audio queue primes (presents closer than 8 ms apart occur only
+in the first 14 frames and at one lock loss).
+
+Pixel parity: `DKC3_DESKTOP_SCREENSHOT` at frame 89 of the same run through
+both presenters, 3,416 x 1,920 drawables, reconstruction mode 3: 2,677 of
+6,558,720 pixels differ (0.04%), 667 by more than 8 levels in any channel
+(0.01%), all shader rounding at texel boundaries; the Metal reconstruction
+shader is DKC1Recomp's line-for-line translation of DKC3's GLSL. The
+overlay test mode completes with the presenter active. All 27 CTest checks
+pass (the desktop tests run hidden and therefore through OpenGL).
+
+Not verified: fullscreen toggling and window resizing under the Metal view
+were exercised by hand only through the test harness's fixed window; the
+view autoresizes with the window and the drawable size follows the backing
+size, as in DKC1Recomp. Windows is unaffected (the presenter is
+macOS-only). Artifacts (pacing logs and captures for both presenters, the
+overlay test run) are under
+`/Users/briantate/Documents/Codex/diagnostics/dkc3-optimize2-20260910/pass6`.

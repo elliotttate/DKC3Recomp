@@ -252,6 +252,7 @@ if(DKC3_BUILD_SNESRECOMP)
             runner/dkc3_msu1.c
             runner/macos_host.m
             runner/macos_display_link.m
+            runner/macos_metal_presenter.m
             assets/macos/DKC3Recomp.icns)
         set_source_files_properties(assets/macos/DKC3Recomp.icns PROPERTIES
             MACOSX_PACKAGE_LOCATION "Resources")
@@ -278,6 +279,7 @@ if(DKC3_BUILD_SNESRECOMP)
     if(APPLE)
         target_link_libraries(dkc3_snesrecomp_sdl PRIVATE
             "-framework AppKit"
+            "-framework Metal"
             "-framework QuartzCore"
             "-framework UniformTypeIdentifiers")
     endif()

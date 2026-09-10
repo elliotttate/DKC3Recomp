@@ -179,6 +179,19 @@ For commercial licensing inquiries, contact: https://1379.tech
   in `runner/dkc3_facts.h`.
 - License: see `LICENSE`, which is carried over unchanged.
 
+## DKC1Recomp
+
+- Project: `elliotttate/DKC1Recomp`. `runner/macos_metal_presenter.m` is
+  adapted from its `runner/macos_metal_presenter.m` (the CAMetalLayer view,
+  the CAMetalDisplayLink thread and the input-texture rotation) and its
+  `runner/macos_graphics.metal` (the vertex and flat shaders and the Metal
+  translation of the reconstruction upscaler, which that project had
+  already carried over from DKC2Recomp's GLSL). DKC3 replaces the frame
+  queue with a three-slot mailbox and publishes display ticks so the
+  existing pacer drives the emulation.
+- License: MIT, "Copyright (c) 2026 DKC1Recomp contributors"; the adapted
+  file keeps that attribution in its header comment.
+
 ## SDL2 (Windows)
 
 - Project: `libsdl-org/SDL`, release 2.30.9 at

@@ -1577,3 +1577,34 @@ logs, the interpreted-PC histogram, the desktop `sample` and pacing logs
 with both upscalers, the diagnostic hunk, and the round-3 headless binary,
 SHA-256 `2626ddc8…`) are outside Git under
 `/Users/briantate/Documents/Codex/diagnostics/dkc3-optimize2-20260910/pass3`.
+
+## 2026-09-10 - fourth pass: vector tile and sprite stores
+
+The 4bpp background renderer and the sprite evaluator now store a full
+eight-pixel row with one vector operation on NEON (Apple silicon) and
+SSE2 (x86-64); other targets keep the scalar sequence
+(`ppu.hunks`, `simd-*`). For a background tile the eight nibbles of the
+spread-table decode become lanes, the opacity test, the priority compare
+and the per-span viewport interval become lane masks, and a blend writes
+the row; partial tiles at span edges stay scalar. For a sprite sliver the
+same decode feeds an overwrite-where-opaque blend, exactly the scalar
+"later, lower OAM indices overwrite" rule; partial slivers at the buffer
+edges and overlay-captured slots stay scalar.
+
+Both code paths were verified on the same 48-case corpus (2,248 sampled
+frame pairs) against the `3877929` baseline: the arm64 build natively and
+an x86-64 headless build (`-DCMAKE_OSX_ARCHITECTURES=x86_64`, built only
+the headless target) under Rosetta, so the SSE2 path is exercised on real
+x86 instructions rather than assumed. Zero mismatches in both. Medians of
+three alternating pairs, cumulative for the day:
+
+| Workload | Baseline | Now | Time reduction | Frames per second |
+| --- | ---: | ---: | ---: | ---: |
+| Cave replay, 16:9 | 0.950 ms per frame | 0.557 ms per frame | 41.4% | +70.7% |
+| Cave replay, 21:9 | 1.098 ms per frame | 0.640 ms per frame | 41.7% | +71.7% |
+| Boot/attract, 4:3 | 0.819 ms per frame | 0.540 ms per frame | 34.1% | +51.8% |
+| Boot/attract, 21:9 | 0.933 ms per frame | 0.606 ms per frame | 35.0% | +54.0% |
+
+Artifacts (both verification logs, the benchmark JSON, the x86-64
+build log) are under
+`/Users/briantate/Documents/Codex/diagnostics/dkc3-optimize2-20260910/pass4`.

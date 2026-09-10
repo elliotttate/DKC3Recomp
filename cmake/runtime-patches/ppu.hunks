@@ -451,16 +451,7 @@ static inline void ClearBackdrop(const Ppu *ppu, PpuPixelPrioBufs *buf) {
  * pixel i, built from the four bitplane bytes through the spread tables.
  * A tile with X flip (bit 14) reads source bit i for screen pixel i; an
  * unflipped tile reads source bit 7 - i. */
-#define CHUNKY_FROM_BITS(bits, flipped) \
-  ((flipped) \
-       ? (kDkc3Spread4bppFlip[(bits) & 0xffu] | \
-          kDkc3Spread4bppFlip[((bits) >> 8) & 0xffu] << 1 | \
-          kDkc3Spread4bppFlip[((bits) >> 16) & 0xffu] << 2 | \
-          kDkc3Spread4bppFlip[(bits) >> 24] << 3) \
-       : (kDkc3Spread4bppNorm[(bits) & 0xffu] | \
-          kDkc3Spread4bppNorm[((bits) >> 8) & 0xffu] << 1 | \
-          kDkc3Spread4bppNorm[((bits) >> 16) & 0xffu] << 2 | \
-          kDkc3Spread4bppNorm[(bits) >> 24] << 3))
+#define CHUNKY_FROM_BITS(bits, flipped) Dkc3Chunky4bpp((bits), (flipped) != 0)
 #define DO_PIXEL(i) do { \
   pixel = (int)((chunky >> (4 * (i))) & 0xfu); \
   if (pixel && VIEWPORT_ALLOWED(i) && z > dstz[i]) dstz[i] = z + pixel; } while (0)
@@ -529,6 +520,13 @@ static void PpuDrawBackground_4bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf,
   DKC3_SPREAD_64(F, 0), DKC3_SPREAD_64(F, 64), DKC3_SPREAD_64(F, 128), DKC3_SPREAD_64(F, 192)
 static const uint32 kDkc3Spread4bppNorm[256] = { DKC3_SPREAD_256(DKC3_SPREAD_NORM) };
 static const uint32 kDkc3Spread4bppFlip[256] = { DKC3_SPREAD_256(DKC3_SPREAD_FLIP) };
+/* One 4bpp tile row (planes 0-3 in the four bytes of `bits`) as eight
+ * nibbles in screen order; see DKC3_SPREAD_NORM/FLIP. */
+static inline uint32 Dkc3Chunky4bpp(uint32 bits, int flipped) {
+  const uint32 *t = flipped ? kDkc3Spread4bppFlip : kDkc3Spread4bppNorm;
+  return t[bits & 0xffu] | t[(bits >> 8) & 0xffu] << 1 |
+         t[(bits >> 16) & 0xffu] << 2 | t[bits >> 24] << 3;
+}
 #undef DKC3_SPREAD_256
 #undef DKC3_SPREAD_64
 #undef DKC3_SPREAD_8
@@ -653,4 +651,161 @@ static void PpuDrawBackground_4bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf,
 #undef DO_PIXEL_HFLIP
 #undef CHUNKY_FROM_BITS
 #undef VIEWPORT_ALLOWED
+>>>>
+
+# A full 8-pixel tile row of a 4bpp layer is stored with one vector
+# operation on NEON (Apple silicon) or SSE2 (x86-64): the eight nibbles
+# become lanes, the opacity, priority and viewport tests become lane
+# masks, and a blend writes the row. Every lane applies exactly the
+# scalar DO_PIXEL rule. Other targets keep the scalar sequence.
+@@ simd-includes
+<<<<
+#include "ws_shadow.h"
+
+
+extern Snes *g_snes;
+====
+#include "ws_shadow.h"
+
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+#include <arm_neon.h>
+#define DKC3_PPU_NEON 1
+#elif defined(__SSE2__) || defined(_M_X64) || \
+    (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+#include <emmintrin.h>
+#define DKC3_PPU_SSE2 1
+#endif
+
+extern Snes *g_snes;
+>>>>
+
+@@ simd-tile-row-macro
+<<<<
+#define DO_PIXEL_HFLIP(i) DO_PIXEL(i)
+====
+#define DO_PIXEL_HFLIP(i) DO_PIXEL(i)
+#if defined(DKC3_PPU_NEON)
+#define DKC3_STORE_TILE_ROW() do { \
+  const int16x8_t row_shifts_ = {0, -4, -8, -12, 0, -4, -8, -12}; \
+  const uint16x8_t row_base_ = vcombine_u16( \
+      vdup_n_u16((uint16)(chunky & 0xffffu)), vdup_n_u16((uint16)(chunky >> 16))); \
+  const uint16x8_t row_pix_ = vandq_u16(vshlq_u16(row_base_, row_shifts_), vdupq_n_u16(0xf)); \
+  const uint16x8_t row_z_ = vdupq_n_u16((uint16)z); \
+  const uint16x8_t row_old_ = vld1q_u16(dstz); \
+  uint16x8_t row_mask_ = vandq_u16(vcgtq_u16(row_pix_, vdupq_n_u16(0)), \
+                                   vcgtq_u16(row_z_, row_old_)); \
+  if (!vp_all) { \
+    const int16x8_t row_lanes_ = {0, 1, 2, 3, 4, 5, 6, 7}; \
+    const int16x8_t row_rel_ = vaddq_s16(row_lanes_, vdupq_n_s16( \
+        (int16)((int)(dstz - dstbuf->data - kPpuExtraLeftRight) - vp_lo))); \
+    row_mask_ = vandq_u16(row_mask_, vcltq_u16(vreinterpretq_u16_s16(row_rel_), \
+                                               vdupq_n_u16((uint16)vp_len))); \
+  } \
+  vst1q_u16(dstz, vbslq_u16(row_mask_, vaddq_u16(row_z_, row_pix_), row_old_)); \
+} while (0)
+#elif defined(DKC3_PPU_SSE2)
+#define DKC3_STORE_TILE_ROW() do { \
+  const uint32 row_lo_ = chunky & 0xffffu, row_hi_ = chunky >> 16; \
+  const __m128i row_pix_ = _mm_and_si128( \
+      _mm_set_epi16((short)(row_hi_ >> 12), (short)(row_hi_ >> 8), (short)(row_hi_ >> 4), (short)row_hi_, \
+                    (short)(row_lo_ >> 12), (short)(row_lo_ >> 8), (short)(row_lo_ >> 4), (short)row_lo_), \
+      _mm_set1_epi16(0xf)); \
+  const __m128i row_z_ = _mm_set1_epi16((short)z); \
+  const __m128i row_old_ = _mm_loadu_si128((const __m128i *)dstz); \
+  const __m128i row_sign_ = _mm_set1_epi16((short)0x8000); \
+  __m128i row_mask_ = _mm_andnot_si128( \
+      _mm_cmpeq_epi16(row_pix_, _mm_setzero_si128()), \
+      _mm_cmpgt_epi16(_mm_xor_si128(row_z_, row_sign_), _mm_xor_si128(row_old_, row_sign_))); \
+  if (!vp_all) { \
+    const __m128i row_rel_ = _mm_add_epi16(_mm_set_epi16(7, 6, 5, 4, 3, 2, 1, 0), \
+        _mm_set1_epi16((short)((int)(dstz - dstbuf->data - kPpuExtraLeftRight) - vp_lo))); \
+    row_mask_ = _mm_and_si128(row_mask_, _mm_cmpgt_epi16( \
+        _mm_xor_si128(_mm_set1_epi16((short)vp_len), row_sign_), \
+        _mm_xor_si128(row_rel_, row_sign_))); \
+  } \
+  const __m128i row_val_ = _mm_add_epi16(row_z_, row_pix_); \
+  _mm_storeu_si128((__m128i *)dstz, _mm_or_si128(_mm_and_si128(row_mask_, row_val_), \
+                                                  _mm_andnot_si128(row_mask_, row_old_))); \
+} while (0)
+#else
+#define DKC3_STORE_TILE_ROW() do { \
+  DO_PIXEL(0); DO_PIXEL(1); DO_PIXEL(2); DO_PIXEL(3); \
+  DO_PIXEL(4); DO_PIXEL(5); DO_PIXEL(6); DO_PIXEL(7); } while (0)
+#endif
+>>>>
+
+@@ simd-full-tile-store
+<<<<
+        const uint32 chunky = CHUNKY_FROM_BITS(bits, tile & 0x4000);
+        DO_PIXEL(0); DO_PIXEL(1); DO_PIXEL(2); DO_PIXEL(3);
+        DO_PIXEL(4); DO_PIXEL(5); DO_PIXEL(6); DO_PIXEL(7);
+      }
+      dstz += 8, w -= 8, ws_sx += 8;
+====
+        const uint32 chunky = CHUNKY_FROM_BITS(bits, tile & 0x4000);
+        DKC3_STORE_TILE_ROW();
+      }
+      dstz += 8, w -= 8, ws_sx += 8;
+>>>>
+
+@@ simd-undef
+<<<<
+#undef CHUNKY_FROM_BITS
+#undef VIEWPORT_ALLOWED
+====
+#undef CHUNKY_FROM_BITS
+#undef DKC3_STORE_TILE_ROW
+#undef VIEWPORT_ALLOWED
+>>>>
+
+# Sprite slivers: a full eight-pixel sliver that is not being captured for
+# an overlay is decoded through the same spread tables and stored with one
+# vector blend, where every opaque lane overwrites (later, lower OAM indices
+# win exactly as in the scalar loop). Partial slivers at the buffer edges and
+# captured slots keep the scalar loop.
+@@ simd-sprite-sliver
+<<<<
+            for (int px = px_left; px < px_right; px++, dst++) {
+              int shift = oam1 & 0x4000 ? px : 7 - px;
+              uint32 bits = plane >> shift;
+        int pixel = (bits >> 0) & 1 | (bits >> 7) & 2 |
+                    (bits >> 14) & 4 | (bits >> 21) & 8;
+        if (pixel == 0) continue;
+              if (capture_slot) {
+====
+#if defined(DKC3_PPU_NEON) || defined(DKC3_PPU_SSE2)
+            if (!capture_slot && px_left == 0 && px_right == 8) {
+              const uint32 chunky = Dkc3Chunky4bpp(plane, (oam1 & 0x4000) != 0);
+#if defined(DKC3_PPU_NEON)
+              const int16x8_t sh_ = {0, -4, -8, -12, 0, -4, -8, -12};
+              const uint16x8_t base_ = vcombine_u16(
+                  vdup_n_u16((uint16)(chunky & 0xffffu)), vdup_n_u16((uint16)(chunky >> 16)));
+              const uint16x8_t pix_ = vandq_u16(vshlq_u16(base_, sh_), vdupq_n_u16(0xf));
+              const uint16x8_t old_ = vld1q_u16(dst);
+              vst1q_u16(dst, vbslq_u16(vcgtq_u16(pix_, vdupq_n_u16(0)),
+                                       vaddq_u16(vdupq_n_u16((uint16)z), pix_), old_));
+#else
+              const uint32 lo_ = chunky & 0xffffu, hi_ = chunky >> 16;
+              const __m128i pix_ = _mm_and_si128(
+                  _mm_set_epi16((short)(hi_ >> 12), (short)(hi_ >> 8), (short)(hi_ >> 4), (short)hi_,
+                                (short)(lo_ >> 12), (short)(lo_ >> 8), (short)(lo_ >> 4), (short)lo_),
+                  _mm_set1_epi16(0xf));
+              const __m128i old_ = _mm_loadu_si128((const __m128i *)dst);
+              const __m128i opaque_ = _mm_andnot_si128(
+                  _mm_cmpeq_epi16(pix_, _mm_setzero_si128()), _mm_set1_epi16(-1));
+              const __m128i val_ = _mm_add_epi16(_mm_set1_epi16((short)z), pix_);
+              _mm_storeu_si128((__m128i *)dst, _mm_or_si128(_mm_and_si128(opaque_, val_),
+                                                            _mm_andnot_si128(opaque_, old_)));
+#endif
+              dst += 8;
+              continue;
+            }
+#endif
+            for (int px = px_left; px < px_right; px++, dst++) {
+              int shift = oam1 & 0x4000 ? px : 7 - px;
+              uint32 bits = plane >> shift;
+        int pixel = (bits >> 0) & 1 | (bits >> 7) & 2 |
+                    (bits >> 14) & 4 | (bits >> 21) & 8;
+        if (pixel == 0) continue;
+              if (capture_slot) {
 >>>>

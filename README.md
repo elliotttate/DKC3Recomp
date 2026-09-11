@@ -159,9 +159,13 @@ configure time and fails closed when an anchor moves
 directory, for example with `tools/diagnostics/` added). They keep the
 scalar PPU's widescreen merge and composite off per-pixel branch chains,
 give the shared bus a direct path for plain cartridge ROM reads, stop the
-interpreter prefetching poll bytes it never consults, and compile out
-audio reference diagnostics that a zero-valued trace define had left
-running on every sample. Tier-2 coverage journals are now opt in
+interpreter prefetching poll bytes it never consults, let the interpreter
+hand a compiled routine it reaches by jump to the compiled code whenever it
+owns the return frame that routine will pop (`SNESRECOMP_LLE_JUMP_BOUNCE=0`
+restores the call-only behavior), re-interpret a compiled jump-table
+dispatch whose static table misses the live index instead of skipping the
+handler, and compile out audio reference diagnostics that a zero-valued
+trace define had left running on every sample. Tier-2 coverage journals are now opt in
 (`SNESRECOMP_TIER2_CAPTURE=1`), as is the stack-balance auditor
 (`SNESRECOMP_STACKBAL_AUDIT=1`). Measurements and validation limits are
 recorded in [docs/BRINGUP.md](docs/BRINGUP.md).

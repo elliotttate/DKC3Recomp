@@ -85,3 +85,46 @@ static FORCEINLINE int wlog_func_matches(const char *name) {
   if (!getenv("SNESRECOMP_STACKBAL_AUDIT"))
     fprintf(stderr, "  (auditor was not armed; set SNESRECOMP_STACKBAL_AUDIT=1 to collect)\n");
 >>>>
+
+# A compiled `JMP (abs,X)` table dispatch whose static target list misses
+# the live index used to abandon the invocation: the handler was skipped and
+# the paired frame popped as if it had returned at once. Every such site the
+# generator emits has executed nothing past the jump's operand fetch, so the
+# guest state is exactly the pre-jump state; re-interpret from the jump
+# itself (the same tier-down an unresolved indirect goto takes) and let the
+# interpreter follow the real pointer until the frame this site would have
+# consumed returns. The jump-arrival bounce in interp_bridge.hunks entered
+# bodies that only ever ran interpreted before, which is where these misses
+# surfaced ($B8:9F4D's kong_state_table, resolved to a single entry). Gated
+# on the site opcode: DKC3's pointer-call sites are all `JSR (abs,X)`, whose
+# continuation miss carries post-callee state and keeps the abandon.
+@@ jmp-table-miss-tier-down
+<<<<
+    hrv = 0;
+  }
+  g_unresolved_abandon_total++;
+====
+    hrv = 0;
+  }
+  if (g_snes && g_snes->cart &&
+      (g_snes->cart->type == CART_LOROM || g_snes->cart->type == CART_HIROM) &&
+      cart_read(g_snes->cart, (uint8_t)(site_pc24 >> 16),
+                (uint16_t)site_pc24) == 0x7C) {
+    static int s_tier_seen[64];
+    static int s_tier_seen_count;
+    int seen = 0;
+    for (int k = 0; k < s_tier_seen_count; k++)
+      if (s_tier_seen[k] == (int)(site_pc24 & 0xFFFFFF)) { seen = 1; break; }
+    if (!seen && s_tier_seen_count < 64) {
+      s_tier_seen[s_tier_seen_count++] = (int)(site_pc24 & 0xFFFFFF);
+      if (getenv("SNESRECOMP_TIER2_VERBOSE"))
+        fprintf(stderr,
+                "[unresolved-dispatch] first hit site=$%06X frame=%d "
+                "entry_s=$%04X hrv=%u (re-interpreted from the jump)\n",
+                (unsigned)site_pc24, snes_frame_counter, entry_s, hrv);
+    }
+    return interp_tier_dispatch_tail(cpu, site_pc24 & 0xFFFFFFu,
+                                     site_pc24 & 0xFFFFFFu, entry_s, hrv);
+  }
+  g_unresolved_abandon_total++;
+>>>>

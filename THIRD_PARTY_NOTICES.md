@@ -12,8 +12,8 @@
   also retained in `snesrecomp/LICENSE`.
 - Local adaptations: the hunk files under `cmake/runtime-patches/` are
   applied by `scripts/apply_dkc3_runtime_patches.py` to build-directory
-  copies of eight runtime sources (`ppu.c`, `interp_bridge.c`, `cpu_state.c`,
-  `common_cpu_infra.c`, `dsp.c`, `dsp_shadow.c`, `audio_trace.c`,
+  copies of nine runtime sources (`ppu.c`, `interp_bridge.c`, `cpu_state.c`,
+  `common_cpu_infra.c`, `dsp.c`, `dsp_shadow.c`, `audio_trace.c`, `apu.c`,
   `tier2_capture.c`). Each copy retains the original source and license,
   every anchor must match exactly the stated number of times, and the
   pinned submodule is left untouched. They comprise the Mode 2 BG priority
@@ -23,9 +23,10 @@
   ported from upstream `8d12911`, the write-log prefix latch ported from
   the DKC1Recomp snesrecomp fork (`b46b940`), and DKC3's own measured
   changes to the padded widescreen merge, the line composite, the 4bpp
-  viewport test, the plain-ROM bus path, the interpreter's poll prefetch
-  and entry options, the DSP diagnostic gating, the audio statistics clock
-  and the stack-balance auditor. Diagnostic presence semantics of
+  viewport test and vector tile stores, the plain-ROM bus path, the
+  interpreter's poll prefetch, entry options and jump-arrival bounce, the
+  jump-table miss tier-down, the DSP diagnostic gating, the audio statistics
+  clock and the stack-balance auditor. Diagnostic presence semantics of
   `SNESRECOMP_APU_PORT_DIAG` are preserved.
 
 <details>

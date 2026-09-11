@@ -1779,3 +1779,123 @@ size, as in DKC1Recomp. Windows is unaffected (the presenter is
 macOS-only). Artifacts (pacing logs and captures for both presenters, the
 overlay test run) are under
 `/Users/briantate/Documents/Codex/diagnostics/dkc3-optimize2-20260910/pass6`.
+
+## 2026-09-10 - seventh pass: jump-arrival bounce
+
+The fifth pass left about 1,310 interpreted instructions per frame in the
+cave replay, most of them in routines the interpreter reaches by `JMP`,
+by a computed jump, or by resuming after an unwind rather than by
+`JSR`/`JSL`. The bridge bounced only calls into compiled bodies, because a
+body entered at a jump target has no return frame of its own to
+host-return through.
+
+### Contract
+
+- The interpreter knows that frame whenever it pushed it. A call it could
+  not bounce (no compiled variant for the live width state, or excluded by
+  policy) and a bounce that unwound back inside the callee both leave the
+  callee's return frame at a known S with a known size and continuation;
+  the run records them (32 deep). A nested balanced run likewise sits on
+  its compiled caller's frame: its exit watermark plus that caller's
+  `hrv`, which `interp_tier_dispatch_balanced` now passes in. While S
+  equals a recorded base and the interpreter stands at a compiled entry,
+  the entry runs through `cpu_dispatch_pc_paired` with that frame size:
+  its `RTS`/`RTL` host-returns through the frame it would have popped, and
+  the interpreter resumes at the recorded continuation, or reports its own
+  frame's run complete. S must match exactly; anything pushed since makes
+  the arrival ineligible. Unwinds and `SKIP` results take the same paths
+  as the call bounce. `SNESRECOMP_LLE_JUMP_BOUNCE=0` disables the contract.
+- Cost control: a direct-mapped (pc, m, x) table remembers entries with no
+  variant or excluded by policy, so the per-step cost is a compare; a
+  permanent list retires entries whose bounce unwound back to the same PC,
+  entries that tier down at their own entry, and entries that unwound
+  twice in a row within 200 master cycles of entering. Step 0 of a run is
+  never bounced (the run's creator chose that PC to interpret), and
+  arrival bounces stop past a bridge depth of 12.
+
+### What the bounce exposed
+
+Entering bodies that had only ever run interpreted surfaced three
+latent problems, each fixed before the pass was accepted:
+
+1. **Table misses.** `dixie_kong_main` ends in `JMP (kong_state_table,x)`
+   at `$B8:9F4D`. The table's rows are four bytes (handler, flags) and the
+   analyzer resolved a single entry, so the compiled dispatch abandoned
+   every other state (`[unresolved-abandon]`, handler skipped, frame
+   popped) and the cave replay diverged within a frame. `cpu_unresolved_abandon_balanced`
+   now re-interprets a `JMP (abs,X)` miss from the jump itself through
+   `interp_tier_dispatch_tail`, the tier-down an unresolved indirect goto
+   takes; the site has executed nothing past the operand fetch, so the
+   state is the pre-jump state. Gated on the opcode: DKC3's pointer-call
+   sites are `JSR (abs,X)`, whose continuation miss carries post-callee
+   state and keeps the abandon. `SNESRECOMP_TIER2_VERBOSE=1` reports the
+   first hit per site; `$B8:9F4D` is the only site hit in the corpus.
+2. **Self-recursion.** `CODE_B7D078` is a lone `JMP ($009E)`; its compiled
+   body tiers down to a nested run at its own entry, which the arrival
+   check bounced again, without bound (host stack overflow in the first
+   frame). Hence the step-0 rule and the retirement of entries that tier
+   down at their own entry.
+3. **A nested run that cannot yield.** Sprite mains such as `$B6:805A` end
+   with `JML [$04F5]` back into the sprite loop. Bounced, the compiled
+   body's unresolved `JML` started a nested balanced run that interpreted
+   the rest of the frame's main loop, and a nested run does not yield at
+   `WAI` or at the frame deadline: it spun 2,000,000 steps to the step cap
+   and abandoned, first at frame 2,910 of the attract sequence. The
+   600-frame boot cases never reach that phase and the final state after
+   4,801 frames still matched; the benchmark showed it as a 2% boot
+   regression. An arrival-bounced body's own unresolved jump (or that of
+   a pure tail chain from it) is now handed back to the owning
+   interpreter through the existing unwind sentinel, which is where the
+   body ran before the bounce. Doing the same for call bounces is not
+   identical: with the lever off, twelve WRAM bytes (in-flight counters
+   at `$7E:00E6`/`$00E8`, `$072C`-`$0733`, `$0ACC`-`$0AF8`) differ at the
+   end of the cave replay while every frame matches, because nested runs
+   ignore the frame deadline and the owner honors it, so the CPU stops at
+   a different phase. Call bounces keep nesting.
+
+### Evidence
+
+Interpreted instructions per frame, arrival bounce off / on, same build:
+cave replay 1,310 / 984 (-25%), boot run of 4,801 frames 3,695 / 3,613.
+The cave's arrival bounces complete 8.1 times per frame and unwind 3.1
+times (the two Kong mains run 15 instructions before their table
+dispatch; the sprite mains run to their `JML`). What remains interpreted
+in the cave: the sprite loop `$BB:B8CE`-`$BB:B8F7` (about 300 per frame,
+entered mid-body at `.sprite_return`), the echo wait at `$B2:8262` (55),
+the `$B9:EEA0` family (about 90), and the `kong_state` handlers (about
+120, `lle_only`).
+
+Verification against the sixth-pass build: 50 cases (the 48 of the fifth
+pass plus 4,801-frame boot runs in 4:3 and 16:9 sampled every 25 frames,
+to cover the attract phase), state hashes, stderr and 2,632 sampled
+frames identical; the `run_stats` audio line differs in 15 cases (the
+tier-timing class accepted since the fifth pass; the largest shift is
+scene 3, `audio_nonzero_samples` 35,584 to 33,694). All 27 CTest checks
+pass, and the hidden-window desktop app's presented capture and
+source-resolution frame at frame 89 of the cave save match the original
+baseline app in all four aspects.
+
+Paired, order-alternating throughput, three repeats, medians:
+
+| workload | sixth pass | seventh pass | change |
+| --- | ---: | ---: | ---: |
+| cave 16:9, 843 frames | 0.517 ms/frame | 0.508 ms/frame | -1.7% |
+| cave 21:9 | 0.609 | 0.598 | -1.8% |
+| boot 4:3, 4,801 frames | 0.525 | 0.519 | -1.1% |
+| boot 21:9 | 0.588 | 0.583 | -0.8% |
+
+Every repeat moved in the same direction. The gain is smaller than the
+instruction count suggests because the arrival check, the bounce and the
+unwind have their own costs, and the largest remaining interpreted block,
+the sprite loop, is entered mid-body and therefore not an entry.
+
+Follow-ups, not done: a `func` split at `.sprite_return` (`$BB:B8EC`)
+would let the loop run compiled between sprite mains; an
+`indirect_dispatch 9F4D 117 ptrtail` contract for `kong_state_table`
+(the ingest tool has to accept the `%offset()` row that precedes it)
+plus exit contracts for `$B8:CC29`, `$B9:A595` and `$B9:A009` would
+compile the Kong state handlers; and the call-bounce nesting phase
+difference above is worth a pass of its own. Artifacts (verification and
+benchmark JSON, histograms, arrival outcomes, the step trace of cave run
+300, the diagnostic hunks) are under
+`/Users/briantate/Documents/Codex/diagnostics/dkc3-optimize2-20260910/pass7`.

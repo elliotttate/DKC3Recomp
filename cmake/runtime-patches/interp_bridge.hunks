@@ -133,3 +133,328 @@ void Tier2CoverageWriteDefaultManifest(const char *rom_title) {
         }
         if (s_pre_opcode_hook_count > 0) {
 >>>>
+
+
+# Jump-arrival bounce. The bridge bounced only JSR/JSL arrivals into
+# compiled bodies, because a body entered at a jump target has no return
+# frame of its own to host-return through. The interpreter does know that
+# frame whenever it is the one that pushed it: a call it could not bounce,
+# or a bounce that unwound back inside the callee, leaves the callee's
+# return frame at a known S with a known size and continuation. A nested
+# balanced run likewise sits on its compiled caller's frame (its exit
+# watermark plus that caller's hrv). While S equals such a frame base, any
+# compiled entry the interpreter reaches by jump, fall-through, computed
+# jump or unwind resume is a tail position of that frame and can run paired
+# with the same size: the body's RTS/RTL host-returns through the very frame
+# it would have popped, and the interpreter resumes at the recorded
+# continuation (or reports its own frame's run complete). S must match
+# exactly; anything pushed since makes the arrival ineligible.
+# SNESRECOMP_LLE_JUMP_BOUNCE=0 disables it (A/B lever).
+@@ arrival-bounce-statics
+<<<<
+static BridgeDynamicValue s_bridge_dynamic_values[64];
+====
+static BridgeDynamicValue s_bridge_dynamic_values[64];
+
+/* Return-frame size a balanced tier run was entered with (its caller's hrv),
+ * read once by the core at entry; 0 for runs without such a frame. */
+static uint8_t s_run_hrv;
+
+/* (pc24, m, x) keys that must not be bounced on arrival: no compiled variant,
+ * excluded by policy, or the body unwound straight back to its own entry (an
+ * interpreter-routed primitive). Direct-mapped; an eviction only costs a
+ * re-probe. Keeps the per-step cost of the arrival check to a compare. */
+static uint32_t s_arrival_skip[1024];
+static uint32_t arrival_key(uint32_t pc24, const Interp816 *in) {
+    return (pc24 & 0xFFFFFFu) | ((uint32_t)(in->mf ? 1 : 0) << 24) |
+           ((uint32_t)(in->xf ? 1 : 0) << 25) | 0x80000000u;
+}
+static inline unsigned arrival_slot(uint32_t key) {
+    return (key ^ (key >> 10) ^ (key >> 20)) & 1023u;
+}
+/* Entries whose bounce unwound back to the same PC; permanent, so a table
+ * eviction cannot re-arm a bounce that is known to be a routed primitive. */
+static uint32_t s_arrival_negative[64];
+static unsigned s_arrival_negative_count;
+static int arrival_negative_has(uint32_t pc24) {
+    const unsigned n = s_arrival_negative_count < 64 ? s_arrival_negative_count : 64;
+    for (unsigned i = 0; i < n; i++)
+        if (s_arrival_negative[i] == pc24) return 1;
+    return 0;
+}
+static void arrival_negative_add(uint32_t pc24) {
+    if (arrival_negative_has(pc24)) return;
+    s_arrival_negative[s_arrival_negative_count++ & 63] = pc24;
+}
+/* PC of the compiled entry an arrival bounce is running, for the nested run
+ * that entry may start: a body whose first act is to tier down to the
+ * interpreter at its own entry (a lone `JMP (abs)` through a WRAM pointer)
+ * would otherwise be bounced again from inside that run, without bound. */
+static uint32_t s_arrival_bounce_pc = 0xFFFFFFFFu;
+/* Bridge depth of the interpreter that made the active bounce an arrival
+ * bounce; 0 while the active bounce is a call bounce. */
+static int s_arrival_bounce_depth;
+/* A body that unwinds back to the interpreter within a few guest
+ * instructions of its entry (a sprite main that far-jumps at once, a routed
+ * primitive a few bytes in) costs a bounce and an unwind for nothing. Two
+ * such unwinds in a row retire the entry; a run past the threshold clears
+ * the strike, so a body that merely met the frame deadline once stays. */
+static uint32_t s_arrival_strike_pc[256];
+static uint8_t s_arrival_strike_n[256];
+static void arrival_note_unwind(uint32_t pc24, uint64_t master_delta) {
+    const unsigned slot = (pc24 ^ (pc24 >> 8) ^ (pc24 >> 16)) & 255u;
+    if (master_delta >= 200) {
+        if (s_arrival_strike_pc[slot] == pc24) s_arrival_strike_n[slot] = 0;
+        return;
+    }
+    if (s_arrival_strike_pc[slot] != pc24) {
+        s_arrival_strike_pc[slot] = pc24;
+        s_arrival_strike_n[slot] = 0;
+    }
+    if (++s_arrival_strike_n[slot] >= 2) arrival_negative_add(pc24);
+}
+static int arrival_bounce_enabled(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("SNESRECOMP_LLE_JUMP_BOUNCE");
+        v = (e && e[0]) ? (e[0] != '0') : 1;
+    }
+    return v;
+}
+>>>>
+
+@@ arrival-bounce-run-state
+<<<<
+    const long step_cap = interp_step_cap();
+    long steps = 0;
+====
+    const long step_cap = interp_step_cap();
+    long steps = 0;
+    /* Live return frames this run owns: base S (the S after the call pushed
+     * the frame), frame size, and the continuation. */
+    enum { kArrivalFrames = 32 };
+    uint16_t rec_sp[kArrivalFrames];
+    uint8_t rec_fs[kArrivalFrames];
+    uint32_t rec_ret[kArrivalFrames];
+    int rec_count = 0;
+    /* The run's own frame (a balanced run on its compiled caller's frame).
+     * Only balanced runs set it, and they pass no out_return_pc. */
+    const uint8_t bottom_hrv = out_return_pc ? 0 : s_run_hrv;
+    s_run_hrv = 0;
+    /* Nesting bound: each arrival bounce whose body tiers down before its
+     * frame returns nests one more interpreter run; a guest loop at the frame
+     * base could repeat that per iteration. Past the bound, interpret. */
+    const int arrival_ok = arrival_bounce_enabled() && lle_yield_bounce_enabled() &&
+                           !stop_on_rti && !n_stop && s_interp_bridge_depth < 12;
+    if (s_arrival_bounce_pc == (entry_pc24 & 0xFFFFFFu))
+        arrival_negative_add(entry_pc24 & 0xFFFFFFu);
+>>>>
+
+@@ arrival-bounce-step
+<<<<
+        const int _poll_mode = yield_pc && !auto_quiescent;
+====
+        /* Frames the interpreter has since returned past are gone. */
+        while (rec_count > 0) {
+            const uint16_t above = (uint16_t)(in.sp - rec_sp[rec_count - 1]);
+            if (above != 0 && above < 0x8000u) rec_count--; else break;
+        }
+        /* Step 0 is the PC the run's creator chose to interpret. */
+        if (arrival_ok && steps > 0) {
+            uint8_t a_fs = 0;
+            uint32_t a_ret = 0xFFFFFFFFu;
+            int a_rec = 0;
+            if (rec_count > 0 && in.sp == rec_sp[rec_count - 1]) {
+                a_fs = rec_fs[rec_count - 1];
+                a_ret = rec_ret[rec_count - 1];
+                a_rec = 1;
+            } else if (rec_count == 0 && bottom_hrv && in.sp == s_exit) {
+                a_fs = bottom_hrv;
+            }
+            const uint32_t a_key = a_fs ? arrival_key(pc_before, &in) : 0;
+            if (a_fs && s_arrival_skip[arrival_slot(a_key)] != a_key) {
+                int a_go = 0;
+                if (!arrival_negative_has(pc_before & 0xFFFFFFu) &&
+                    !lle_bounce_target_excluded(pc_before)) {
+                    sync_interp_to_cpu(&in, cpu);
+                    a_go = cpu_dispatch_has_entry(cpu, pc_before);
+                }
+                if (!a_go) {
+                    s_arrival_skip[arrival_slot(a_key)] = a_key;
+                } else {
+                    if (s_apu_pending_master >= bridge_bounce_flush_thresh())
+                        bridge_apu_flush(cpu);
+                    int _apu_drv = g_interp_apu_driving;
+                    g_interp_apu_driving = 0;
+                    int _saved_bounce_base = s_interp_bounce_recomp_base;
+                    int _saved_bounce_owner = s_interp_bounce_owner_depth;
+                    s_interp_bounce_recomp_base = g_recomp_stack_top;
+                    s_interp_bounce_owner_depth = s_interp_bridge_depth;
+                    cpu_take_tailcall_return_context(NULL, NULL);
+                    const uint32_t _saved_arrival_pc = s_arrival_bounce_pc;
+                    const int _saved_arrival_depth = s_arrival_bounce_depth;
+                    s_arrival_bounce_pc = pc_before & 0xFFFFFFu;
+                    s_arrival_bounce_depth = s_interp_bridge_depth;
+                    const uint64_t _arrival_mc0 = cpu->master_cycles;
+                    RecompReturn _air = cpu_dispatch_pc_paired(cpu, pc_before, a_fs);
+                    s_arrival_bounce_depth = _saved_arrival_depth;
+                    s_arrival_bounce_pc = _saved_arrival_pc;
+                    if (s_lle_unwind_active)
+                        arrival_note_unwind(pc_before & 0xFFFFFFu,
+                                            cpu->master_cycles - _arrival_mc0);
+                    s_interp_bounce_owner_depth = _saved_bounce_owner;
+                    s_interp_bounce_recomp_base = _saved_bounce_base;
+                    g_interp_apu_driving = _apu_drv;
+                    sync_cpu_to_interp(cpu, &in);
+                    if (_air == RECOMP_RETURN_NORMAL) {
+                        if (a_rec) {
+                            rec_count--;
+                            in.k  = (uint8)((a_ret >> 16) & 0xFF);
+                            in.pc = (uint16)(a_ret & 0xFFFF);
+                            if (reset_cap_on_bounce) steps = 0;
+                            continue;
+                        }
+                        /* The run's own frame was consumed: the routine
+                         * returned to the compiled caller that owns it. */
+                        sync_interp_to_cpu(&in, cpu);
+                        bridge_apu_flush(cpu);
+                        return 1;
+                    }
+                    if (s_lle_unwind_active) {
+                        if (s_lle_unwind_owner_depth == s_interp_bridge_depth) {
+                            s_lle_unwind_active = 0;
+                            s_lle_unwind_owner_depth = 0;
+                            sync_cpu_to_interp(cpu, &in);
+                            if ((s_lle_unwind_pc24 & 0xFFFFFFu) == (pc_before & 0xFFFFFFu))
+                                arrival_negative_add(pc_before & 0xFFFFFFu);
+                            in.k  = (uint8)((s_lle_unwind_pc24 >> 16) & 0xFF);
+                            in.pc = (uint16)(s_lle_unwind_pc24 & 0xFFFF);
+                            continue;
+                        }
+                        sync_interp_to_cpu(&in, cpu);
+                        return 1;
+                    }
+                    {
+                        const uint16_t _owner_delta = (uint16_t)(in.sp - s_enter);
+                        const int _skip_crossed_owner =
+                            _owner_delta != 0 && _owner_delta < 0x8000u;
+                        if (_air != RECOMP_RETURN_SKIP_1 || _skip_crossed_owner) {
+                            sync_interp_to_cpu(&in, cpu);
+                            if (!yield_pc && s_interp_bridge_depth > 1)
+                                return (int)_air + 2;
+                            return 1;
+                        }
+                    }
+                    if (a_rec) {
+                        rec_count--;
+                        in.k  = (uint8)((a_ret >> 16) & 0xFF);
+                        in.pc = (uint16)(a_ret & 0xFFFF);
+                        continue;
+                    }
+                    sync_interp_to_cpu(&in, cpu);
+                    bridge_apu_flush(cpu);
+                    return 1;
+                }
+            }
+        }
+        const int _poll_mode = yield_pc && !auto_quiescent;
+>>>>
+
+# Record the callee's frame when a bounce unwinds back inside the callee
+# (its frame is still live at the pre-bounce S) ...
+# A call bounce is not an arrival bounce: its body's own unresolved jumps
+# keep nesting a balanced run, as they always did.
+@@ arrival-bounce-call-marker
+<<<<
+                RecompReturn _air = cpu_dispatch_pc_paired(cpu, target, _fs);
+====
+                const int _saved_arrival_depth = s_arrival_bounce_depth;
+                s_arrival_bounce_depth = 0;
+                RecompReturn _air = cpu_dispatch_pc_paired(cpu, target, _fs);
+                s_arrival_bounce_depth = _saved_arrival_depth;
+>>>>
+
+@@ arrival-bounce-record-unwind
+<<<<
+                            s_lle_unwind_active = 0;
+                            s_lle_unwind_owner_depth = 0;
+                            sync_cpu_to_interp(cpu, &in);
+                            in.k  = (uint8)((s_lle_unwind_pc24 >> 16) & 0xFF);
+                            in.pc = (uint16)(s_lle_unwind_pc24 & 0xFFFF);
+====
+                            s_lle_unwind_active = 0;
+                            s_lle_unwind_owner_depth = 0;
+                            sync_cpu_to_interp(cpu, &in);
+                            if (in.sp == _sp_pre && rec_count < kArrivalFrames) {
+                                rec_sp[rec_count] = _sp_pre;
+                                rec_fs[rec_count] = _fs;
+                                rec_ret[rec_count] = ret;
+                                rec_count++;
+                            }
+                            in.k  = (uint8)((s_lle_unwind_pc24 >> 16) & 0xFF);
+                            in.pc = (uint16)(s_lle_unwind_pc24 & 0xFFFF);
+>>>>
+
+# ... and when a call is interpreted into (no body, or excluded by policy).
+@@ arrival-bounce-record-gap
+<<<<
+                if (!has_body)
+                    tier2_record(pc_before, target, tier2_entry_mx(cpu),
+                                 TIER2_KIND_CALL_GAP, 1);
+====
+                if (!has_body)
+                    tier2_record(pc_before, target, tier2_entry_mx(cpu),
+                                 TIER2_KIND_CALL_GAP, 1);
+                if (rec_count < kArrivalFrames) {
+                    rec_sp[rec_count] = in.sp;
+                    rec_fs[rec_count] = (op == 0x22) ? 3 : 2;
+                    rec_ret[rec_count] =
+                        (pc_before + (uint32_t)call_len +
+                         (uint32_t)cpu_dispatch_inline_arg_bytes(target)) & 0xFFFFFF;
+                    rec_count++;
+                }
+>>>>
+
+# A balanced tier run sits on its compiled caller's return frame.
+@@ arrival-bounce-balanced-hrv
+<<<<
+    int ok = interp_bridge_run_ex2(cpu, target_pc24 & 0xFFFFFF, entry_s,
+                                   &landing, NULL, 0, 0, 0, 0, NULL, 0, 0);
+====
+    s_run_hrv = (hrv == 2 || hrv == 3) ? hrv : 0;
+    int ok = interp_bridge_run_ex2(cpu, target_pc24 & 0xFFFFFF, entry_s,
+                                   &landing, NULL, 0, 0, 0, 0, NULL, 0, 0);
+    s_run_hrv = 0;
+>>>>
+
+# A body entered by a jump arrival that re-interprets from one of its own
+# unresolved jumps (or a jump of a pure tail chain from it) would start a
+# nested balanced run there. The jump is a terminal transfer, so that run
+# interprets the whole guest continuation until the frame returns: for a
+# sprite main's `JML [$04F5]` that is the rest of the frame's main loop,
+# inside a run that cannot yield at WAI or the frame deadline (the attract
+# phase spun 2,000,000 steps to the cap, then abandoned). Before the arrival
+# bounce that body ran in the owning interpreter, so hand the jump back to
+# it, as tail dispatches do; the interpreter resumes exactly where it used to
+# be. Call bounces keep nesting, which is their established behavior, and so
+# do jumps in compiled callees of the arrival-bounced body.
+@@ balanced-goto-unwind-to-owner
+<<<<
+RecompReturn interp_tier_dispatch_balanced(CpuState *cpu, uint32_t target_pc24,
+                                           uint32_t site_pc24, uint16_t entry_s,
+                                           uint8_t hrv) {
+    interp_tier_note(target_pc24);
+====
+RecompReturn interp_tier_dispatch_balanced(CpuState *cpu, uint32_t target_pc24,
+                                           uint32_t site_pc24, uint16_t entry_s,
+                                           uint8_t hrv) {
+    if ((target_pc24 & 0xFFFFFFu) == (site_pc24 & 0xFFFFFFu) &&
+        s_interp_bounce_owner_depth > 0 &&
+        s_arrival_bounce_depth == s_interp_bounce_owner_depth &&
+        interp_bridge_has_direct_paired_bounce() &&
+        !cpu_interrupt_context_active()) {
+        (void)entry_s; (void)hrv;
+        return interp_bridge_lle_yield_unwind(cpu, site_pc24 & 0xFFFFFFu);
+    }
+    interp_tier_note(target_pc24);
+>>>>

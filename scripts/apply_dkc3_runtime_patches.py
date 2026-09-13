@@ -151,7 +151,10 @@ def apply_directory(patch_dir: pathlib.Path, snesrecomp_root: pathlib.Path,
             output.write_text(patched, encoding="utf-8")
         results.append((source_path, output))
     manifest = out_dir / "manifest.txt"
-    manifest_text = "".join(f"{src}\t{dst}\n" for src, dst in results)
+    # CMake compares these against its forward-slash source lists, so the
+    # manifest must not carry native Windows separators.
+    manifest_text = "".join(f"{src.as_posix()}\t{dst.as_posix()}\n"
+                            for src, dst in results)
     if not manifest.exists() or manifest.read_text(encoding="utf-8") != manifest_text:
         manifest.write_text(manifest_text, encoding="utf-8")
     return results

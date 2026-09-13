@@ -62,9 +62,12 @@ rest instead of being blanked on tile boundaries. See
 
 ## Native macOS release
 
-The v0.0.5 release includes the new Windows x64 build and the unchanged
-v0.0.4 Mac archive below. The Mac source, menus, and display-link pacing are
-retained; the Mac binary has not been rebuilt for this Windows-focused release.
+The v0.0.6 release fixes the Windows menu bar staying on screen in
+fullscreen, restores the requested window size under the menu bar, keeps the
+game DPI-aware when the launcher is skipped, and makes the Windows CMake
+configure work again; it carries the unchanged v0.0.4 Mac archive below. The
+Mac source, menus, and display-link pacing are retained; the Mac binary has
+not been rebuilt for these Windows-focused releases.
 
 Download `DKC3Recomp-v0.0.4-macOS-arm64.zip` from
 [Releases](../../releases), extract it, and open `DKC3Recomp.app`. Select your

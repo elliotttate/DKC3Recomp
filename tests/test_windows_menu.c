@@ -34,6 +34,10 @@ int main(void) {
   CHECK(window != NULL);
   Dkc3WindowsMenu *menu = Dkc3WindowsMenuCreate(window);
   CHECK(menu != NULL);
+  /* The bar must not take its height from the client SDL was asked for. */
+  int client_width = 0, client_height = 0;
+  SDL_GetWindowSize(window, &client_width, &client_height);
+  CHECK(client_width == 640 && client_height == 480);
   SDL_SysWMinfo info;
   SDL_VERSION(&info.version);
   CHECK(SDL_GetWindowWMInfo(window, &info));
@@ -98,6 +102,29 @@ int main(void) {
   Dkc3WindowsMenuUpdate(menu, &state);
   CHECK(GetMenuState(bar, selected, MF_BYCOMMAND) & MF_CHECKED);
   CHECK(!(GetMenuState(bar, kDkc3MenuAspect + 3, MF_BYCOMMAND) & MF_CHECKED));
+
+  /* Fullscreen hides the bar without losing the menu, its state or routing. */
+  CHECK(Dkc3WindowsMenuIsVisible(menu));
+  Dkc3WindowsMenuSetVisible(menu, false);
+  CHECK(!Dkc3WindowsMenuIsVisible(menu) && GetMenu(hwnd) == NULL);
+  state.fullscreen = true;
+  Dkc3WindowsMenuUpdate(menu, &state);
+  CHECK(PostMessageW(hwnd, WM_COMMAND, kDkc3MenuFullscreen, 0));
+  selected = 0;
+  for (unsigned tick = 0; tick < 100 && !selected; ++tick) {
+    SDL_Event event;
+    while (SDL_PollEvent(&event)) {
+      unsigned command = Dkc3WindowsMenuEvent(menu, &event);
+      if (command) selected = command;
+    }
+    if (!selected) SDL_Delay(2);
+  }
+  CHECK(selected == kDkc3MenuFullscreen);
+  Dkc3WindowsMenuSetVisible(menu, true);
+  CHECK(Dkc3WindowsMenuIsVisible(menu) && GetMenu(hwnd) == bar);
+  CHECK(GetMenuState(bar, kDkc3MenuAspect + 1, MF_BYCOMMAND) & MF_CHECKED);
+  CHECK(GetMenuItemInfoW(bar, kDkc3MenuFullscreen, FALSE, &themed));
+  CHECK(wcscmp(((const wchar_t *)themed.dwItemData), L"Exit &Full Screen") == 0);
   Dkc3WindowsMenuDestroy(menu);
   CHECK(GetMenu(hwnd) == NULL);
   SDL_DestroyWindow(window);

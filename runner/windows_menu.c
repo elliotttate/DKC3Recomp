@@ -219,12 +219,33 @@ Dkc3WindowsMenu *Dkc3WindowsMenuCreate(void *sdl_window) {
       Choices(view, L"&Reconstruction Mode", kDkc3MenuReconstruct, modes, 5) &&
       Choices(view, L"&Level Edge", kDkc3MenuEdge, edges, 4) &&
       Choices(view, L"Screen &Model", kDkc3MenuScreen, screens, 4);
+  /* Attaching a bar keeps the outer frame and takes its height from the
+   * client area SDL just sized, so restore the requested client size. On a
+   * fullscreen window SDL only records the windowed size for later. */
+  bool fullscreen = (SDL_GetWindowFlags((SDL_Window *)sdl_window) &
+      (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_FULLSCREEN_DESKTOP)) != 0;
+  int client_width = 0, client_height = 0;
+  SDL_GetWindowSize((SDL_Window *)sdl_window, &client_width, &client_height);
   if (!ok || !ThemeMenu(menu, menu->bar, true) || !SetMenu(menu->window, menu->bar)) {
     Dkc3WindowsMenuDestroy(menu); return NULL;
   }
   DrawMenuBar(menu->window);
+  if (!fullscreen && client_width > 0 && client_height > 0)
+    SDL_SetWindowSize((SDL_Window *)sdl_window, client_width, client_height);
   SDL_EventState(SDL_SYSWMEVENT, SDL_ENABLE);
   return menu;
+}
+
+void Dkc3WindowsMenuSetVisible(Dkc3WindowsMenu *menu, bool visible) {
+  if (!menu || !menu->bar || !IsWindow(menu->window)) return;
+  if (visible == (GetMenu(menu->window) == menu->bar)) return;
+  SetMenu(menu->window, visible ? menu->bar : NULL);
+  DrawMenuBar(menu->window);
+}
+
+bool Dkc3WindowsMenuIsVisible(const Dkc3WindowsMenu *menu) {
+  return menu && menu->bar && IsWindow(menu->window) &&
+      GetMenu(menu->window) == menu->bar;
 }
 
 void Dkc3WindowsMenuDestroy(Dkc3WindowsMenu *menu) {

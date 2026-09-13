@@ -386,6 +386,22 @@ static void RefreshControllers(SdlHost *host) {
   }
 }
 
+/* Every fullscreen change goes through here so the Windows menu bar is
+ * hidden after the borderless window appears and restored before SDL sizes
+ * the windowed frame again; SDL's remembered windowed size is never
+ * measured with the bar detached. */
+static bool HostSetFullscreen(SdlHost *host, bool fullscreen) {
+#ifdef _WIN32
+  if (!fullscreen) Dkc3WindowsMenuSetVisible(host->menu, true);
+#endif
+  bool ok = Dkc3SdlPresenterSetFullscreen(&host->presenter, fullscreen);
+#ifdef _WIN32
+  Dkc3WindowsMenuSetVisible(
+      host->menu, !Dkc3SdlPresenterIsFullscreen(&host->presenter));
+#endif
+  return ok;
+}
+
 static void PumpEvents(SdlHost *host) {
   SDL_Event event;
   while (SDL_PollEvent(&event)) {
@@ -400,7 +416,7 @@ static void PumpEvents(SdlHost *host) {
         Dkc3DesktopEscapeExitsFullscreen(
             Dkc3SdlPresenterIsFullscreen(&host->presenter),
             Dkc3DesktopOverlayIsOpen(host->overlay))) {
-      if (Dkc3SdlPresenterSetFullscreen(&host->presenter, false)) {
+      if (HostSetFullscreen(host, false)) {
         host->escaped_fullscreen = true;
         continue;
       }
@@ -744,7 +760,7 @@ static uint32_t ApplyMacCommands(SdlHost *host,
   }
   if (commands & kDkc3MacCommandToggleFullscreen) {
     bool fullscreen = !Dkc3SdlPresenterIsFullscreen(&host->presenter);
-    if (Dkc3SdlPresenterSetFullscreen(&host->presenter, fullscreen)) {
+    if (HostSetFullscreen(host, fullscreen)) {
       settings->fullscreen = fullscreen ? 1 : 0;
       settings_changed = true;
     }
@@ -812,7 +828,7 @@ static uint32_t ApplyWindowsMenu(SdlHost *host,
   if (command == kDkc3MenuLoad) return kDkc3HostLoadState;
   if (command == kDkc3MenuFullscreen) {
     bool fullscreen = !Dkc3SdlPresenterIsFullscreen(&host->presenter);
-    if (Dkc3SdlPresenterSetFullscreen(&host->presenter, fullscreen)) {
+    if (HostSetFullscreen(host, fullscreen)) {
       settings->fullscreen = fullscreen ? 1 : 0;
       Dkc3DesktopOverlaySetSettings(host->overlay, settings);
     }
@@ -1043,6 +1059,14 @@ static int RunGame(const char *rom_path,
     ShowError("Unable to initialize the selected screen-color filter");
     return 4;
   }
+#ifdef _WIN32
+  /* The launcher sets these before its own SDL_Init; with the launcher
+   * skipped the game would otherwise start DPI-unaware and be bitmap-scaled
+   * by Windows, so the window and fullscreen bounds would no longer be
+   * physical pixels. */
+  SDL_SetHint("SDL_WINDOWS_DPI_AWARENESS", "permonitorv2");
+  SDL_SetHint("SDL_WINDOWS_DPI_SCALING", "0");
+#endif
   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER |
                SDL_INIT_TIMER) != 0) {
     free(rom);
@@ -1131,6 +1155,9 @@ static int RunGame(const char *rom_path,
   }
   Dkc3MenuState initial_menu = WindowsMenuState(&host, settings);
   Dkc3WindowsMenuUpdate(host.menu, &initial_menu);
+  /* A saved fullscreen preference creates the window fullscreen first. */
+  Dkc3WindowsMenuSetVisible(
+      host.menu, !Dkc3SdlPresenterIsFullscreen(&host.presenter));
 #endif
 #ifdef __APPLE__
   if (!host.hidden) {

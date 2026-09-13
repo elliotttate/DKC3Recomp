@@ -1899,3 +1899,34 @@ difference above is worth a pass of its own. Artifacts (verification and
 benchmark JSON, histograms, arrival outcomes, the step trace of cave run
 300, the diagnostic hunks) are under
 `/Users/briantate/Documents/Codex/diagnostics/dkc3-optimize2-20260910/pass7`.
+
+## 2026-09-12 - Windows fullscreen menu bar, configure on Windows, DPI
+
+The same report as DKC1Recomp v0.0.11: the native Game/View bar stayed
+drawn across the top of the borderless fullscreen window. A Win32 menu bar
+is non-client area, so SDL's `FULLSCREEN_DESKTOP` popup kept it and lost
+its height from the GL drawable. `HostSetFullscreen` in `sdl_main.c` now
+owns every fullscreen change (menu item, Escape, the Mac command): the bar
+is detached after the borderless window appears and reattached before SDL
+restores the windowed frame, so SDL's remembered windowed size is never
+measured without the bar. A saved `Fullscreen=1` creates the window
+fullscreen before the menu exists, so the host hides the bar right after
+`Dkc3WindowsMenuCreate`; that function also restores the client size the
+bar had taken from the freshly created window. `windows_menu` asserts the
+retained client size, detach/restore, command routing while detached and
+the retained fullscreen label.
+
+Two things stood in the way on this Windows machine. The 2026-09-10 hunk
+manifest was written with native separators, so
+`dkc3_use_patched_runtime_sources` could not find `apu.c` in the
+forward-slash runtime list and configure failed; the manifest now uses
+POSIX paths. And with `SkipLauncher=1` the game skipped the launcher's
+DPI hints and started DPI-unaware, bitmap-scaled by Windows (a 960x720
+request read back as 2160x1620 at 225%, fullscreen 3456x2169); `RunGame`
+sets the same two hints before its own `SDL_Init`.
+
+Live check (private ROM, isolated staging directory, 3456x2170 display):
+windowed 960x720 with the bar; View > Toggle Full Screen and the saved
+fullscreen preference both gave `GetMenu()` NULL and a `WS_POPUP` client
+equal to the monitor; the menu item and Escape restored the bar and
+960x720. All 28 CTest checks pass. No cartridge, widescreen or Mac change.

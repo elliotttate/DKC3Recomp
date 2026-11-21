@@ -227,8 +227,9 @@ class WidescreenOverrideTests(unittest.TestCase):
                 "uint16 _v2 = Dkc3VideoExpandCullRight(0x100);",
                 first["walk.c"])
             self.assertIn(
-                "uint16 _v24 = Dkc3VideoExpandCullLeft(0x10f);",
+                "uint16 _v24 = Dkc3VideoExpandCullSpan(0x10f);",
                 first["walk.c"])
+            self.assertNotIn("Dkc3VideoExpandCullLeft(0x10f)", first["walk.c"])
             self.assertIn(
                 "uint16 _v35 = Dkc3VideoExpandCullLeft(0xf);",
                 first["draw.c"])

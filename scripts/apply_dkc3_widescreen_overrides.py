@@ -273,10 +273,14 @@ def adapt_grid_renderer(sources: dict, generated_dir: Path) -> None:
     """Widen the OAM grid renderer for the level's static tile-row objects.
 
     $B7:E4D6 builds a list at $7E:6780 of the level's static tile-row
-    objects (banana arcs and the like) and $B7:E8E0 walks it every frame:
+    objects (banana arcs and bonus stars) and $B7:E8E0 walks it every frame:
     it stops at the first object starting at or beyond camera + $100 and
     skips one whose right end lies more than $10F - $100 = 15 pixels left
-    of the screen. $B7:E981 draws one object, clipping its tile columns at
+    of the screen (adding $10F back after subtracting camera + $100, so $10F
+    is the full span from the right bound to the left slack and must widen by
+    both margins; widening it by only the left margin shrank the left edge
+    inward by 2*bias near a left wall and skipped both drawing and collection
+    for stars there). $B7:E981 draws one object, clipping its tile columns at
     the screen's left edge (the $0F slack at $B7:E9C8) and right edge (the
     $107 at $B7:E9EF), and takes OAM's ninth X bit from bit 15 of the
     column's screen X, which native play only needs for negative values;
@@ -292,7 +296,7 @@ def adapt_grid_renderer(sources: dict, generated_dir: Path) -> None:
     walk = adapt_block_constant(
         walk, "0xB7E8E0", "0x100", "Dkc3VideoExpandCullRight")
     walk = adapt_block_constant(
-        walk, "0xB7E909", "0x10f", "Dkc3VideoExpandCullLeft")
+        walk, "0xB7E909", "0x10f", "Dkc3VideoExpandCullSpan")
     sources[walk_path] = walk
     draw = sources[draw_path]
     draw = adapt_block_constant(

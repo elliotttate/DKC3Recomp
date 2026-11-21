@@ -26,8 +26,10 @@ The 21:9 option uses the nearest symmetric width that preserves the shared
 runtime's safe sprite coordinate range: 446x224, or approximately 20.91:9.
 Screens the map does not cover center the native frame between black margins.
 The placed-object spatial scan and final activation checks, the sprite renderer
-culls, and the static banana arcs are widened to the presented view by
-`scripts/apply_dkc3_widescreen_overrides.py`, verified on Lakeside Limbo. The
+culls, and the static banana/star grids are widened to the presented view by
+`scripts/apply_dkc3_widescreen_overrides.py`, verified on Lakeside Limbo and
+on Doorstop Dash Bonus Level 1 ("Collect the Stars!") on Windows (all 28
+CTest checks pass; macOS rebuild and other bonus stages remain unverified). The
 scan includes adjacent 256-pixel cells so 21:9 objects, including objects in
 quick saves made by older builds, do not wait for a cell boundary to activate.
 Murky Mill's HDMA-windowed BG3 light cones are evaluated across the physical

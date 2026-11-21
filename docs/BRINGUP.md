@@ -1930,3 +1930,52 @@ windowed 960x720 with the bar; View > Toggle Full Screen and the saved
 fullscreen preference both gave `GetMenu()` NULL and a `WS_POPUP` client
 equal to the monitor; the menu item and Escape restored the bar and
 960x720. All 28 CTest checks pass. No cartridge, widescreen or Mac change.
+
+## 2026-11-21 - missing bonus stars near the left wall in widescreen (issue #4)
+
+- **Symptom:** in Doorstop Dash's first bonus round ("Collect the Stars!",
+  60 stars, level `$52`), one star was missing and uncollectible in 16:9
+  widescreen, while 4:3 completed normally.
+- **Cause:** DKC3's "Collect the Stars!" bonus games store their stars in
+  the same `$7E:6780` static tile-row list as banana formations, initialized
+  by `$B7:E4B7` and walked every frame by `$B7:E8E0`. For each active group,
+  `$B7:E8E0` calls both the renderer (`$B7:E981`) and the collector
+  (`$B7:EB69`). The walk computes `$2C = camera_x + right` (`$B7:E8E4`,
+  native `$0100`), subtracts `$2C` from the group's left X (`$B7:E905`),
+  adds the group's width (`$B7:E909`), and adds back a span constant
+  (`$B7:E90D`, native `$010F`), skipping both drawing and collection on
+  `BMI` (`$B7:E910`). Because `$B7:E8E4` widens `$0100` with
+  `Dkc3VideoExpandCullRight` (`+ extra + bias`), `$B7:E90D` must widen
+  `$010F` by both margins (`Dkc3VideoExpandCullSpan`, `+ 2 * extra`) so the
+  left cutoff stays at `camera_x - ($0F + extra - bias)`, matching
+  `$B7:E9C8`. `scripts/apply_dkc3_widescreen_overrides.py` instead wrapped
+  `0x10f` in `Dkc3VideoExpandCullLeft` (`+ extra - bias`), so `extra`
+  canceled out and the left cutoff moved to `camera_x - 15 + 2 * bias`:
+  with `bias = 0` the left margin was never widened, and near a left wall
+  with positive glide/shift bias (`+43` in 16:9, `+95` in 21:9) the cutoff
+  moved inside the native viewport (up to `camera_x + 71` in 16:9 and
+  `camera_x + 175` in 21:9). In Doorstop Dash Bonus 1 (map shape 4), entry 0
+  is a single-star group spanning world X `$0148..$0150` (`328..336`), so
+  near the left wall in 16:9 its right edge falls below the shifted cutoff
+  and it is skipped for both drawing and collection.
+- **Fix:** `adapt_grid_renderer` in
+  `scripts/apply_dkc3_widescreen_overrides.py` now wraps `0x10f` in block
+  `0xB7E909` with `Dkc3VideoExpandCullSpan`. Because
+  `Dkc3VideoExpandCullSpan(0x10f) - Dkc3VideoExpandCullRight(0x100)` equals
+  `Dkc3VideoExpandCullLeft(0x0f)` for every aspect ratio, presentation bias,
+  terrain-ready state, and `DKC3_CULL_WIDEN=0`, the walk and draw bounds
+  agree everywhere and 4:3 stays native. Updated
+  `tests/test_apply_dkc3_widescreen_overrides.py` and added the
+  `Span(0x10f) - Right(0x100) == Left(0x0f)` invariant checks across
+  positive, zero, and negative presentation bias in `tests/test_dkc3_video.c`.
+- **Verified:** `tests/test_apply_dkc3_widescreen_overrides.py` (4/4),
+  ROM-backed Windows Release regeneration and build, all 28 CTest checks
+  (including `dkc3_video`'s new `Span(0x10f) - Right(0x100) == Left(0x0f)`
+  checks), and live in-game verification in Doorstop Dash Bonus Level 1
+  ("Collect the Stars!", 60 stars) in widescreen confirming the previously
+  missing star now appears and is collectible.
+- **Unverified:** macOS rebuild, headless 4:3/wide hash-parity capture of
+  Doorstop Dash Bonus 1 with `DKC3_CULL_WIDEN=0` vs `1`, and traversal of
+  every other "Collect the Stars!" bonus level across 16:10, 16:9, and 21:9.
+  Regenerating generated C from a ROM is required to pick up the override
+  change in a compiled binary.

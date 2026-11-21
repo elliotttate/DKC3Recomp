@@ -238,8 +238,8 @@ static int arrival_bounce_enabled(void) {
     uint32_t rec_ret[kArrivalFrames];
     int rec_count = 0;
     /* The run's own frame (a balanced run on its compiled caller's frame).
-     * Only balanced runs set it, and they pass no out_return_pc. */
-    const uint8_t bottom_hrv = out_return_pc ? 0 : s_run_hrv;
+     * Only balanced runs set s_run_hrv. */
+    const uint8_t bottom_hrv = s_run_hrv;
     s_run_hrv = 0;
     /* Nesting bound: each arrival bounce whose body tiers down before its
      * frame returns nests one more interpreter run; a guest loop at the frame
@@ -415,15 +415,23 @@ static int arrival_bounce_enabled(void) {
                 }
 >>>>
 
-# A balanced tier run sits on its compiled caller's return frame.
+# A balanced tier run sits on its compiled caller's return frame, unless
+# the caller has already popped above entry_s (e.g. a non-local `PLA; JMP`
+# that fell through when there is no owning interpreter or S crossed above
+# it), in which case the live frame starts at cpu->S rather than stale
+# entry_s.
 @@ arrival-bounce-balanced-hrv
 <<<<
     int ok = interp_bridge_run_ex2(cpu, target_pc24 & 0xFFFFFF, entry_s,
                                    &landing, NULL, 0, 0, 0, 0, NULL, 0, 0);
 ====
-    s_run_hrv = (hrv == 2 || hrv == 3) ? hrv : 0;
-    int ok = interp_bridge_run_ex2(cpu, target_pc24 & 0xFFFFFF, entry_s,
-                                   &landing, NULL, 0, 0, 0, 0, NULL, 0, 0);
+    uint32_t post_return_pc = 0xFFFFFFFFu;
+    const uint16_t pre_s_delta = (uint16_t)(cpu->S - entry_s);
+    const int pre_s_above = pre_s_delta != 0 && pre_s_delta < 0x8000u;
+    const uint16_t run_s_exit = pre_s_above ? cpu->S : entry_s;
+    s_run_hrv = (!pre_s_above && (hrv == 2 || hrv == 3)) ? hrv : 0;
+    int ok = interp_bridge_run_ex2(cpu, target_pc24 & 0xFFFFFF, run_s_exit,
+                                   &landing, &post_return_pc, 0, 0, 0, 0, NULL, 0, 0);
     s_run_hrv = 0;
 >>>>
 
@@ -438,6 +446,17 @@ static int arrival_bounce_enabled(void) {
 # it, as tail dispatches do; the interpreter resumes exactly where it used to
 # be. Call bounces keep nesting, which is their established behavior, and so
 # do jumps in compiled callees of the arrival-bounced body.
+#
+# A compiled callee that has ALREADY popped above its own entry_s (e.g.
+# `PLA; JMP $F27D` -> `JML [$04F5]` in DKC3's $B6:B234 Pot Hole Panic and
+# $B6:9D3F Tyrant Twin Tussle child-despawn paths) has discarded its own
+# guest return frame. Running a nested interpreter anchored at the stale
+# entry_s either exits prematurely on the next unrelated RTS/RTL above
+# entry_s (skipping remaining sprites at $BB:B8EB's RTL trampoline) or
+# over-pops the owning interpreter's own frame at $BB:B9AF and returns NORMAL
+# to the caller, corrupting S and jumping off-rails into SRAM/WRAM. Hand the
+# non-local transfer straight back to the owning interpreter with live S
+# whenever S has not crossed above that interpreter's own exit watermark.
 @@ balanced-goto-unwind-to-owner
 <<<<
 RecompReturn interp_tier_dispatch_balanced(CpuState *cpu, uint32_t target_pc24,
@@ -456,5 +475,61 @@ RecompReturn interp_tier_dispatch_balanced(CpuState *cpu, uint32_t target_pc24,
         (void)entry_s; (void)hrv;
         return interp_bridge_lle_yield_unwind(cpu, site_pc24 & 0xFFFFFFu);
     }
+    {
+        const uint16_t pre_s_delta = (uint16_t)(cpu->S - entry_s);
+        if (pre_s_delta != 0 && pre_s_delta < 0x8000u &&
+            s_interp_bounce_owner_depth > 0 &&
+            !cpu_interrupt_context_active()) {
+            const uint16_t owner_delta =
+                (uint16_t)(cpu->S - s_interp_owner_exit_s);
+            const int crossed_into_compiled_ancestor =
+                s_interp_bounce_recomp_base > 0 &&
+                s_interp_owner_exit_valid &&
+                owner_delta != 0 && owner_delta < 0x8000u;
+            if (!crossed_into_compiled_ancestor) {
+                (void)hrv;
+                return interp_bridge_lle_yield_unwind(cpu, target_pc24 & 0xFFFFFFu);
+            }
+        }
+    }
     interp_tier_note(target_pc24);
+>>>>
+
+# Defense in depth: if a nested balanced interpreter run itself executes a
+# non-local return that pops strictly above expected_post_s and no compiled
+# ancestor matches (the popped frame belonged to the owning interpreter),
+# unwind to the owning interpreter at the popped return PC rather than
+# returning NORMAL to a caller whose stack frame is already gone.
+@@ balanced-overpop-unwind-to-owner
+<<<<
+        const uint16_t expected_post_s = (uint16_t)(entry_s + hrv);
+        if (cpu->S != expected_post_s) {
+            int skip = cpu_resolve_post_return_skip(cpu->S);
+            if (skip > 0)
+                return (RecompReturn)skip;
+        }
+        return RECOMP_RETURN_NORMAL;
+====
+        const uint16_t expected_post_s = (uint16_t)(entry_s + hrv);
+        if (cpu->S != expected_post_s) {
+            int skip = cpu_resolve_post_return_skip(cpu->S);
+            if (skip > 0)
+                return (RecompReturn)skip;
+            const uint16_t over_delta = (uint16_t)(cpu->S - expected_post_s);
+            const uint16_t owner_delta =
+                (uint16_t)(cpu->S - s_interp_owner_exit_s);
+            const int crossed_into_compiled_ancestor =
+                s_interp_bounce_recomp_base > 0 &&
+                s_interp_owner_exit_valid &&
+                owner_delta != 0 && owner_delta < 0x8000u;
+            if ((hrv == 2 || hrv == 3) &&
+                over_delta < 0x8000u &&
+                !crossed_into_compiled_ancestor &&
+                post_return_pc != 0xFFFFFFFFu &&
+                s_interp_bounce_owner_depth > 0 &&
+                !cpu_interrupt_context_active()) {
+                return interp_bridge_lle_yield_unwind(cpu, post_return_pc);
+            }
+        }
+        return RECOMP_RETURN_NORMAL;
 >>>>

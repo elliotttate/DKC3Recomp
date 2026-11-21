@@ -24,7 +24,8 @@
   the DKC1Recomp snesrecomp fork (`b46b940`), and DKC3's own measured
   changes to the padded widescreen merge, the line composite, the 4bpp
   viewport test and vector tile stores, the plain-ROM bus path, the
-  interpreter's poll prefetch, entry options and jump-arrival bounce, the
+  interpreter's poll prefetch, entry options, jump-arrival bounce, and
+  balanced-dispatch non-local stack-unwind guards, the
   jump-table miss tier-down, the DSP diagnostic gating, the audio statistics
   clock and the stack-balance auditor. Diagnostic presence semantics of
   `SNESRECOMP_APU_PORT_DIAG` are preserved.

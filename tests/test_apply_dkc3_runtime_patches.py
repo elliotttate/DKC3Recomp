@@ -96,6 +96,15 @@ class RuntimePatches(unittest.TestCase):
                 text = (out / name).read_text()
                 self.assertNotIn("defined(SNESRECOMP_TRACE)", text, name)
 
+    def test_balanced_dispatch_unwinds_nonlocal_stack_pops(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            out = pathlib.Path(temporary)
+            patches.apply_directory(PATCHES, SNESRECOMP, out)
+            bridge = (out / "interp_bridge.c").read_text()
+        self.assertIn("const uint16_t run_s_exit = pre_s_above ? cpu->S : entry_s;", bridge)
+        self.assertIn("return interp_bridge_lle_yield_unwind(cpu, target_pc24 & 0xFFFFFFu);", bridge)
+        self.assertIn("return interp_bridge_lle_yield_unwind(cpu, post_return_pc);", bridge)
+
     def _apply_edited(self, edit):
         """Apply the patch set to a copy of the pinned runtime after `edit`."""
         with tempfile.TemporaryDirectory() as temporary:

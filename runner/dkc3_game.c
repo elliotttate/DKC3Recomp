@@ -730,12 +730,13 @@ static uint16_t Dkc3ReadWram16(uint16_t address) {
  * 256-pixel placement index. A quick save made by an older build preserves
  * that native-width index, and changing aspect is host-only, so rebuilding it
  * on restore would either lose object state or leave stale buckets. Merge the
- * current cell and its immediate horizontal neighbors for the generated
- * list walk instead. The terrain-gated $BB:AAD4 compare remains authoritative,
- * and 21:9's maximum added reach is less than one 256-pixel cell per side. */
+ * current cell and every horizontal neighbor the widened placement interval
+ * can reach (up to two cells per side at 21:9 with spawn lead) for the
+ * generated list walk instead. The terrain-gated $BB:AAD4 compare remains
+ * authoritative. */
 uint16_t Dkc3PlacementScanBegin(uint16_t native_head,
                                 uint16_t native_cell_offset) {
-  uint16_t cell_offsets[3];
+  uint16_t cell_offsets[kDkc3VideoPlacementScanMaxCells];
   const uint16_t row_stride = Dkc3ReadWram16(0x15fa);
   const size_t cell_count = Dkc3VideoPlacementScanCells(
       native_cell_offset, row_stride, cell_offsets);

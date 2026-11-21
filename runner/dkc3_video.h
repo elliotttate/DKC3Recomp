@@ -57,11 +57,16 @@ enum {
   /* Extra horizontal lead-in (pixels per side) added in widescreen to
    * placement activation/despawn ($BB:AAD4) and sprite renderer culls ($B7)
    * so newly spawned objects can upload VRAM tiles before crossing the
-   * widened screen edge. Overridable via DKC3_SPAWN_LEAD, clamped so even
-   * 21:9 at full wall bias (190 px) stays within one 256-pixel placement
-   * bucket (190 + 64 < 256). */
+   * widened screen edge. Overridable via DKC3_SPAWN_LEAD, clamped to
+   * [0, kDkc3VideoMaxSpawnLead]. */
   kDkc3VideoDefaultSpawnLead = 48,
   kDkc3VideoMaxSpawnLead = 64,
+  /* Maximum horizontal 256-pixel bucket radius/count returned by
+   * Dkc3VideoPlacementScanCells: 1 neighbor per side at 16:10/16:9, and up to
+   * 2 neighbors per side at 21:9 when wall bias + spawn lead (+ 32 px
+   * asymmetric row slack) cross a second 256-pixel cell boundary. */
+  kDkc3VideoPlacementScanMaxRadius = 2,
+  kDkc3VideoPlacementScanMaxCells = 1 + 2 * kDkc3VideoPlacementScanMaxRadius,
 };
 
 typedef enum Dkc3VideoAspect {
@@ -232,12 +237,14 @@ uint16_t Dkc3VideoExpandSpawnLeft(uint16_t native_margin);
 uint16_t Dkc3VideoExpandSpawnSpan(uint16_t native_span);
 uint16_t Dkc3VideoExpandSpriteCullLeft(uint16_t native_margin);
 uint16_t Dkc3VideoExpandSpriteCullSpan(uint16_t native_span);
-/* Return the current placement-index cell plus its immediate horizontal
- * neighbors in widescreen. The final activation cull above rejects the
- * broad-phase candidates outside the live presented window. */
-size_t Dkc3VideoPlacementScanCells(uint16_t native_cell_offset,
-                                    uint16_t row_stride,
-                                    uint16_t cell_offsets[3]);
+/* Return the current placement-index cell plus every horizontal neighbor cell
+ * the widened placement interval (including wall bias, spawn lead, and
+ * DATA_BBA8BE's 32-pixel asymmetric row slack) can reach. The final
+ * activation compare rejects broad-phase candidates outside the live window. */
+size_t Dkc3VideoPlacementScanCells(
+    uint16_t native_cell_offset,
+    uint16_t row_stride,
+    uint16_t cell_offsets[kDkc3VideoPlacementScanMaxCells]);
 /* Match the exact PPU register signature of Floodlit Fish's underwater
  * color-math composition. Keeping this as a pure, tested host policy avoids
  * changing unrelated full-screen effects that also use BG3. */

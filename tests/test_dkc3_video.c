@@ -142,7 +142,8 @@ int main(void) {
           0x86ae, NULL, 0x8000, 0x100, NULL, NULL))
       return fprintf(stderr, "FAIL: waterfall mismatch and fine-scroll gates\n"), 1;
   }
-  uint16_t placement_cells[3] = {0xffff, 0xffff, 0xffff};
+  uint16_t placement_cells[kDkc3VideoPlacementScanMaxCells] = {
+      0xffff, 0xffff, 0xffff, 0xffff, 0xffff};
   if (!Dkc3VideoUsesUnderwaterSubscreenTint(
           0x09, 0x04, 0x13, 0x04, 0x00, 0x00000300, 0x00, 0xff,
           0x02, 0x64, 0x0000) ||
@@ -725,6 +726,28 @@ int main(void) {
       Dkc3VideoExpandSpawnSpan(0x140) != 0x1fe + 2 * kDkc3VideoDefaultSpawnLead ||
       Dkc3VideoExpandSpriteCullLeft(0x30) != 0x30 + 95 ||
       Dkc3VideoExpandSpriteCullSpan(0x160) != 0x160 + 190 ||
+      /* At 21:9 with the 48 px spawn lead, wall bias + lead + 32 px
+       * asymmetric row slack can reach a second 256-pixel neighbor bucket,
+       * so the broad-phase scan expands to two cells per side (clamped to
+       * row bounds); with lead=0 it drops back to one neighbor per side. */
+      Dkc3VideoPlacementScanCells(6, 64, placement_cells) != 5 ||
+      placement_cells[0] != 6 || placement_cells[1] != 4 ||
+      placement_cells[2] != 8 || placement_cells[3] != 2 ||
+      placement_cells[4] != 10 ||
+      Dkc3VideoPlacementScanCells(2, 64, placement_cells) != 4 ||
+      placement_cells[0] != 2 || placement_cells[1] != 0 ||
+      placement_cells[2] != 4 || placement_cells[3] != 6 ||
+      Dkc3VideoPlacementScanCells(0, 64, placement_cells) != 3 ||
+      placement_cells[0] != 0 || placement_cells[1] != 2 ||
+      placement_cells[2] != 4 ||
+      Dkc3VideoPlacementScanCells(126, 64, placement_cells) != 3 ||
+      placement_cells[0] != 126 || placement_cells[1] != 124 ||
+      placement_cells[2] != 122 ||
+      (Dkc3VideoSetSpawnLead(0),
+       Dkc3VideoPlacementScanCells(6, 64, placement_cells) != 3 ||
+       placement_cells[0] != 6 || placement_cells[1] != 4 ||
+       placement_cells[2] != 8) ||
+      (Dkc3VideoSetSpawnLead(kDkc3VideoDefaultSpawnLead), false) ||
       !CheckMargins(0x0100, 0x0800, 0, 95, 95) ||
       !CheckMargins(0x0800, 0x0800, 0, 95, 95) ||
       Dkc3VideoPixelCount() !=

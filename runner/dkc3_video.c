@@ -481,9 +481,10 @@ uint16_t Dkc3VideoExpandSpriteCullSpan(uint16_t native_span) {
   return widened;
 }
 
-size_t Dkc3VideoPlacementScanCells(uint16_t native_cell_offset,
-                                    uint16_t row_stride,
-                                    uint16_t cell_offsets[3]) {
+size_t Dkc3VideoPlacementScanCells(
+    uint16_t native_cell_offset,
+    uint16_t row_stride,
+    uint16_t cell_offsets[kDkc3VideoPlacementScanMaxCells]) {
   if (!cell_offsets)
     return 0;
   cell_offsets[0] = native_cell_offset;
@@ -491,14 +492,28 @@ size_t Dkc3VideoPlacementScanCells(uint16_t native_cell_offset,
       (native_cell_offset & 1u) != 0)
     return 1;
 
+  /* Worst-case horizontal reach past the native 256-pixel placement cell:
+   * full wall bias (2 * extra) + configured spawn lead + 32 px right-side
+   * asymmetry on DATA_BBA8BE row $70/$78. A camera at sub-cell offset 255
+   * can reach floor((255 + reach) / 256) neighbor cells away. */
+  const int reach = 2 * g_ws_extra + Dkc3VideoConfiguredSpawnLead() + 32;
+  int radius = (255 + reach) / 256;
+  if (radius < 1)
+    radius = 1;
+  if (radius > kDkc3VideoPlacementScanMaxRadius)
+    radius = kDkc3VideoPlacementScanMaxRadius;
+
   size_t count = 1;
   const uint16_t cell = (uint16_t)(native_cell_offset / 2u);
   const uint16_t column = (uint16_t)(cell % row_stride);
-  if (column != 0)
-    cell_offsets[count++] = (uint16_t)(native_cell_offset - 2u);
-  if ((uint16_t)(column + 1u) < row_stride &&
-      native_cell_offset <= UINT16_MAX - 2u)
-    cell_offsets[count++] = (uint16_t)(native_cell_offset + 2u);
+  for (int step = 1; step <= radius; step++) {
+    const uint16_t delta = (uint16_t)(step * 2);
+    if (column >= (uint16_t)step && native_cell_offset >= delta)
+      cell_offsets[count++] = (uint16_t)(native_cell_offset - delta);
+    if ((uint32_t)column + (uint32_t)step < (uint32_t)row_stride &&
+        native_cell_offset <= (uint16_t)(UINT16_MAX - delta))
+      cell_offsets[count++] = (uint16_t)(native_cell_offset + delta);
+  }
   return count;
 }
 

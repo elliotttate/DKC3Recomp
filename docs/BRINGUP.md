@@ -1930,3 +1930,59 @@ windowed 960x720 with the bar; View > Toggle Full Screen and the saved
 fullscreen preference both gave `GetMenu()` NULL and a `WS_POPUP` client
 equal to the monitor; the menu item and Escape restored the bar and
 960x720. All 28 CTest checks pass. No cartridge, widescreen or Mac change.
+
+## 2026-11-21 - widescreen enemy spawn and sprite-cull lead-in (16:9 Doorstop Dash)
+
+- **Symptom:** in 16:9 widescreen (specifically reported in Doorstop Dash,
+  level `$0028`), enemies and doors could still blink onto the screen past
+  the widened edge instead of walking or scrolling smoothly across it.
+- **Cause:** Doorstop Dash places all 118 objects through the standard
+  `$BB:A647` / `$BB:AAD4` / `$B7:8857` pipeline (90 placements on
+  `DATA_BBA8BE` row `$00` with `32 px` native slack, and 28 door/gear
+  placements on row `$10` with `16 px` native slack). The existing
+  widescreen helpers (`Dkc3VideoExpandCullLeft` / `Dkc3VideoExpandCullSpan`)
+  widened those windows by only the exact presented margin (`extra ± bias`)
+  with no extra lead-in. Because newly activated sprites require 2+ frames
+  for VRAM tile DMA upload in `$B7:8857` (`CODE_B790AA`), and `$B7:8925`
+  culls sprites before reaching `CODE_B790AA`, fast sprint/roll scrolling
+  plus sprite half-widths consumed the 16-32 px slack before tiles finished
+  uploading. In addition, the interpreter-patched cull at `$B7:A88F`
+  (`Dkc3PatchInterpreterCull`) previously widened symmetrically without
+  `presentation_bias`.
+- **Change:**
+  - Added configurable widescreen spawn-ahead helpers in
+    `runner/dkc3_video.h` and `runner/dkc3_video.c`:
+    `Dkc3VideoSetSpawnLead`, `Dkc3VideoSpawnLead`,
+    `Dkc3VideoSpriteCullLead`, `Dkc3VideoExpandSpawnLeft`,
+    `Dkc3VideoExpandSpawnSpan`, `Dkc3VideoExpandSpriteCullLeft`, and
+    `Dkc3VideoExpandSpriteCullSpan` (default `48 px` per side, overridable
+    via `DKC3_SPAWN_LEAD`, clamped to `[0, 64]` so even 21:9 at full wall
+    bias stays within one 256-pixel placement bucket: `190 + 64 < 256`).
+  - Placement lead applies only to `DATA_BBA8BE` rows with `Lx < $60` and
+    `Wx < $1C0` (rows `$00`, `$10`, `$30`, `$40`, `$70`), preserving 8-pixel
+    spawn/despawn hysteresis while skipping already-wide rows (`$20`, `$50`,
+    `$60`) so `camera_x - Lx_widened` cannot underflow 16-bit unsigned
+    subtraction near `camera_x = $0100`.
+  - Sprite renderer cull lead is clamped to `160 - 2 * extra` (`108 px` cap
+    at 16:10, `74 px` cap at 16:9, `0 px` at 21:9) so off-screen sprites
+    can queue VRAM tile DMA early without wrapping nine-bit OAM X onto the
+    opposite margin.
+  - Wired `$BB:AAD4` to `Dkc3VideoExpandSpawnLeft/Span` and the nine `$B7`
+    sprite renderer cull sites to `Dkc3VideoExpandSpriteCullLeft/Span` in
+    `scripts/apply_dkc3_widescreen_overrides.py`, leaving `$B6:F186` and
+    the static banana/star grid renderer (`$B7:E8E0` / `$B7:E981`) on the
+    exact `Dkc3VideoExpandCull*` helpers. Updated `Dkc3PatchInterpreterCull`
+    in `runner/dkc3_game.c` to use `Dkc3VideoExpandSpriteCullLeft/Span`
+    after per-frame bias and terrain-readiness updates.
+  - Native 4:3, unproven terrain frames, and `DKC3_CULL_WIDEN=0` keep zero
+    lead and native windows.
+- **Verified:** Python unit test suite (`python -m unittest discover -s tests`,
+  22/22, including updated `test_apply_dkc3_widescreen_overrides.py`),
+  ROM-backed Windows Release regeneration and build, and live in-game
+  verification in 16:9 widescreen confirming reduced enemy edge pop-in in
+  Doorstop Dash.
+- **Unverified:** macOS rebuild, CTest run status not explicitly reported on
+  this branch, headless 4:3 hash-parity and `DKC3_CULL_WIDEN=0` vs `1` A/B
+  captures, and full-game traversal across all aspect ratios. Regenerating
+  `generated/snesrecomp/` from a ROM is required to pick up the updated
+  generated-code wrappers.

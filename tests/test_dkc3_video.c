@@ -205,8 +205,14 @@ int main(void) {
       Dkc3VideoGetAspect() != kDkc3VideoAspectNative ||
       Dkc3VideoWidth() != kDkc3VideoNativeWidth ||
       Dkc3VideoExtra() != 0 ||
+      Dkc3VideoSpawnLead() != 0 ||
+      Dkc3VideoSpriteCullLead() != 0 ||
       Dkc3VideoExpandCullLeft(0x20) != 0x20 ||
       Dkc3VideoExpandCullSpan(0x140) != 0x140 ||
+      Dkc3VideoExpandSpawnLeft(0x20) != 0x20 ||
+      Dkc3VideoExpandSpawnSpan(0x140) != 0x140 ||
+      Dkc3VideoExpandSpriteCullLeft(0x30) != 0x30 ||
+      Dkc3VideoExpandSpriteCullSpan(0x160) != 0x160 ||
       Dkc3VideoPlacementScanCells(2, 64, placement_cells) != 1 ||
       placement_cells[0] != 2 ||
       Dkc3VideoPromoteOamXHigh(0x0120) != 0x0120 ||
@@ -541,13 +547,85 @@ int main(void) {
   Dkc3VideoSetWidescreen(true);
   Dkc3VideoSetEdgePolicy(kDkc3VideoEdgeShift);
   if (Dkc3VideoTerrainReady() ||
+      Dkc3VideoSpawnLead() != 0 ||
+      Dkc3VideoSpriteCullLead() != 0 ||
       Dkc3VideoExpandCullLeft(0x20) != 0x20 ||
       Dkc3VideoExpandCullSpan(0x140) != 0x140 ||
+      Dkc3VideoExpandSpawnLeft(0x20) != 0x20 ||
+      Dkc3VideoExpandSpawnSpan(0x140) != 0x140 ||
+      Dkc3VideoExpandSpriteCullLeft(0x30) != 0x30 ||
+      Dkc3VideoExpandSpriteCullSpan(0x160) != 0x160 ||
       Dkc3VideoPromoteOamXHigh(0x0120) != 0x0120) {
     fprintf(stderr, "FAIL: object bounds widened before terrain was ready\n");
     return 1;
   }
   Dkc3VideoSetTerrainReady(true);
+  {
+    /* Widescreen spawn and sprite-renderer lead: 16:9 gets the full configured
+     * lead (default 48 px, clamped to [0, 64]) on standard DATA_BBA8BE rows
+     * (< $60 / < $1C0) and on sprite renderer culls, while already-wide rows
+     * ($60/$1C0 and $F8/$2F0) skip extra lead to prevent unsigned underflow. */
+    Dkc3VideoSetSpawnLead(kDkc3VideoDefaultSpawnLead);
+    Dkc3VideoSetPresentationBias(0);
+    if (Dkc3VideoSpawnLead() != 48 ||
+        Dkc3VideoSpriteCullLead() != 48 ||
+        Dkc3VideoExpandSpawnLeft(0x10) != 0x10 + 43 + 48 ||
+        Dkc3VideoExpandSpawnSpan(0x120) != 0x120 + 86 + 96 ||
+        Dkc3VideoExpandSpawnLeft(0x18) != 0x18 + 43 + 48 ||
+        Dkc3VideoExpandSpawnSpan(0x130) != 0x130 + 86 + 96 ||
+        Dkc3VideoExpandSpawnLeft(0x20) != 0x20 + 43 + 48 ||
+        Dkc3VideoExpandSpawnSpan(0x140) != 0x140 + 86 + 96 ||
+        Dkc3VideoExpandSpawnLeft(0x28) != 0x28 + 43 + 48 ||
+        Dkc3VideoExpandSpawnSpan(0x150) != 0x150 + 86 + 96 ||
+        Dkc3VideoExpandSpawnLeft(0x40) != 0x40 + 43 + 48 ||
+        Dkc3VideoExpandSpawnSpan(0x1a0) != 0x1a0 + 86 + 96 ||
+        /* Already-wide rows skip extra lead, keeping exact extra/bias. */
+        Dkc3VideoExpandSpawnLeft(0x60) != 0x60 + 43 ||
+        Dkc3VideoExpandSpawnSpan(0x1c0) != 0x1c0 + 86 ||
+        Dkc3VideoExpandSpawnLeft(0xf8) != 0xf8 + 43 ||
+        Dkc3VideoExpandSpawnSpan(0x2f0) != 0x2f0 + 86 ||
+        /* Sprite renderer culls match the lead at 16:9 (74 px safe OAM cap). */
+        Dkc3VideoExpandSpriteCullLeft(0x30) != 0x30 + 43 + 48 ||
+        Dkc3VideoExpandSpriteCullSpan(0x160) != 0x160 + 86 + 96 ||
+        Dkc3VideoExpandSpriteCullLeft(0x10) != 0x10 + 43 + 48 ||
+        Dkc3VideoExpandSpriteCullSpan(0x120) != 0x120 + 86 + 96) {
+      fprintf(stderr, "FAIL: 16:9 spawn and sprite-cull lead\n");
+      return 1;
+    }
+    /* Bias shifts the spawn and sprite-cull windows asymmetrically while
+     * preserving the 8-pixel spawn/despawn hysteresis. */
+    Dkc3VideoSetPresentationBias(43);
+    if (Dkc3VideoExpandSpawnLeft(0x20) != 0x20 + 48 ||
+        Dkc3VideoExpandSpawnSpan(0x140) != 0x140 + 86 + 96 ||
+        Dkc3VideoExpandSpawnLeft(0x28) - Dkc3VideoExpandSpawnLeft(0x20) != 8 ||
+        Dkc3VideoExpandSpriteCullLeft(0x30) != 0x30 + 48 ||
+        Dkc3VideoExpandSpriteCullSpan(0x160) != 0x160 + 86 + 96) {
+      fprintf(stderr, "FAIL: biased 16:9 spawn and sprite-cull lead\n");
+      return 1;
+    }
+    Dkc3VideoSetPresentationBias(-43);
+    if (Dkc3VideoExpandSpawnLeft(0x20) != 0x20 + 86 + 48 ||
+        Dkc3VideoExpandSpriteCullLeft(0x30) != 0x30 + 86 + 48) {
+      fprintf(stderr, "FAIL: negative-bias 16:9 spawn and sprite-cull lead\n");
+      return 1;
+    }
+    /* Setter clamping. */
+    Dkc3VideoSetPresentationBias(0);
+    Dkc3VideoSetSpawnLead(-10);
+    if (Dkc3VideoSpawnLead() != 0 || Dkc3VideoSpriteCullLead() != 0 ||
+        Dkc3VideoExpandSpawnLeft(0x20) != 0x4b ||
+        Dkc3VideoExpandSpriteCullLeft(0x30) != 0x5b) {
+      fprintf(stderr, "FAIL: zero/negative spawn lead clamp\n");
+      return 1;
+    }
+    Dkc3VideoSetSpawnLead(200);
+    if (Dkc3VideoSpawnLead() != kDkc3VideoMaxSpawnLead ||
+        Dkc3VideoSpriteCullLead() != kDkc3VideoMaxSpawnLead) {
+      fprintf(stderr, "FAIL: upper spawn lead clamp\n");
+      return 1;
+    }
+    Dkc3VideoSetSpawnLead(kDkc3VideoDefaultSpawnLead);
+  }
   if (!Dkc3VideoIsWidescreen() ||
       !Dkc3VideoTerrainReady() ||
       Dkc3VideoWidth() != kDkc3VideoWidescreenWidth ||
@@ -638,6 +716,15 @@ int main(void) {
       kDkc3Video21x9Extra != 95 ||
       Dkc3VideoExpandCullLeft(0x20) != 0x7f ||
       Dkc3VideoExpandCullSpan(0x140) != 0x1fe ||
+      /* At 21:9, placement spawn still receives the configured lead (fitting
+       * within one 256-pixel neighbor bucket even at +95 wall bias), while
+       * the sprite renderer cull lead clamps to 0 so nine-bit OAM never wraps. */
+      Dkc3VideoSpawnLead() != kDkc3VideoDefaultSpawnLead ||
+      Dkc3VideoSpriteCullLead() != 0 ||
+      Dkc3VideoExpandSpawnLeft(0x20) != 0x7f + kDkc3VideoDefaultSpawnLead ||
+      Dkc3VideoExpandSpawnSpan(0x140) != 0x1fe + 2 * kDkc3VideoDefaultSpawnLead ||
+      Dkc3VideoExpandSpriteCullLeft(0x30) != 0x30 + 95 ||
+      Dkc3VideoExpandSpriteCullSpan(0x160) != 0x160 + 190 ||
       !CheckMargins(0x0100, 0x0800, 0, 95, 95) ||
       !CheckMargins(0x0800, 0x0800, 0, 95, 95) ||
       Dkc3VideoPixelCount() !=

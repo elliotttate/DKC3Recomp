@@ -150,7 +150,7 @@ class WidescreenOverrideTests(unittest.TestCase):
         (generated / "draw.c").write_text(DRAW_FIXTURE, encoding="utf-8")
         (generated / "music.c").write_text(MUSIC_FIXTURE, encoding="utf-8")
         sites = [address for address in MODULE.CULL_SITES
-                 if MODULE.CULL_SITES[address] == ("0x30", "0x160")]
+                 if MODULE.CULL_SITES[address][:2] == ("0x30", "0x160")]
         for index, address in enumerate(sorted(sites)):
             if address == "0xB78925":
                 continue
@@ -183,10 +183,10 @@ class WidescreenOverrideTests(unittest.TestCase):
                     "Dkc3RecordMusicTransition(cpu->A);"))
             self.assertEqual(
                 first["compare.c"].count(
-                    "Dkc3VideoExpandCullLeft(cpu_read16"), 1)
+                    "Dkc3VideoExpandSpawnLeft(cpu_read16"), 1)
             self.assertEqual(
                 first["compare.c"].count(
-                    "Dkc3VideoExpandCullSpan(cpu_read16"), 1)
+                    "Dkc3VideoExpandSpawnSpan(cpu_read16"), 1)
             self.assertEqual(
                 first["scan.c"].count(
                     "Dkc3PlacementScanBegin(cpu_read16"), 1)
@@ -205,14 +205,14 @@ class WidescreenOverrideTests(unittest.TestCase):
                 self.assertIn("uint16 _v1 = 0x30;", text)
                 self.assertIn("uint16 _v20 = 0x160;", text)
                 self.assertEqual(
-                    text.count("Dkc3VideoExpandCullLeft(0x30)"), 2)
+                    text.count("Dkc3VideoExpandSpriteCullLeft(0x30)"), 2)
                 self.assertEqual(
-                    text.count("Dkc3VideoExpandCullSpan(0x160)"), 2)
+                    text.count("Dkc3VideoExpandSpriteCullSpan(0x160)"), 2)
             self.assertIn(
-                "uint16 _v14 = Dkc3VideoExpandCullLeft(0x10);",
+                "uint16 _v14 = Dkc3VideoExpandSpriteCullLeft(0x10);",
                 first["narrow.c"])
             self.assertIn(
-                "uint16 _v17 = Dkc3VideoExpandCullSpan(0x120);",
+                "uint16 _v17 = Dkc3VideoExpandSpriteCullSpan(0x120);",
                 first["narrow.c"])
             self.assertIn(
                 "uint16 _v5 = Dkc3VideoExpandCullLeft(0x10);",

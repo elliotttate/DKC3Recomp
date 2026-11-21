@@ -398,6 +398,89 @@ uint16_t Dkc3VideoExpandCullRight(uint16_t native_right) {
   return widened;
 }
 
+static int s_spawn_lead = -1;
+
+static int Dkc3VideoConfiguredSpawnLead(void) {
+  if (s_spawn_lead < 0) {
+    int lead = kDkc3VideoDefaultSpawnLead;
+    const char *setting = getenv("DKC3_SPAWN_LEAD");
+    if (setting && setting[0] != '\0') {
+      char *end = NULL;
+      long parsed = strtol(setting, &end, 10);
+      if (end != setting && *end == '\0') {
+        if (parsed < 0)
+          lead = 0;
+        else if (parsed > kDkc3VideoMaxSpawnLead)
+          lead = kDkc3VideoMaxSpawnLead;
+        else
+          lead = (int)parsed;
+      }
+    }
+    s_spawn_lead = Dkc3VideoClampInt(lead, 0, kDkc3VideoMaxSpawnLead);
+  }
+  return s_spawn_lead;
+}
+
+void Dkc3VideoSetSpawnLead(int lead) {
+  s_spawn_lead = Dkc3VideoClampInt(lead, 0, kDkc3VideoMaxSpawnLead);
+}
+
+int Dkc3VideoSpawnLead(void) {
+  if (!Dkc3VideoTerrainReady() || !Dkc3VideoCullWidenEnabled())
+    return 0;
+  return Dkc3VideoConfiguredSpawnLead();
+}
+
+int Dkc3VideoSpriteCullLead(void) {
+  const int lead = Dkc3VideoSpawnLead();
+  if (lead <= 0)
+    return 0;
+  /* Nine-bit OAM X wraps at 512. Reserving 48 px for the native $30 cull and
+   * 48 px for sub-sprite offsets + 16 px tile width leaves 160 - 2*extra px of
+   * safe extra cull lead (108 px at 16:10, 74 px at 16:9, 0 px at 21:9). */
+  const int safe_oam_lead = 160 - 2 * g_ws_extra;
+  if (safe_oam_lead <= 0)
+    return 0;
+  return lead < safe_oam_lead ? lead : safe_oam_lead;
+}
+
+/* Placement rows in DATA_BBA8BE with Lx < $60 and Wx < $1C0 (rows $00, $10,
+ * $30, $40, $70, including all 16- and 32-pixel spawn/despawn rows) receive
+ * the extra spawn lead. Wider rows ($20 at 96 px, $50/$60 at 248 px) already
+ * have ample slack and skip it so camera_x - Lx_widened never underflows
+ * 16-bit unsigned subtraction near camera_x = $0100. */
+uint16_t Dkc3VideoExpandSpawnLeft(uint16_t native_margin) {
+  const uint16_t base = Dkc3VideoExpandCullLeft(native_margin);
+  const int lead = native_margin < 0x60u ? Dkc3VideoSpawnLead() : 0;
+  const uint16_t widened = (uint16_t)(base + (uint16_t)lead);
+  Dkc3VideoCullTrace("spawn_left", native_margin, widened);
+  return widened;
+}
+
+uint16_t Dkc3VideoExpandSpawnSpan(uint16_t native_span) {
+  const uint16_t base = Dkc3VideoExpandCullSpan(native_span);
+  const int lead = native_span < 0x1c0u ? Dkc3VideoSpawnLead() : 0;
+  const uint16_t widened = (uint16_t)(base + (uint16_t)(2 * lead));
+  Dkc3VideoCullTrace("spawn_span", native_span, widened);
+  return widened;
+}
+
+uint16_t Dkc3VideoExpandSpriteCullLeft(uint16_t native_margin) {
+  const uint16_t base = Dkc3VideoExpandCullLeft(native_margin);
+  const int lead = Dkc3VideoSpriteCullLead();
+  const uint16_t widened = (uint16_t)(base + (uint16_t)lead);
+  Dkc3VideoCullTrace("sprite_left", native_margin, widened);
+  return widened;
+}
+
+uint16_t Dkc3VideoExpandSpriteCullSpan(uint16_t native_span) {
+  const uint16_t base = Dkc3VideoExpandCullSpan(native_span);
+  const int lead = Dkc3VideoSpriteCullLead();
+  const uint16_t widened = (uint16_t)(base + (uint16_t)(2 * lead));
+  Dkc3VideoCullTrace("sprite_span", native_span, widened);
+  return widened;
+}
+
 size_t Dkc3VideoPlacementScanCells(uint16_t native_cell_offset,
                                     uint16_t row_stride,
                                     uint16_t cell_offsets[3]) {

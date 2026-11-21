@@ -54,6 +54,14 @@ enum {
    * of pixels off and never qualifies. */
   kDkc3VideoTerrainPhaseFollowX = 32,
   kDkc3VideoTerrainPhaseFollowY = 32,
+  /* Extra horizontal lead-in (pixels per side) added in widescreen to
+   * placement activation/despawn ($BB:AAD4) and sprite renderer culls ($B7)
+   * so newly spawned objects can upload VRAM tiles before crossing the
+   * widened screen edge. Overridable via DKC3_SPAWN_LEAD, clamped so even
+   * 21:9 at full wall bias (190 px) stays within one 256-pixel placement
+   * bucket (190 + 64 < 256). */
+  kDkc3VideoDefaultSpawnLead = 48,
+  kDkc3VideoMaxSpawnLead = 64,
 };
 
 typedef enum Dkc3VideoAspect {
@@ -214,6 +222,16 @@ int Dkc3VideoPresentationBias(void);
 uint16_t Dkc3VideoExpandCullLeft(uint16_t native_margin);
 uint16_t Dkc3VideoExpandCullSpan(uint16_t native_span);
 uint16_t Dkc3VideoExpandCullRight(uint16_t native_right);
+/* Configure or query the extra widescreen spawn-ahead lead (0 when native,
+ * terrain is unproven, or DKC3_CULL_WIDEN=0). The sprite renderer lead is
+ * further clamped so off-screen OAM coordinates never wrap in nine-bit X. */
+void Dkc3VideoSetSpawnLead(int lead);
+int Dkc3VideoSpawnLead(void);
+int Dkc3VideoSpriteCullLead(void);
+uint16_t Dkc3VideoExpandSpawnLeft(uint16_t native_margin);
+uint16_t Dkc3VideoExpandSpawnSpan(uint16_t native_span);
+uint16_t Dkc3VideoExpandSpriteCullLeft(uint16_t native_margin);
+uint16_t Dkc3VideoExpandSpriteCullSpan(uint16_t native_span);
 /* Return the current placement-index cell plus its immediate horizontal
  * neighbors in widescreen. The final activation cull above rejects the
  * broad-phase candidates outside the live presented window. */

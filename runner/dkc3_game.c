@@ -2153,37 +2153,34 @@ static void Dkc3ApplyBandPolicies(const Dkc3HdmaBand *band,
  * CMP #$0160 ($B7:A8C8) exactly like the eight variants the override
  * script widens in generated code, but the analysis leaves it to the
  * interpreter, which reads those immediates from the ROM image. Widen them
- * there: $30 by the configured margin and $160 by two margins, symmetric,
- * without the glide bias the generated wrappers apply (a cull only decides
- * whether a sprite reaches OAM, so a superset is harmless). Each write
- * checks the bytes it replaces, so an image that does not hold the native
- * or the previously widened operands is left alone.
+ * there using the same Dkc3VideoExpandSpriteCullLeft/Span policy (including
+ * terrain readiness, presentation bias, DKC3_CULL_WIDEN, and DKC3_SPAWN_LEAD).
+ * Each write checks the bytes it replaces, so an image that does not hold the
+ * native or the previously patched operands is left alone.
  */
 static void Dkc3PatchInterpreterCull(void) {
-  static int applied_extra = -1;
-  const int extra = Dkc3VideoExtra();
-  if (extra == applied_extra || !g_rom)
+  static uint16_t applied_left = 0x30u;
+  static uint16_t applied_span = 0x160u;
+  const uint16_t left = Dkc3VideoExpandSpriteCullLeft(0x30u);
+  const uint16_t span = Dkc3VideoExpandSpriteCullSpan(0x160u);
+  if ((left == applied_left && span == applied_span) || !g_rom)
     return;
   enum { kLeftOperand = 0x37a8c9u, kSpanOperand = 0x37a8ccu };
   const uint32_t rom_size = g_snes && g_snes->cart ? (uint32_t)g_snes->cart->romSize : 0;
   if (rom_size < kSpanOperand + 2u)
     return;
   uint8_t *rom = (uint8_t *)(uintptr_t)g_rom;
-  const unsigned previous = applied_extra < 0 ? 0u : (unsigned)applied_extra;
-  const uint16_t expect_left = (uint16_t)(0x30u + previous);
-  const uint16_t expect_span = (uint16_t)(0x160u + 2u * previous);
-  if (rom[kLeftOperand] != (expect_left & 0xffu) ||
-      rom[kLeftOperand + 1] != (expect_left >> 8) ||
-      rom[kSpanOperand] != (expect_span & 0xffu) ||
-      rom[kSpanOperand + 1] != (expect_span >> 8))
+  if (rom[kLeftOperand] != (applied_left & 0xffu) ||
+      rom[kLeftOperand + 1] != (applied_left >> 8) ||
+      rom[kSpanOperand] != (applied_span & 0xffu) ||
+      rom[kSpanOperand + 1] != (applied_span >> 8))
     return;
-  const uint16_t left = (uint16_t)(0x30u + (unsigned)extra);
-  const uint16_t span = (uint16_t)(0x160u + 2u * (unsigned)extra);
   rom[kLeftOperand] = (uint8_t)(left & 0xffu);
   rom[kLeftOperand + 1] = (uint8_t)(left >> 8);
   rom[kSpanOperand] = (uint8_t)(span & 0xffu);
   rom[kSpanOperand + 1] = (uint8_t)(span >> 8);
-  applied_extra = extra;
+  applied_left = left;
+  applied_span = span;
 }
 
 /* Floodlit Fish uses a full-screen inverted BG3 window for the water surface
@@ -2230,7 +2227,6 @@ static void Dkc3EnhanceUnderwaterSubscreen(Ppu *ppu, uint y, bool sub,
 }
 
 void Dkc3DrawPpuFrame(void) {
-  Dkc3PatchInterpreterCull();
   PpuSetWidescreenLineEnhancer(
       g_ppu, Dkc3VideoIsWidescreen() ? Dkc3EnhanceUnderwaterSubscreen : NULL,
       NULL);
@@ -2467,6 +2463,7 @@ void Dkc3DrawPpuFrame(void) {
     Dkc3ResetWidescreenShadow();
     PpuSetExtraSpace(g_ppu, 0);
   }
+  Dkc3PatchInterpreterCull();
 
   dma_startDma(g_dma, g_snesrecomp_last_hdmaen, true);
   for (int channel = 0; channel < 8; channel++) {

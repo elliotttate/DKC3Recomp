@@ -144,22 +144,29 @@ def adapt_nth_accumulator_write(
 
 
 # Camera-relative X windows to widen, by the trace address of the generated
-# block that holds them: (native left margin, native span). Each block
-# subtracts $196D from a world X, adds the margin, and compares the sum
-# with the span, keeping [-margin, span - margin).
+# block that holds them: (native left margin, native span, left helper,
+# span helper). Each block subtracts $196D from a world X, adds the margin,
+# and compares the sum with the span, keeping [-margin, span - margin).
+# Sprite renderer culls ($B7) use the sprite-cull helpers so newly activated
+# sprites can queue VRAM tile DMA off-screen before crossing the widened edge.
 CULL_SITES = {
     # The sprite renderer's cull, [-$30, $130). The block is inlined into
     # every renderer variant that reaches it, so the same address recurs
     # across units; every copy must widen.
-    "0xB780C9": ("0x30", "0x160"), "0xB78925": ("0x30", "0x160"),
-    "0xB78A2E": ("0x30", "0x160"), "0xB78A60": ("0x30", "0x160"),
-    "0xB78B68": ("0x30", "0x160"), "0xB78CFB": ("0x30", "0x160"),
-    "0xB78E73": ("0x30", "0x160"), "0xB7903C": ("0x30", "0x160"),
+    "0xB780C9": ("0x30", "0x160", "Dkc3VideoExpandSpriteCullLeft", "Dkc3VideoExpandSpriteCullSpan"),
+    "0xB78925": ("0x30", "0x160", "Dkc3VideoExpandSpriteCullLeft", "Dkc3VideoExpandSpriteCullSpan"),
+    "0xB78A2E": ("0x30", "0x160", "Dkc3VideoExpandSpriteCullLeft", "Dkc3VideoExpandSpriteCullSpan"),
+    "0xB78A60": ("0x30", "0x160", "Dkc3VideoExpandSpriteCullLeft", "Dkc3VideoExpandSpriteCullSpan"),
+    "0xB78B68": ("0x30", "0x160", "Dkc3VideoExpandSpriteCullLeft", "Dkc3VideoExpandSpriteCullSpan"),
+    "0xB78CFB": ("0x30", "0x160", "Dkc3VideoExpandSpriteCullLeft", "Dkc3VideoExpandSpriteCullSpan"),
+    "0xB78E73": ("0x30", "0x160", "Dkc3VideoExpandSpriteCullLeft", "Dkc3VideoExpandSpriteCullSpan"),
+    "0xB7903C": ("0x30", "0x160", "Dkc3VideoExpandSpriteCullLeft", "Dkc3VideoExpandSpriteCullSpan"),
     # The renderer variant at $B7:8DFC culls narrower, [-$10, $110).
-    "0xB78DFC": ("0x10", "0x120"),
+    "0xB78DFC": ("0x10", "0x120", "Dkc3VideoExpandSpriteCullLeft", "Dkc3VideoExpandSpriteCullSpan"),
     # $B6:F186 answers "is this sprite on screen" for sprite behaviors with
-    # X in [-$10, $100) (its Y test, in the next block, is untouched).
-    "0xB6F186": ("0x10", "0x110"),
+    # X in [-$10, $100) (its Y test, in the next block, is untouched). Keep it
+    # on the exact presented view without extra off-screen spawn lead.
+    "0xB6F186": ("0x10", "0x110", "Dkc3VideoExpandCullLeft", "Dkc3VideoExpandCullSpan"),
 }
 # The same $30/$160 cull at $B7:A8C8 sits in CODE_B7A88F, which the analysis
 # leaves to the interpreter; the runtime widens its immediates in the ROM
@@ -183,11 +190,11 @@ def adapt_cull_blocks(text: str) -> tuple[str, set[str]]:
         if not trace or trace.group(1) not in CULL_SITES:
             continue
         address = trace.group(1)
-        left, span = CULL_SITES[address]
+        left, span, left_helper, span_helper = CULL_SITES[address]
         if "0x196d" not in block:
             raise ValueError(f"cull block {address} does not read camera X")
-        left_expr = f"Dkc3VideoExpandCullLeft({left})"
-        span_expr = f"Dkc3VideoExpandCullSpan({span})"
+        left_expr = f"{left_helper}({left})"
+        span_expr = f"{span_helper}({span})"
         if left_expr not in block:
             block, count = re.subn(
                 rf"(uint16\s+\w+\s*=\s*){left};",
@@ -348,9 +355,9 @@ def apply_overrides(generated_dir: Path) -> list[Path]:
         compare_path.read_text(encoding="utf-8"))}
     compare = sources[compare_path]
     compare = wrap_single_read(
-        compare, "0xbba8be", "Dkc3VideoExpandCullLeft")
+        compare, "0xbba8be", "Dkc3VideoExpandSpawnLeft")
     compare = wrap_single_read(
-        compare, "0xbba8c0", "Dkc3VideoExpandCullSpan")
+        compare, "0xbba8c0", "Dkc3VideoExpandSpawnSpan")
     sources[compare_path] = compare
 
     scan = add_include(scan_path.read_text(encoding="utf-8"))

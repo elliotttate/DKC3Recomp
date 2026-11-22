@@ -443,6 +443,18 @@ if(BUILD_TESTING)
         SNESRECOMP_REVERSE_DEBUG=0)
     add_test(NAME dkc3_ppu_mode2 COMMAND test_dkc3_ppu_mode2)
     set_tests_properties(dkc3_ppu_mode2 PROPERTIES LABELS "unit;video;ppu")
+
+    add_executable(test_dkc3_ppu_windows
+        tests/test_dkc3_ppu_windows.c
+        ${DKC3_PATCHED_PPU}
+        ${SNESRECOMP_ROOT}/runner/src/snes/ppu_legacy.c)
+    target_include_directories(test_dkc3_ppu_windows PRIVATE
+        ${SNESRECOMP_ROOT}/runner/src
+        ${SNESRECOMP_ROOT}/runner/src/snes)
+    target_compile_definitions(test_dkc3_ppu_windows PRIVATE
+        SNESRECOMP_REVERSE_DEBUG=0)
+    add_test(NAME dkc3_ppu_windows COMMAND test_dkc3_ppu_windows)
+    set_tests_properties(dkc3_ppu_windows PROPERTIES LABELS "unit;video;ppu")
     find_package(Python3 QUIET COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
         add_test(NAME dkc3_runtime_patches

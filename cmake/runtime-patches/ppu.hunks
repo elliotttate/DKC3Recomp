@@ -15,6 +15,72 @@ file: runner/src/snes/ppu.c
     PpuDrawBackground_4bpp_opt(ppu, y, sub, 1, 0x8100, 0x1100);
 >>>>
 
+# Widescreen presentation X bias shifts BGs and sprites left by
+# wsPresentationXBias pixels near level walls so the native 256px window stays
+# aligned with authored terrain. Shift non-pinned edges of non-empty hardware
+# windows by the same offset, clamped to the layer's presented span. No-op
+# when wsPresentationXBias is zero (all authentic 4:3 frames).
+@@ window-presentation-bias
+<<<<
+  PpuWidescreenAdjustPinnedWindowEdges(win->edges[0], window_right, &w1l,
+                                       &w1r, &w2l, &w2r);
+  if (ppu->wsWindowExpandLayers & (1u << layer)) {
+====
+  PpuWidescreenAdjustPinnedWindowEdges(win->edges[0], window_right, &w1l,
+                                       &w1r, &w2l, &w2r);
+  if (ppu->wsPresentationXBias != 0) {
+    if (ppu->window1left <= ppu->window1right) {
+      if (ppu->window1left > 0)
+        w1l = IntMax(w1l - ppu->wsPresentationXBias, win->edges[0]);
+      if (ppu->window1right < kPpuXPixels - 1)
+        w1r = IntMin(w1r - ppu->wsPresentationXBias, window_right - 1);
+    }
+    if (ppu->window2left <= ppu->window2right) {
+      if (ppu->window2left > 0)
+        w2l = IntMax(w2l - ppu->wsPresentationXBias, win->edges[0]);
+      if (ppu->window2right < kPpuXPixels - 1)
+        w2r = IntMin(w2r - ppu->wsPresentationXBias, window_right - 1);
+    }
+  }
+  if (ppu->wsWindowExpandLayers & (1u << layer)) {
+>>>>
+
+# Honor WBGLOG/WOBJLOG ($212A/$212B) when both W1 and W2 are enabled on a
+# layer (matching ppu_legacy.c's ppu_window_contains for OR/AND/XOR/XNOR).
+# Mask unused upper bits so callers checking `win.bits == 0` stay exact when
+# inverted or XNOR windows evaluate unmasked. Required by Poisonous Pipeline,
+# which masks BG3's water-surface wrap using W34SEL=$0A, WBGLOG=$30 (XNOR),
+# and an empty W2=[255,0].
+@@ window-combine-logic
+<<<<
+  if ((winflags & (kWindow2Enabled | kWindow2Inversed)) == (kWindow2Enabled | kWindow2Inversed))
+    w2_bits = ~w2_bits;
+  win->bits = w1_bits | w2_bits;
+  debug_server_on_ppu_window(y, (int)layer, win->edges, win->nr, win->bits);
+====
+  if ((winflags & (kWindow2Enabled | kWindow2Inversed)) == (kWindow2Enabled | kWindow2Inversed))
+    w2_bits = ~w2_bits;
+  uint8 active_mask = (uint8)((1u << nr) - 1u);
+  w1_bits &= active_mask;
+  w2_bits &= active_mask;
+  if ((winflags & (kWindow1Enabled | kWindow2Enabled)) ==
+      (kWindow1Enabled | kWindow2Enabled)) {
+    switch ((ppu->wbgobjlog >> (layer * 2)) & 3u) {
+      case 0: win->bits = w1_bits | w2_bits; break;
+      case 1: win->bits = w1_bits & w2_bits; break;
+      case 2: win->bits = w1_bits ^ w2_bits; break;
+      case 3: win->bits = (uint8)(~(w1_bits ^ w2_bits)) & active_mask; break;
+    }
+  } else if (winflags & kWindow1Enabled) {
+    win->bits = w1_bits;
+  } else if (winflags & kWindow2Enabled) {
+    win->bits = w2_bits;
+  } else {
+    win->bits = 0;
+  }
+  debug_server_on_ppu_window(y, (int)layer, win->edges, win->nr, win->bits);
+>>>>
+
 # Upstream snesrecomp 4020e47 ("Clear only the columns the frame can use"):
 # the priority buffers are sized for the widest border the runtime supports,
 # but nothing reads past 256 plus the host's per-side budget. Clear and merge

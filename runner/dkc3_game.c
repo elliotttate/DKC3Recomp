@@ -2378,11 +2378,17 @@ void Dkc3DrawPpuFrame(void) {
                   g_ppu->bgmode, g_ppu->bgXsc,
                   g_ppu->screenEnabled[0], g_ppu->screenEnabled[1])
             : 0;
+    /* A mirrored margin at a level wall has no authored BG3 ring columns to
+     * expose. Within one margin of a wall, a physical 64-column BG3 repeats
+     * its rendered line like a bounded layer instead of reading the ring. */
+    if (Dkc3VideoMarginLeavesAuthoredExtent(camera_x, maximum_scroll_x))
+      physical_wide_mask = (uint8_t)(physical_wide_mask & ~0x04u);
     /* A bounded layer with a hardware window cannot repeat an already
      * composited 256-pixel line: Murky Mill's per-scanline BG3 light window
-     * then ends at the native edge and its clipped cone wraps to the opposite
-     * margin. Draw the 32-column map physically across the widened span so
-     * the same HDMA window edges are evaluated in screen space. */
+     * and Poisonous Pipeline's BG3 water-surface window would otherwise wrap
+     * their clipped spans into the opposite margin, including near a level
+     * wall. Draw the 32-column map physically across the widened span so the
+     * same HDMA window edges are evaluated in screen space. */
     physical_wide_mask = (uint8_t)(
         physical_wide_mask |
         (terrain_ready
@@ -2391,11 +2397,6 @@ void Dkc3DrawPpuFrame(void) {
                    g_ppu->screenEnabled[0], g_ppu->screenEnabled[1],
                    g_ppu->screenWindowed[0], g_ppu->screenWindowed[1])
              : 0));
-    /* A mirrored margin at a level wall has no authored BG3 ring columns to
-     * expose. Within one margin of a wall, a physical 64-column BG3 repeats
-     * its rendered line like a bounded layer instead of reading the ring. */
-    if (Dkc3VideoMarginLeavesAuthoredExtent(camera_x, maximum_scroll_x))
-      physical_wide_mask = (uint8_t)(physical_wide_mask & ~0x04u);
     const uint8_t repeat_exempt_mask = 0u;
     const uint8_t render_layer_mask =
         (uint8_t)(wide_layer_mask | physical_wide_mask);

@@ -17,8 +17,10 @@
   `tier2_capture.c`). Each copy retains the original source and license,
   every anchor must match exactly the stated number of times, and the
   pinned submodule is left untouched. They comprise the Mode 2 BG priority
-  change (the runtime's independent scalar PPU at the same revision supplies
-  the priority and pixel oracle), the active-span priority-buffer clear
+  change and the `PpuWindows_CalcWithExtra` window combine-logic
+  (`WBGLOG`/`WOBJLOG`) and presentation-X-bias fixes (the runtime's
+  independent scalar PPU at the same revision supplies the priority, window,
+  and pixel oracle), the active-span priority-buffer clear
   ported from upstream snesrecomp `4020e47`, the opt-in tier-2 capture
   ported from upstream `8d12911`, the write-log prefix latch ported from
   the DKC1Recomp snesrecomp fork (`b46b940`), and DKC3's own measured

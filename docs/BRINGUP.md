@@ -2068,3 +2068,92 @@ equal to the monitor; the menu item and Escape restored the bar and
   statically to execute the identical `PLA; JMP $F27D -> $B6:F281`
   sequence as `$B6:B234`), full playthrough of both stages to the
   flagpole, and macOS rebuild.
+
+## Poisonous Pipeline (`$003F`) — PPU window logic, widescreen window alignment, and Koco wall-exit investigation
+
+- **Reported symptoms:**
+  1. The pink water-surface pattern rendered far below the actual water
+     surface (and inverted over the rock walls at water shafts).
+  2. Fish ("odd fish movements") swimming into/through solid walls.
+- **Root cause 1 — Water surface patterns (three distinct bugs, all fixed):**
+  - **Missing `WBGLOG`/`WOBJLOG` combine logic in `PpuWindows_CalcWithExtra`
+    (`snesrecomp/runner/src/snes/ppu.c:605`):** Poisonous Pipeline renders
+    its pink water surface on BG3 (`bgXsc[2]=$70`, 32x32 tiles wrapping
+    vertically every 256 px) with `W34SEL=$0A` (W1 and W2 enabled,
+    non-inverted), `WBGLOG=$30` (`XNOR` for BG3), `TMW=TSW=$04`,
+    `W2=[255, 0]` (always empty), and `W1=[shaft_left, shaft_right]` at
+    water shafts or `W1=[255, 0]` deeper underwater. `PpuWindows_CalcWithExtra`
+    ignored `ppu->wbgobjlog` and hardcoded `win->bits = w1_bits | w2_bits`
+    (`OR`). Deep underwater (`W1=W2=[255,0]`), `OR(false, false) = false`
+    left BG3 unmasked everywhere, exposing its 256 px / 512 px vertical
+    wrap on the pipe floor; at water shafts, `OR(in_w1, false) = in_w1`
+    inverted the mask, hiding the surface inside the shaft and drawing it
+    over the surrounding walls.
+  - **Unshifted hardware windows under `wsPresentationXBias`
+    (`PpuWindows_CalcWithExtra`):** Near level walls (e.g. Poisonous
+    Pipeline's entrance shaft with `bias=+36`), `Dkc3DrawPpuFrame` shifts
+    BG `hScroll` and OBJ presentation left by `bias` pixels, but
+    `PpuWindows_CalcWithExtra` left non-pinned hardware window edges at
+    native screen X, misaligning the water-surface window by `bias` pixels.
+  - **Wall-extent BG3 clear overriding windowed 32-column BG3
+    (`runner/dkc3_game.c`):** `Dkc3VideoMarginLeavesAuthoredExtent(...)`
+    cleared bit `0x04` of `physical_wide_mask` *after* ORing
+    `Dkc3VideoPhysicalWindowedLayerMask(...)` instead of only clearing the
+    64-column BG3 ring bit from `Dkc3VideoPhysicalWideLayerMask(...)`.
+    Near the west wall, that forced Poisonous Pipeline's windowed 32-column
+    BG3 into `wsLayerRepeat`, wrapping the entrance-shaft water surface
+    into the opposite margin.
+- **Root cause 2 — Fish swimming through walls (original SNES behavior +
+  widescreen exposure; no recompiler/CPU bug):**
+  - Decoded all 109 placements of `$003F` (`$FE:4CEE` via `$FF:0040 + type`)
+    against the decompressed 96x80 metatile map (`$7F:0000`). All 40 fish
+    in the stage are Kocos (`$B6:8220`, `sid=$0300`): 12 patrolling Kocos
+    (`w_5a=$07 -> $B9:E1DB`, all patrol ranges inside open pipe chambers)
+    and 28 straight-swimming green Kocos (`w_5a=$08 -> $B9:E20D`:
+    `JSR $EE6E; JSR $E0EC; JMP $E183`, constant horizontal speed with
+    vertical bobbing and **no terrain/wall collision in the SNES ROM**).
+  - Audited `koco_main_idle` (already executes in authoritative LLE),
+    `recomp/bankb9.cfg`, and generated bank `$B9` movement functions, and
+    verified identical Koco `(x, y)` coordinates in 4:3 AOT vs 4:3 LLE
+    (`SNESRECOMP_LLE_BOUNCE=0`).
+  - Even on authentic 4:3 LLE, straight-swimming Koco `#7` (`$5C0, $240`,
+    `type=$02B8`) swims straight into the sloped ceiling if the player
+    pauses to watch. In 16:9 / 21:9, widened side margins and widened
+    `$BB:AAD4` activation/despawn (`+43 px` in 16:9, `+95 px` in 21:9)
+    spawn straight-swimming Kocos earlier and keep them visible further
+    past the native 256 px edges, visibly exposing their straight-line
+    wall exits. Per the cartridge correctness oracle, Koco physics were
+    left authentic.
+- **Changes:**
+  - `cmake/runtime-patches/ppu.hunks`: added fail-closed hunks
+    `@@ window-combine-logic` (honors `(ppu->wbgobjlog >> (layer * 2)) & 3u`
+    for OR/AND/XOR/XNOR across all 6 window layers and masks unused upper
+    bits by `(1u << nr) - 1u`, matching `ppu_legacy.c`) and
+    `@@ window-presentation-bias` (shifts non-pinned edges of non-empty
+    W1/W2 windows by `-ppu->wsPresentationXBias`, clamped to
+    `[win->edges[0], window_right - 1]`; exact no-op when bias is 0).
+  - `runner/dkc3_game.c`: moved the `Dkc3VideoMarginLeavesAuthoredExtent`
+    BG3-ring bit clear before ORing `Dkc3VideoPhysicalWindowedLayerMask`.
+  - `tests/test_dkc3_ppu_windows.c`, `CMakeLists.txt`, and
+    `tests/test_apply_dkc3_runtime_patches.py`: added 247 ROM-free PPU
+    window cases (216 BG3 + 24 OBJ/Color Window oracle comparisons against
+    `ppu_legacy.c` and 7 widescreen presentation-X-bias checks) plus
+    runtime-patch hunk assertions.
+- **Verified (Windows x64 Release, private ROM):**
+  - `python -m unittest discover -s tests`: 23/23 passed on this branch.
+  - Full Windows Release build and 29/29 CTest suite (including
+    `dkc3_ppu_windows`, `dkc3_ppu_mode2`, `supplied_rom_headless_boot`,
+    and all four Windows SDL aspect smoke tests: 4:3, 16:10, 16:9, 21:9).
+  - Poisonous Pipeline (`$003F`, 1,310-frame swim replay through entrance
+    shaft, deep underwater, and second shaft):
+    - **4:3 fast PPU vs `DKC3_PPU_LEGACY=1`:** 107/107 sampled frames
+      (frames 240–1300 step 10) are **byte-for-byte identical (0 diffs)**;
+      `audio_fnv1a=451a775a3b3b4f8f`.
+    - **16:9 and 21:9 visual inspection:** entrance shaft (`bias=+36`),
+      deep underwater (frames 700, 850), right-margin shaft entry (frames
+      1015–1070), and second shaft (frames 1150, 1300) all render with
+      aligned water surfaces, zero wrapped patterns deep underwater, and
+      zero opposite-margin repeat leaks.
+- **Unverified:** full playthrough of Poisonous Pipeline to the flagpole
+  (including the second sub-room), Murky Mill / Floodlit Fish live visual
+  regression captures, and macOS rebuild.

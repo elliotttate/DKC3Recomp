@@ -637,16 +637,28 @@ int main(void) {
       Dkc3VideoExpandCullSpan(0x160) != 0x1b6 ||
       /* A presentation bias moves the presented window: the left slack
        * shrinks by a positive bias (none left at the left wall) and grows
-       * by a negative one; the span keeps both margins either way. */
+       * by a negative one; the span keeps both margins either way. The
+       * static banana/star walk subtracts camera + right and adds back the
+       * full $10F span, so Span($10F) - Right($100) must equal Left($0F)
+       * at every bias. */
       (Dkc3VideoSetPresentationBias(43),
        Dkc3VideoExpandCullLeft(0x20) != 0x20 ||
        Dkc3VideoExpandCullSpan(0x140) != 0x196 ||
+       Dkc3VideoExpandCullRight(0x100) != 0x156 ||
+       Dkc3VideoExpandCullSpan(0x10f) - Dkc3VideoExpandCullRight(0x100) !=
+           Dkc3VideoExpandCullLeft(0x0f) ||
        Dkc3VideoPresentationBias() != 43) ||
       (Dkc3VideoSetPresentationBias(-43),
        Dkc3VideoExpandCullLeft(0x20) != 0x76 ||
-       Dkc3VideoExpandCullSpan(0x140) != 0x196) ||
+       Dkc3VideoExpandCullSpan(0x140) != 0x196 ||
+       Dkc3VideoExpandCullRight(0x100) != 0x100 ||
+       Dkc3VideoExpandCullSpan(0x10f) - Dkc3VideoExpandCullRight(0x100) !=
+           Dkc3VideoExpandCullLeft(0x0f)) ||
       (Dkc3VideoSetPresentationBias(0),
-       Dkc3VideoExpandCullLeft(0x20) != 0x4b) ||
+       Dkc3VideoExpandCullLeft(0x20) != 0x4b ||
+       Dkc3VideoExpandCullRight(0x100) != 0x12b ||
+       Dkc3VideoExpandCullSpan(0x10f) - Dkc3VideoExpandCullRight(0x100) !=
+           Dkc3VideoExpandCullLeft(0x0f)) ||
       Dkc3VideoPromoteOamXHigh(0x00ff) != 0x00ff ||
       Dkc3VideoPromoteOamXHigh(0x0100) != 0x8100 ||
       Dkc3VideoPromoteOamXHigh(0x012a) != 0x812a ||

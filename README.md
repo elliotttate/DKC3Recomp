@@ -26,8 +26,11 @@ The 21:9 option uses the nearest symmetric width that preserves the shared
 runtime's safe sprite coordinate range: 446x224, or approximately 20.91:9.
 Screens the map does not cover center the native frame between black margins.
 The placed-object spatial scan and final activation checks, the sprite renderer
-culls, and the static banana arcs are widened to the presented view by
-`scripts/apply_dkc3_widescreen_overrides.py`, verified on Lakeside Limbo. The
+culls, and the static banana/star grids are widened to the presented view by
+`scripts/apply_dkc3_widescreen_overrides.py`, verified on Lakeside Limbo and
+on Doorstop Dash Bonus Level 1 ("Collect the Stars!") on Windows (macOS
+rebuild and other bonus stages remain unverified; see
+[docs/BRINGUP.md](docs/BRINGUP.md)). The
 scan includes adjacent 256-pixel cells so 21:9 objects, including objects in
 quick saves made by older builds, do not wait for a cell boundary to activate.
 Murky Mill's HDMA-windowed BG3 light cones are evaluated across the physical
@@ -87,9 +90,10 @@ paths work, but full-game compatibility is not yet claimed.
 
 ## Building on Windows
 
-The Windows x64 SDL build has passed all 23 project tests, a 4,801-frame
-headless run, and a packaged launcher/visible-game smoke check. Full-game
-completion and hardware/controller coverage are not claimed.
+The Windows x64 SDL build has passed the full project CTest suite (see
+[docs/BRINGUP.md](docs/BRINGUP.md)), a 4,801-frame headless run, and a
+packaged launcher/visible-game smoke check. Full-game completion and
+hardware/controller coverage are not claimed.
 
 Requirements: Visual Studio 2022 with Desktop development with C++, CMake,
 and Python 3. Initialize the Git submodules before building. In PowerShell:

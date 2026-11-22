@@ -34,6 +34,9 @@ int main(void) {
   CHECK(window != NULL);
   Dkc3WindowsMenu *menu = Dkc3WindowsMenuCreate(window);
   CHECK(menu != NULL);
+  /* Command routing uses a dedicated user event rather than flooding the SDL
+   * queue with every raw Win32 message via SDL_SYSWMEVENT. */
+  CHECK(SDL_EventState(SDL_SYSWMEVENT, SDL_QUERY) == SDL_DISABLE);
   /* The bar must not take its height from the client SDL was asked for. */
   int client_width = 0, client_height = 0;
   SDL_GetWindowSize(window, &client_width, &client_height);

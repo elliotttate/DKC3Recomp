@@ -180,6 +180,7 @@ if(DKC3_BUILD_SNESRECOMP)
             runner/desktop_launcher.c
             runner/desktop_overlay.cpp
             runner/desktop_overlay_model.c
+            runner/desktop_pacer.c
             runner/desktop_perf.c
             runner/desktop_present.c
             runner/desktop_present_gl.c

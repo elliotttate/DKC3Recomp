@@ -37,4 +37,23 @@ void Dkc3DesktopPacerReset(Dkc3DesktopPacer *pacer);
 
 bool Dkc3DesktopPacerLocked(const Dkc3DesktopPacer *pacer);
 
+/* Decides whether the desktop host should pause emulation, audio, and active
+ * presentation while the window is backgrounded. Hidden automated test runs
+ * never pause; minimized or hidden user windows always pause; unfocused user
+ * windows pause when pause_on_focus_loss is enabled unless run_in_background
+ * is explicitly requested. */
+bool Dkc3DesktopShouldPauseInBackground(bool hidden_test,
+                                        bool minimized_or_hidden,
+                                        bool focused,
+                                        bool pause_on_focus_loss,
+                                        bool run_in_background);
+
+/* Decides whether a background-paused window should perform a one-shot
+ * repaint of the last rendered frame (for example after expose or resize).
+ * Minimized, hidden, and fullscreen windows never repaint while paused so the
+ * host does not submit OpenGL swaps behind the compositor during Alt+Tab. */
+bool Dkc3DesktopShouldRepaintWhenPaused(bool needs_repaint,
+                                        bool minimized_or_hidden,
+                                        bool fullscreen);
+
 #endif

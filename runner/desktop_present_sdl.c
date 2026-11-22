@@ -485,6 +485,8 @@ bool Dkc3SdlPresenterPresent(Dkc3SdlPresenter *presenter,
       source_height <= 0)
     return false;
   SDL_Window *window = (SDL_Window *)presenter->window;
+  if (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED)
+    return true;
   SDL_GLContext context = (SDL_GLContext)presenter->gl_context;
   if (SDL_GL_MakeCurrent(window, context) != 0) return false;
   int output_width = 0;
@@ -599,7 +601,6 @@ bool Dkc3SdlPresenterPresent(Dkc3SdlPresenter *presenter,
     glViewport(0, 0, output_width, output_height);
     overlay_draw(overlay_user, output_width, output_height);
   }
-  glFlush();
   SDL_GL_SwapWindow(window);
   return true;
 }

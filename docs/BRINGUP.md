@@ -2206,3 +2206,80 @@ equal to the monitor; the menu item and Escape restored the bar and
   every other "Collect the Stars!" bonus level across 16:10, 16:9, and 21:9.
   Regenerating generated C from a ROM is required to pick up the override
   change in a compiled binary.
+
+## 2026-11-21 - Windows Alt+Tab CPU spike and desktop hang mitigation
+
+- **Symptom:** Alt+Tabbing away from the Windows game (`DKC3RecompSDL.exe`,
+  configured with `Fullscreen=1`, `Upscaler=2` Reconstruct, OpenGL VSync on
+  Windows 11 26200 / NVIDIA 621.24) spiked CPU and could hang the computer.
+- **Root causes found in the Windows desktop hosts:**
+  1. **No focus-loss / minimize pause or swap suppression
+     (`runner/sdl_main.c`, `runner/desktop_main.c`):** `SDL_WINDOW_FULLSCREEN_DESKTOP`
+     does not minimize on focus loss in SDL2, and neither desktop host handled
+     `SDL_WINDOWEVENT_FOCUS_LOST`, `SDL_WINDOWEVENT_MINIMIZED`, or unfocused
+     states. Even though `ReadControls` already blocked all gameplay input
+     when unfocused, the main loop kept running full emulation, full-monitor
+     21-tap Reconstruct OpenGL shaders, `glFlush()`, `SDL_GL_SwapWindow()`
+     (`wglSwapIntervalEXT(1)`), and per-second `SetWindowTextW` updates right
+     through Alt+Tab DWM / NVIDIA Direct-Flip transitions and while
+     backgrounded.
+  2. **Busy-spin inside `PaceFrame()` (`runner/sdl_main.c`) and `WaitUntil()`
+     (`runner/desktop_main.c`):** Whenever `SDL_GL_SwapWindow` returned early
+     (for example when VSync detached on focus loss/minimization, on >60 Hz
+     displays, or in hidden mode), `PaceFrame()` spun in a tight
+     `SDL_Delay(0); PumpEvents(host);` loop for the last 1–2 ms of every frame,
+     calling `WIN_PumpEvents` and `SDL_JoystickUpdate` (HID/WGI/RawInput/XInput)
+     repeatedly at 100% CPU. In `desktop_main.c`, `WaitUntil()` similarly spun
+     when `remaining < 1 ms` and never reanchored `deadline` after stalls,
+     causing an unthrottled catch-up burst after returning from Alt+Tab or
+     window drags.
+  3. **`SDL_SYSWMEVENT` queue flooding (`runner/windows_menu.c`):** Enabling
+     `SDL_EventState(SDL_SYSWMEVENT, SDL_ENABLE)` solely to observe menu
+     `WM_COMMAND` messages caused SDL2 to wrap and enqueue every raw Win32
+     message sent during Alt+Tab and DWM focus transitions.
+- **Changes:**
+  - `runner/desktop_pacer.h` / `runner/desktop_pacer.c` /
+    `tests/test_desktop_pacer.c`: added unit-tested background-pause and
+    paused-repaint policy helpers (`Dkc3DesktopShouldPauseInBackground`,
+    `Dkc3DesktopShouldRepaintWhenPaused`).
+  - `runner/sdl_main.c`:
+    - Pauses emulation, pauses/resets SDL audio (unified with overlay pause),
+      and stops OpenGL presentation while minimized/hidden or (on Windows)
+      unfocused (`DKC3_RUN_IN_BACKGROUND=1` opts out of focus-loss pause while
+      still pausing when minimized). Windowed paused instances repaint once on
+      demand for expose/resize; minimized and fullscreen unfocused windows
+      never call `SDL_GL_SwapWindow`.
+    - Sleeps in `MsgWaitForMultipleObjectsEx(0, NULL, 50, QS_ALLINPUT, ...)`
+      while background-paused on Windows (with an anti-spin guard) instead of
+      spinning or polling joysticks (`SDL_WaitEventTimeout` falls back to
+      polling when a joystick is attached), and reanchors frame deadline and
+      FPS counter on focus return.
+    - Replaced `PaceFrame()`'s `SDL_Delay(0)` busy-spin on Windows with a
+      high-resolution waitable timer (`CREATE_WAITABLE_TIMER_HIGH_RESOLUTION`)
+      waited via `MsgWaitForMultipleObjectsEx` (with an anti-spin fallback to
+      `WaitForSingleObject`), exiting `PaceFrame` immediately if focus is lost.
+  - `runner/desktop_present_sdl.c`: skips GL work immediately when
+    `SDL_WINDOW_MINIMIZED` is set and drops the redundant `glFlush()` before
+    `SDL_GL_SwapWindow()`.
+  - `runner/windows_menu.c` / `tests/test_windows_menu.c`: routes menu
+    `WM_COMMAND` from the existing `MenuProc` subclass via a dedicated
+    `SDL_RegisterEvents(1)` user event without enabling `SDL_SYSWMEVENT`
+    (keeping `SDL_SYSWMEVENT` only as a fallback if event registration fails).
+  - `runner/desktop_main.c` / `CMakeLists.txt`: applied the same background
+    pause, high-resolution waitable timer, `deadline` stall reanchoring, and
+    minimized/unfocused-fullscreen `WM_PAINT` guard to the Win32 host.
+- **Verified (Windows x64 Release, private ROM):**
+  - Clean MSVC `/W4` Release rebuild of `DKC3RecompSDL.exe`, `DKC3Recomp.exe`,
+    `test_desktop_pacer.exe`, and `test_windows_menu.exe` (0 warnings in
+    modified files).
+  - Full Windows CTest suite: 29/29 passed (including updated `desktop_pacer`,
+    `windows_menu` asserting `SDL_SYSWMEVENT == SDL_DISABLE`, and all four
+    Windows SDL aspect smoke tests).
+  - Hidden-mode CPU measurement (`DKC3_DESKTOP_TEST_HIDDEN=1`, 16:9
+    Reconstruct): before fix, 300 frames took `1.359 s` total CPU
+    (`0.953 s` user, `0.406 s` kernel in `5.475 s` wall); after fix, 360 frames
+    (20% more frames) took `0.844 s` total CPU (`0.688 s` user, `0.156 s`
+    kernel in `6.329 s` wall, `6.006 s` active runtime for 360 frames).
+- **Unverified:** Interactive live Alt+Tab in fullscreen on the user's desktop
+  (automated tests run hidden without driving the live Alt+Tab switcher) and
+  macOS rebuild.

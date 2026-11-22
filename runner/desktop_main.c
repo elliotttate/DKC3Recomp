@@ -15,6 +15,7 @@
 #include "desktop_input.h"
 #include "desktop_launcher.h"
 #include "desktop_overlay.h"
+#include "desktop_pacer.h"
 #include "desktop_paths.h"
 #include "desktop_perf.h"
 #include "desktop_present.h"
@@ -37,6 +38,10 @@
 
 #ifndef DKC3_RELEASE_VERSION
 #define DKC3_RELEASE_VERSION "dev"
+#endif
+
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
 #endif
 
 enum {
@@ -65,8 +70,10 @@ static Dkc3DesktopPresenter s_presenter;
 static Dkc3DesktopGlPresenter s_gl_presenter;
 static Dkc3DesktopOverlay *s_overlay;
 static HWND s_window;
+static HANDLE s_pace_timer;
 static bool s_running = true;
 static bool s_test_hidden;
+static bool s_run_in_background;
 static bool s_gl_active;
 static bool s_recreating_window;
 static bool s_present_failed;
@@ -235,6 +242,11 @@ static void PaintFrame(HWND window) {
   const int frame_width = Dkc3VideoWidth();
   PAINTSTRUCT paint;
   HDC dc = BeginPaint(window, &paint);
+  if (IsIconic(window) ||
+      (s_fullscreen && !s_test_hidden && GetForegroundWindow() != window)) {
+    EndPaint(window, &paint);
+    return;
+  }
   RECT client;
   GetClientRect(window, &client);
   const uint8_t *present_pixels = Dkc3DesktopColorFilterApply(
@@ -617,15 +629,61 @@ static void ShutdownAudio(void) {
   s_audio.available = false;
 }
 
-static void WaitUntil(LARGE_INTEGER deadline, LARGE_INTEGER frequency) {
-  while (s_running) {
+static bool ShouldPauseInBackground(void) {
+  if (s_test_hidden || !s_window) return false;
+  bool minimized_or_hidden =
+      IsIconic(s_window) != FALSE || IsWindowVisible(s_window) == FALSE;
+  bool focused = GetForegroundWindow() == s_window;
+  return Dkc3DesktopShouldPauseInBackground(
+      s_test_hidden, minimized_or_hidden, focused, true, s_run_in_background);
+}
+
+static HANDLE CreatePaceTimer(void) {
+  HANDLE timer = CreateWaitableTimerExW(
+      NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+  if (!timer)
+    timer = CreateWaitableTimerW(NULL, TRUE, NULL);
+  return timer;
+}
+
+static void WaitUntil(LARGE_INTEGER *deadline, double *deadline_fraction,
+                      LARGE_INTEGER frequency) {
+  int message_wakes = 0;
+  while (s_running && !ShouldPauseInBackground()) {
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
-    if (now.QuadPart >= deadline.QuadPart) return;
-    LONGLONG remaining = deadline.QuadPart - now.QuadPart;
+    if (now.QuadPart >= deadline->QuadPart) {
+      if (now.QuadPart - deadline->QuadPart > frequency.QuadPart / 500) {
+        *deadline = now;
+        *deadline_fraction = 0.0;
+      }
+      return;
+    }
+    LONGLONG remaining = deadline->QuadPart - now.QuadPart;
+    if (s_pace_timer) {
+      LONGLONG hns = (remaining * 10000000LL) / frequency.QuadPart;
+      if (hns < 1000) hns = 1000;
+      LARGE_INTEGER due;
+      due.QuadPart = -hns;
+      if (SetWaitableTimer(s_pace_timer, &due, 0, NULL, NULL, FALSE)) {
+        DWORD timeout_ms =
+            (DWORD)((remaining * 1000LL) / frequency.QuadPart) + 5u;
+        if (message_wakes < 4) {
+          DWORD waited = MsgWaitForMultipleObjectsEx(
+              1, &s_pace_timer, timeout_ms, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+          if (waited == WAIT_OBJECT_0 + 1) message_wakes++;
+          else message_wakes = 0;
+        } else {
+          (void)WaitForSingleObject(s_pace_timer, timeout_ms);
+          message_wakes = 0;
+        }
+        if (!PumpMessages()) return;
+        continue;
+      }
+    }
     DWORD milliseconds =
         (DWORD)((remaining * 1000) / frequency.QuadPart);
-    if (milliseconds > 1) milliseconds--;
+    if (milliseconds == 0) milliseconds = 1;
     (void)MsgWaitForMultipleObjectsEx(0, NULL, milliseconds, QS_ALLINPUT,
                                       MWMO_INPUTAVAILABLE);
     if (!PumpMessages()) return;
@@ -736,6 +794,7 @@ static int RunDesktop(const char *rom_path,
     }
   }
   s_test_hidden = EnvironmentEnabled("DKC3_DESKTOP_TEST_HIDDEN");
+  s_run_in_background = EnvironmentEnabled("DKC3_RUN_IN_BACKGROUND");
   bool test_rewind_requested =
       EnvironmentEnabled("DKC3_DESKTOP_TEST_REWIND");
   bool test_fast_forward_requested =
@@ -882,6 +941,7 @@ static int RunDesktop(const char *rom_path,
       presentation_backend,
       Dkc3DesktopScreenFilterName(s_screen_filter), s_audio.available);
   (void)timeBeginPeriod(1);
+  s_pace_timer = CreatePaceTimer();
 
   LARGE_INTEGER frequency;
   LARGE_INTEGER deadline;
@@ -908,7 +968,9 @@ static int RunDesktop(const char *rom_path,
   bool runtime_failure = false;
   DesktopSpeedMode previous_mode = kDesktopSpeedNormal;
   uint32_t previous_state_actions = 0;
-  bool previous_overlay_open = false;
+  bool previous_audio_paused = false;
+  bool previous_background_paused = false;
+  int background_message_wakes = 0;
   Dkc3InputRecorder input_recorder = {0};
   char input_recording_error[512] = {0};
   const char *input_recording_path = getenv("SNESRECOMP_INPUT_REC");
@@ -988,12 +1050,36 @@ static int RunDesktop(const char *rom_path,
       controls.host_actions |= kDkc3HostLoadState;
     ApplyOverlaySettings(settings);
     bool overlay_open = Dkc3DesktopOverlayIsOpen(s_overlay);
-    if (overlay_open != previous_overlay_open) {
+    bool background_paused = ShouldPauseInBackground();
+    bool audio_should_pause = overlay_open || background_paused;
+    if (audio_should_pause != previous_audio_paused) {
       ResetAudioQueue();
       audio_fraction = 0.0;
       QueryPerformanceCounter(&deadline);
       deadline_fraction = 0.0;
-      previous_overlay_open = overlay_open;
+      previous_audio_paused = audio_should_pause;
+    }
+    if (background_paused != previous_background_paused) {
+      background_message_wakes = 0;
+      if (!background_paused) {
+        QueryPerformanceCounter(&deadline);
+        deadline_fraction = 0.0;
+        audio_fraction = 0.0;
+        Dkc3DesktopFpsInit(&fps_counter, (uint64_t)deadline.QuadPart);
+      }
+      previous_background_paused = background_paused;
+    }
+    if (background_paused) {
+      if (background_message_wakes >= 4) {
+        background_message_wakes = 0;
+        Sleep(16);
+      } else {
+        DWORD waited = MsgWaitForMultipleObjectsEx(
+            0, NULL, 50, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        if (waited == WAIT_OBJECT_0) background_message_wakes++;
+        else background_message_wakes = 0;
+      }
+      continue;
     }
     bool assist_tools = Dkc3DesktopOverlayAssistTools(s_overlay);
     if (!assist_tools)
@@ -1210,7 +1296,7 @@ static int RunDesktop(const char *rom_path,
       LONGLONG whole_ticks = (LONGLONG)deadline_fraction;
       deadline_fraction -= (double)whole_ticks;
       deadline.QuadPart += whole_ticks;
-      WaitUntil(deadline, frequency);
+      WaitUntil(&deadline, &deadline_fraction, frequency);
     } else {
       /* Fill a small exact-rate audio queue before starting the wall-clock.
        * This prevents normal scheduler jitter from becoming audible gaps. */
@@ -1271,6 +1357,10 @@ static int RunDesktop(const char *rom_path,
                                                      : "runtime_failure");
   ShutdownAudio();
   SetPerformanceLogging(false);
+  if (s_pace_timer) {
+    CloseHandle(s_pace_timer);
+    s_pace_timer = NULL;
+  }
   (void)timeEndPeriod(1);
   Dkc3DesktopOverlayDestroy(s_overlay);
   s_overlay = NULL;

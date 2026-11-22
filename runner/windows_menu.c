@@ -15,6 +15,7 @@ typedef struct MenuItem {
 struct Dkc3WindowsMenu {
   HWND window;
   HMENU bar;
+  Uint32 command_event;
   Dkc3MenuState previous;
   bool has_previous;
   HBRUSH background;
@@ -108,6 +109,19 @@ static LRESULT CALLBACK MenuProc(HWND window, UINT message, WPARAM wparam,
       RestoreDC(draw->hDC, saved);
       return TRUE;
     }
+  } else if (message == WM_COMMAND && lparam == 0 && HIWORD(wparam) == 0 &&
+             menu->command_event != (Uint32)-1) {
+    unsigned command_id = LOWORD(wparam);
+    if (menu->bar &&
+        GetMenuState(menu->bar, command_id, MF_BYCOMMAND) != (UINT)-1) {
+      SDL_Event event;
+      SDL_zero(event);
+      event.type = menu->command_event;
+      event.user.code = (Sint32)command_id;
+      event.user.data1 = menu;
+      (void)SDL_PushEvent(&event);
+      return 0;
+    }
   } else if (message == WM_MENUCHAR) {
     HMENU popup = (HMENU)lparam;
     for (int i = 0; i < GetMenuItemCount(popup); ++i) {
@@ -173,6 +187,7 @@ Dkc3WindowsMenu *Dkc3WindowsMenuCreate(void *sdl_window) {
   Dkc3WindowsMenu *menu = calloc(1, sizeof *menu);
   if (!menu) return NULL;
   menu->window = info.info.win.window;
+  menu->command_event = SDL_RegisterEvents(1);
   menu->background = CreateSolidBrush(background_color);
   NONCLIENTMETRICSW metrics = {sizeof metrics};
   if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof metrics, &metrics, 0))
@@ -232,7 +247,8 @@ Dkc3WindowsMenu *Dkc3WindowsMenuCreate(void *sdl_window) {
   DrawMenuBar(menu->window);
   if (!fullscreen && client_width > 0 && client_height > 0)
     SDL_SetWindowSize((SDL_Window *)sdl_window, client_width, client_height);
-  SDL_EventState(SDL_SYSWMEVENT, SDL_ENABLE);
+  if (menu->command_event == (Uint32)-1)
+    SDL_EventState(SDL_SYSWMEVENT, SDL_ENABLE);
   return menu;
 }
 
@@ -263,8 +279,15 @@ void Dkc3WindowsMenuDestroy(Dkc3WindowsMenu *menu) {
 
 unsigned Dkc3WindowsMenuEvent(Dkc3WindowsMenu *menu, const void *sdl_event) {
   const SDL_Event *event = sdl_event;
-  if (!menu || !event || event->type != SDL_SYSWMEVENT ||
-      !event->syswm.msg || event->syswm.msg->subsystem != SDL_SYSWM_WINDOWS)
+  if (!menu || !event) return 0;
+  if (menu->command_event != (Uint32)-1 &&
+      event->type == menu->command_event &&
+      event->user.data1 == menu && event->user.code > 0) {
+    unsigned id = (unsigned)event->user.code;
+    return GetMenuState(menu->bar, id, MF_BYCOMMAND) != (UINT)-1 ? id : 0;
+  }
+  if (event->type != SDL_SYSWMEVENT || !event->syswm.msg ||
+      event->syswm.msg->subsystem != SDL_SYSWM_WINDOWS)
     return 0;
   const SDL_SysWMmsg *msg = event->syswm.msg;
   if (msg->msg.win.hwnd != menu->window || msg->msg.win.msg != WM_COMMAND ||

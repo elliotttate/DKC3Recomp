@@ -1991,3 +1991,80 @@ equal to the monitor; the menu item and Escape restored the bar and
   (`test_dkc3_video`), macOS rebuild, and full-game traversal across 16:10,
   16:9, and 21:9. Regenerating `generated/snesrecomp/` from a ROM is
   required to pick up the updated generated-code wrappers.
+
+## 2026-11-21 - Pot Hole Panic / Tyrant Twin Tussle black screen, crash, and save corruption
+
+- **Symptom:** in Pot Hole Panic (level `$0045`) and Tyrant Twin Tussle
+  (level `$004B`), the window turned black (`INIDISP=$8F`), the game
+  eventually crashed with an off-rails runtime failure, and closing the
+  window during the black-screen hang could corrupt `saves/save.srm`.
+- **Root cause:** both levels contain the only two `PLA; JMP $F27D`
+  non-local child-sprite despawn sites in bank `$B6` (`CODE_B6B22E` at
+  `$B6:B234` in Pot Hole Panic and `CODE_B69D33` at `$B6:9D3F` in Tyrant
+  Twin Tussle). When a parent sprite despawns before its child sprite,
+  the interpreted sprite handler (`$B6:B228` / `$B6:9D19`) executes a
+  `JSR` that call-bounces into the compiled helper with `entry_s = $01FA,
+  hrv = 2`. The helper executes `PLA` (discarding its own 2-byte `JSR`
+  return frame so `cpu->S = $01FC > entry_s`), tail-calls `$B6:F27D`
+  (deleting the sprite via `$BB:8591`), and executes `$B6:F281: JML [$04F5]`
+  (sprite-loop continuation), which enters `interp_tier_dispatch_balanced`
+  with `cpu->S` already strictly shallower than `entry_s`.
+  - Previously, `interp_tier_dispatch_balanced` started a nested
+    `interp_bridge_run_ex2` anchored at the stale `s_exit = entry_s`
+    (`$01FA`). When the child was the highest active sprite slot (as
+    reproduced deterministically at host frame 759 / `snes_frame_counter=57800`
+    in 16:9 Pot Hole Panic with `SNESRECOMP_LLE_JUMP_BOUNCE=1` or `0`),
+    the nested run finished the sprite loop and executed `$BB:B9AF: RTL`,
+    popping the outer interpreter's `JSL $BB:85BB` frame (`$01FC -> $01FF`),
+    exited with `ok = 1`, got `cpu_resolve_post_return_skip($01FF) == -1`
+    (outer caller was the interpreter, not compiled `g_recomp_stack`), and
+    returned `RECOMP_RETURN_NORMAL`. The owning interpreter then resumed at
+    `$B6:B22A` with empty stack `S = $01FF`, executed `$BB:B9AF: RTL` a
+    second time, popped garbage `$A0:78C3` from `$0200..$0202`, ran
+    off-rails inside the HiROM SRAM window (`$A0:6000-$7FFF`) and WRAM
+    with `INIDISP=$8F` for ~388 frames (`frame 800..1187`), and finally
+    tripped `off-rails runtime failure at host frame 1188 resume=$8034b3`
+    (`rc=6`). Closing the black window before `g_fail` triggered caused
+    shutdown to persist the corrupted `g_sram` buffer to `saves/save.srm`.
+  - Even when a higher active sprite slot existed (observed on slot 7 with
+    slot 8 active), `$BB:B8EB`'s `PHA; PHA; RTL` trampoline for slot 8
+    landed at `in.sp = $01FC > s_exit ($01FA)`, causing the nested run to
+    exit prematurely, silently skipping slot 8 and resuming `$B6:B22A` on
+    the deleted sprite.
+- **Change (`cmake/runtime-patches/interp_bridge.hunks`):**
+  - In `interp_tier_dispatch_balanced` (`@@ balanced-goto-unwind-to-owner`),
+    when `cpu->S` is already strictly shallower than `entry_s`
+    (`pre_s_delta != 0 && pre_s_delta < 0x8000u`), unwind straight back to
+    the owning interpreter at `target_pc24 & 0xFFFFFFu` with live `cpu->S`
+    via `interp_bridge_lle_yield_unwind` whenever
+    `s_interp_bounce_owner_depth > 0`, `!cpu_interrupt_context_active()`,
+    and `cpu->S` has not crossed above `s_interp_owner_exit_s`.
+  - When falling through to `interp_bridge_run_ex2` (`@@ arrival-bounce-balanced-hrv`)
+    with `cpu->S` already shallower than `entry_s` (e.g., no owning
+    interpreter or `S` crossed above a nested interpreter's exit watermark),
+    anchor the nested run at `run_s_exit = cpu->S` with `s_run_hrv = 0`
+    rather than the stale `entry_s`.
+  - Added defense in depth in `interp_tier_dispatch_balanced`'s epilogue
+    (`@@ balanced-overpop-unwind-to-owner`): capture `post_return_pc` via
+    `interp_bridge_run_ex2` and, if a nested run returns `ok` with `cpu->S`
+    strictly above `expected_post_s` and no compiled ancestor matches
+    (`cpu_resolve_post_return_skip <= 0`), unwind to the owning interpreter
+    at `post_return_pc` instead of returning `RECOMP_RETURN_NORMAL`.
+  - Added ROM-free unit test `test_balanced_dispatch_unwinds_nonlocal_stack_pops`
+    in `tests/test_apply_dkc3_runtime_patches.py`.
+- **Verified (Windows x64 Release, private ROM):**
+  - ROM-free Python tests on this branch: `python -m unittest discover -s tests` (23/23).
+  - Full Windows Release build and 28/28 CTest suite (including
+    `supplied_rom_headless_boot` and all four Windows SDL aspect smoke
+    tests: 4:3, 16:10, 16:9, 21:9), plus Pot Hole Panic (2,000 frames,
+    all four aspects, `DKC3_CULL_WIDEN=0`, `SNESRECOMP_LLE_JUMP_BOUNCE=0`,
+    and `[ibr]` trace confirming clean `yield-unwind -> $B6F281 sp=$01FC`
+    on both crash and slot-skip cases), Tyrant Twin Tussle (2,000 frames
+    across all four aspects), and 600-frame boot runs (`4:3`, `16:9`) all
+    exited `rc=0` with `inidisp=$0f`.
+- **Unverified:** clean rebuild of `build-windows` directly on this
+  branch without the sibling widescreen-lead changes, live triggering of
+  the `$B6:9D3F` despawn branch inside Tyrant Twin Tussle (proven
+  statically to execute the identical `PLA; JMP $F27D -> $B6:F281`
+  sequence as `$B6:B234`), full playthrough of both stages to the
+  flagpole, and macOS rebuild.

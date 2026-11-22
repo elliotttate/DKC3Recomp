@@ -566,3 +566,79 @@ RecompReturn interp_tier_dispatch_balanced(CpuState *cpu, uint32_t target_pc24,
                     if (s_apu_pending_master >= 4096) bridge_apu_flush(cpu);
                 }
 >>>>
+
+# A nested non-quiescent interpreter run (such as interp_tier_dispatch_balanced
+# called from a compiled routine bounced out of the top-level auto-quiescent
+# scheduler) previously ignored s_lle_master_deadline. If the nested run spun
+# on an APU handshake ($B2:8262 CPX $2140; BNE $8262 during boss-victory music
+# transitions in CODE_B8F39B -> CODE_B8F5B9 -> CODE_B2800F) past the end of the
+# frame, rtl_apu_guest_cycle() clamped at RTL_MASTER_CYCLES_PER_FRAME - 1,
+# freezing the SPC until the nested run hit the step cap and abandoned the
+# routine with x_flag=1 and DB=$B2. Unwind nested runs to the owning
+# auto-quiescent scheduler frame when the master deadline is reached so the
+# frame yields cleanly and the next frame resumes with exact guest state.
+@@ nested-deadline-owner-static
+<<<<
+static int      s_lle_sched_depth   = 0;
+static int      s_lle_unwind_active = 0;
+====
+static int      s_lle_sched_depth   = 0;
+static int      s_lle_sched_owner_depth = 0;
+static int      s_lle_unwind_active = 0;
+>>>>
+
+@@ nested-deadline-owner-depth
+<<<<
+    s_interp_bridge_depth++;
+    int _r = _interp_run_core(cpu, entry_pc24, s_exit, out_landing,
+                              out_return_pc, yield_pc,
+                              yield_flag_addr, yield_flag_value,
+                              reset_cap_on_bounce, stop_pcs, n_stop,
+                              stop_on_rti);
+    s_interp_bridge_depth--;
+====
+    const int _saved_sched_owner_depth = s_lle_sched_owner_depth;
+    s_interp_bridge_depth++;
+    if (yield_pc == 0xFFFFFFFEu)
+        s_lle_sched_owner_depth = s_interp_bridge_depth;
+    int _r = _interp_run_core(cpu, entry_pc24, s_exit, out_landing,
+                              out_return_pc, yield_pc,
+                              yield_flag_addr, yield_flag_value,
+                              reset_cap_on_bounce, stop_pcs, n_stop,
+                              stop_on_rti);
+    s_interp_bridge_depth--;
+    s_lle_sched_owner_depth = _saved_sched_owner_depth;
+>>>>
+
+@@ nested-deadline-unwind
+<<<<
+        if (auto_quiescent && s_lle_master_deadline &&
+            cpu->master_cycles >= s_lle_master_deadline) {
+            s_lle_resume_pc24=pc_before;
+            sync_interp_to_cpu(&in,cpu);
+            bridge_apu_flush(cpu);
+            return 1;
+        }
+====
+        if (s_lle_master_deadline &&
+            cpu->master_cycles >= s_lle_master_deadline) {
+            if (auto_quiescent) {
+                s_lle_resume_pc24=pc_before;
+                sync_interp_to_cpu(&in,cpu);
+                bridge_apu_flush(cpu);
+                return 1;
+            }
+            if (!stop_on_rti && s_lle_sched_depth > 0 &&
+                s_lle_sched_owner_depth > 0 &&
+                s_lle_sched_owner_depth < s_interp_bridge_depth &&
+                !cpu_interrupt_context_active()) {
+                sync_interp_to_cpu(&in, cpu);
+                bridge_apu_flush(cpu);
+                cpu_take_tailcall_return_context(NULL, NULL);
+                s_lle_unwind_active = 1;
+                s_lle_unwind_pc24 = pc_before & 0xFFFFFFu;
+                s_lle_unwind_owner_depth = s_lle_sched_owner_depth;
+                return 1;
+            }
+        }
+>>>>

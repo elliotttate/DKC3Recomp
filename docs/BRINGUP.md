@@ -2422,3 +2422,66 @@ equal to the monitor; the menu item and Escape restored the bar and
     guest-state hashes (`frame`, `wram`, `vram`, `cgram`, `oam`) unchanged.
   - Live interactive Windows desktop audio playback verified by the user.
 - **Unverified:** macOS rebuild.
+
+## 2026-11-22 - Fix black screen and crash after beating the first boss and collecting the token
+
+- **Symptom:** After beating the first boss (Belcha's Barn) and collecting the
+  token, the screen went black for ~63 frames and the runtime stopped with
+  `FATAL: native runtime stopped unexpectedly` at frame 4633
+  (`resume_pc = $80ffc0`; diagnostic bundle
+  `diagnostic_bundle_20261122_143241_11584`).
+- **Root cause:**
+  1. The diagnostic bundle's `dispatch_log` ended abruptly at frame 4569 with
+     the boss-victory sequence: `CODE_B898AB` -> `CODE_B89C4C` ->
+     `CODE_B8F39B` (unresolved indirect jump at `$B8:F3C0` via
+     `interp_tier_dispatch_balanced`) -> `CODE_B8F5B9` -> `CODE_B2800F`
+     (music transition) -> three consecutive calls to
+     `upload_spc_engine_write_spc_command_a` (`$B2:825E`), ending at
+     `$B2:825D` (`i=237044`) and `$B2:825E` (`i=237045`), followed by 0
+     compiled dispatches across frames 4570–4632.
+  2. Inside `interp_tier_dispatch_balanced` (a nested `interp_bridge_run_ex2`
+     run with `auto_quiescent == 0`, `yield_pc == 0`), `_interp_run_core()`
+     only checked `s_lle_master_deadline` when `auto_quiescent` was true.
+     When `upload_spc_engine_write_spc_command_a` (`$B2:825E`: `SEP #$10;
+     LDX $06; CPX $2140; BNE $8262; ...; REP #$10; RTS`) spun waiting for the
+     SPC700 past the end of frame 4569 (`RTL_MASTER_CYCLES_PER_FRAME`), the
+     nested interpreter did not yield the frame.
+  3. With `bridge_apu_flush()` deferred to `RtlRunFrame()`'s absolute guest
+     timeline (`0152975`), `rtl_apu_guest_cycle()` clamped `within` at
+     `RTL_MASTER_CYCLES_PER_FRAME - 1` while `snes_frame_counter` stayed
+     frozen at 4569. The SPC never advanced further, so `$B2:8262` spun to the
+     interpreter step cap and returned `ok = 0`.
+  4. `interp_tier_dispatch_balanced()` then fell back to
+     `cpu_unresolved_abandon_balanced()`, abandoning the routine mid-handshake
+     with `x_flag = 1` (8-bit index registers from `SEP #$10` at `$B2:825E`,
+     before `REP #$10` at `$B2:8270`) and `DB = $B2`. With `x_flag = 1`, no
+     `M0X0` compiled entries matched on frames 4570–4632, the game corrupted
+     into a black screen, and 63 frames later went off-rails to `$80:FFC0`.
+- **Changes:**
+  - `cmake/runtime-patches/interp_bridge.hunks`: added
+    `@@ nested-deadline-owner-static`, `@@ nested-deadline-owner-depth`, and
+    `@@ nested-deadline-unwind` so `interp_bridge_run_ex2()` records the
+    bridge depth of the enclosing auto-quiescent scheduler frame
+    (`s_lle_sched_owner_depth`), and any nested non-interrupt interpreter run
+    that reaches `s_lle_master_deadline` cleanly unwinds to that scheduler
+    frame at `pc_before` via the existing `s_lle_unwind_active` mechanism. The
+    top-level scheduler frame then yields the frame cleanly, `RtlRunFrame()`
+    advances the SPC across the frame boundary, and the next frame resumes at
+    `pc_before` with exact guest registers and stack.
+  - `tests/test_apply_dkc3_runtime_patches.py`: added
+    `test_nested_interp_unwinds_to_scheduler_on_master_deadline`.
+- **Verified (Windows x64 Release, private ROM):**
+  - Reconfigured and rebuilt `dkc3_snesrecomp_headless.exe`,
+    `DKC3RecompSDL.exe`, and `DKC3Recomp.exe` cleanly.
+  - Python unit tests (`python -m unittest discover -s tests`): 26/26 passed.
+  - Full Windows Release CTest suite: 29/29 passed (including
+    `supplied_rom_headless_boot`, `dkc3_runtime_patches`, and all four Windows
+    SDL aspect smoke tests).
+  - 600-frame SDL hidden boot (`SNESRECOMP_AUDIO_STATS=1`): `dropped=0`,
+    `dropped_audible=0`, `drop_runs=0`, `underflows=0`, `hiwater=2201`.
+  - 600-frame headless replay on `saves/dkc3s0.sav` and 300-frame headless
+    replay on `build-windows/Release/saves/dkc3s0.sav`: both completed cleanly
+    with 0 APU timeouts.
+  - Live interactive Windows desktop verification by the user beating the first
+    boss (Belcha's Barn) and collecting the token with no black screen or crash.
+- **Unverified:** macOS rebuild.

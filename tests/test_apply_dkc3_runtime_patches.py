@@ -171,6 +171,15 @@ class RuntimePatches(unittest.TestCase):
         self.assertIn("if (g_snes && g_snes->apu && !g_snes->apu->portTimeValid) {", rtl)
         self.assertEqual(rtl.count("apu_clearPortQueue(g_snes->apu);"), 3)
 
+    def test_nested_interp_unwinds_to_scheduler_on_master_deadline(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            out = pathlib.Path(temporary)
+            patches.apply_directory(PATCHES, SNESRECOMP, out)
+            bridge = (out / "interp_bridge.c").read_text()
+        self.assertIn("static int      s_lle_sched_owner_depth = 0;", bridge)
+        self.assertIn("if (yield_pc == 0xFFFFFFFEu)\n        s_lle_sched_owner_depth = s_interp_bridge_depth;", bridge)
+        self.assertIn("s_lle_unwind_owner_depth = s_lle_sched_owner_depth;", bridge)
+
     def _apply_edited(self, edit):
         """Apply the patch set to a copy of the pinned runtime after `edit`."""
         with tempfile.TemporaryDirectory() as temporary:

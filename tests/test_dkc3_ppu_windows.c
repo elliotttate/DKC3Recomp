@@ -73,6 +73,8 @@ static int test_bg3_window_oracle(Ppu *ppu) {
       {255, 0, 255, 0},    /* Poisonous Pipeline deep underwater (both empty) */
       {0, 255, 255, 0},    /* full-screen W1, empty W2 */
       {176, 255, 0, 40},   /* edge-pinned windows */
+      {4, 211, 255, 255},  /* Barrel Shield Bust-Up: parked right W2 */
+      {0, 0, 105, 255},    /* Barrel Shield Bust-Up: parked left W1 */
   };
   unsigned cases = 0;
   for (size_t p = 0; p < sizeof(kPairs) / sizeof(kPairs[0]); p++) {
@@ -332,6 +334,53 @@ static int run_widescreen_bias_case(Ppu *ppu, const char *name, int extra,
   return 0;
 }
 
+static int run_widescreen_masked_case(Ppu *ppu, const char *name, int extra,
+                                      int bias, uint8_t w34sel, uint8_t wbglog,
+                                      uint8_t w1l, uint8_t w1r,
+                                      uint8_t w2l, uint8_t w2r,
+                                      int expect_mask_lo, int expect_mask_hi) {
+  const int width = 256 + 2 * extra;
+  uint32_t pixels[kPpuBufWidth];
+  init_bg3_scene(ppu, pixels, width, true);
+  PpuSetExtraSpace(ppu, (uint8_t)extra);
+  PpuSetWidescreenLayerMask(ppu, 0x05);
+  PpuSetWidescreenBg3Widen(ppu, 1);
+  PpuSetWidescreenPresentationXBias(ppu, bias);
+  ppu_write(ppu, 0x24, w34sel);
+  ppu_write(ppu, 0x26, w1l);
+  ppu_write(ppu, 0x27, w1r);
+  ppu_write(ppu, 0x28, w2l);
+  ppu_write(ppu, 0x29, w2r);
+  ppu_write(ppu, 0x2a, wbglog);
+  ppu_runLine(ppu, 0);
+  ppu_runLine(ppu, 1);
+
+  uint32_t ref[256];
+  init_bg3_scene(ppu, ref, 256, true);
+  ppu_write(ppu, 0x24, 0x02);
+  ppu_write(ppu, 0x26, 0);
+  ppu_write(ppu, 0x27, 127);
+  ppu_runLine(ppu, 0);
+  ppu_runLine(ppu, 1);
+  const uint32_t bg1_color = ref[0];
+  const uint32_t bg3_color = ref[200];
+
+  for (int i = 0; i < width; i++) {
+    int screen_x = i - extra;
+    bool expect_masked =
+        (expect_mask_lo <= expect_mask_hi) &&
+        (screen_x >= expect_mask_lo && screen_x <= expect_mask_hi);
+    uint32_t expect = expect_masked ? bg1_color : bg3_color;
+    if (pixels[i] != expect) {
+      fprintf(stderr,
+              "FAIL widescreen masked case '%s' screen_x=%d got=%08x expect=%08x\n",
+              name, screen_x, pixels[i], expect);
+      return 1;
+    }
+  }
+  return 0;
+}
+
 static int test_widescreen_presentation_bias(Ppu *ppu) {
   /* 16:9 extra = 43, visible screen_x in [-43, 298]. */
   if (run_widescreen_bias_case(ppu, "west-wall-shaft", 43, +36,
@@ -355,7 +404,21 @@ static int test_widescreen_presentation_bias(Ppu *ppu) {
   if (run_widescreen_bias_case(ppu, "left-pinned-partial", 43, +36,
                                0x0a, 0x30, 0, 128, 255, 0, -43, 92))
     return 1;
-  printf("Widescreen presentation-X-bias windows: 7 cases passed\n");
+  /* Barrel Shield Bust-Up: 1-pixel edge-parked sentinels ([0,0], [255,255])
+   * must not expand across widescreen margins or leave a 1px seam. */
+  if (run_widescreen_masked_case(ppu, "parked-w2-right-zero-bias", 43, 0,
+                                 0x0a, 0x00, 4, 211, 255, 255, 4, 211))
+    return 1;
+  if (run_widescreen_masked_case(ppu, "parked-w2-right-pos-bias", 43, +33,
+                                 0x0a, 0x00, 4, 211, 255, 255, -29, 178))
+    return 1;
+  if (run_widescreen_masked_case(ppu, "parked-w1-left-zero-bias", 43, 0,
+                                 0x0a, 0x00, 0, 0, 105, 255, 105, 298))
+    return 1;
+  if (run_widescreen_masked_case(ppu, "parked-w1-left-neg-bias", 43, -31,
+                                 0x0a, 0x00, 0, 0, 105, 255, 136, 298))
+    return 1;
+  printf("Widescreen presentation-X-bias windows: 11 cases passed\n");
   return 0;
 }
 

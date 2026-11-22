@@ -18,8 +18,13 @@ file: runner/src/snes/ppu.c
 # Widescreen presentation X bias shifts BGs and sprites left by
 # wsPresentationXBias pixels near level walls so the native 256px window stays
 # aligned with authored terrain. Shift non-pinned edges of non-empty hardware
-# windows by the same offset, clamped to the layer's presented span. No-op
-# when wsPresentationXBias is zero (all authentic 4:3 frames).
+# windows by the same offset, clamped to the layer's presented span.
+# Also treat 1-pixel edge-parked sentinel windows ([0, 0] and [255, 255], used
+# by DKC3's hollow tree-trunk levels such as Barrel Shield Bust-Up to park an
+# off-screen trunk mask) as empty when widescreen margins are active, so
+# PpuWidescreenAdjustPinnedWindowEdges does not expand a parked sentinel across
+# an entire side margin. No-op at native 4:3 (win->edges[0] == 0,
+# window_right == 256, wsPresentationXBias == 0).
 @@ window-presentation-bias
 <<<<
   PpuWidescreenAdjustPinnedWindowEdges(win->edges[0], window_right, &w1l,
@@ -28,14 +33,32 @@ file: runner/src/snes/ppu.c
 ====
   PpuWidescreenAdjustPinnedWindowEdges(win->edges[0], window_right, &w1l,
                                        &w1r, &w2l, &w2r);
+  const bool w1_parked =
+      (ppu->window1left == 0 && ppu->window1right == 0) ||
+      (ppu->window1left == kPpuXPixels - 1 &&
+       ppu->window1right == kPpuXPixels - 1);
+  const bool w2_parked =
+      (ppu->window2left == 0 && ppu->window2right == 0) ||
+      (ppu->window2left == kPpuXPixels - 1 &&
+       ppu->window2right == kPpuXPixels - 1);
+  if (win->edges[0] < 0 || window_right > kPpuXPixels) {
+    if (w1_parked) {
+      w1l = 1;
+      w1r = 0;
+    }
+    if (w2_parked) {
+      w2l = 1;
+      w2r = 0;
+    }
+  }
   if (ppu->wsPresentationXBias != 0) {
-    if (ppu->window1left <= ppu->window1right) {
+    if (!w1_parked && ppu->window1left <= ppu->window1right) {
       if (ppu->window1left > 0)
         w1l = IntMax(w1l - ppu->wsPresentationXBias, win->edges[0]);
       if (ppu->window1right < kPpuXPixels - 1)
         w1r = IntMin(w1r - ppu->wsPresentationXBias, window_right - 1);
     }
-    if (ppu->window2left <= ppu->window2right) {
+    if (!w2_parked && ppu->window2left <= ppu->window2right) {
       if (ppu->window2left > 0)
         w2l = IntMax(w2l - ppu->wsPresentationXBias, win->edges[0]);
       if (ppu->window2right < kPpuXPixels - 1)

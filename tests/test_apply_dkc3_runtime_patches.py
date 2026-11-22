@@ -82,6 +82,8 @@ class RuntimePatches(unittest.TestCase):
             patches.apply_directory(PATCHES, SNESRECOMP, out)
             ppu = (out / "ppu.c").read_text()
         self.assertIn("switch ((ppu->wbgobjlog >> (layer * 2)) & 3u)", ppu)
+        self.assertIn("const bool w1_parked =", ppu)
+        self.assertIn("const bool w2_parked =", ppu)
         self.assertIn("if (ppu->wsPresentationXBias != 0)", ppu)
         self.assertNotIn("  win->bits = w1_bits | w2_bits;\n  debug_server_on_ppu_window", ppu)
 

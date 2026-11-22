@@ -2538,3 +2538,62 @@ equal to the monitor; the menu item and Escape restored the bar and
       (`$B2:8751`, `$06AB=$0000`).
   - Live interactive Windows desktop playtest verified by the user.
 - **Unverified:** macOS rebuild.
+
+## 2026-11-22 - Barrel Shield Bust-Up (`$0030`) — black side background from edge-parked PPU windows
+
+- **Symptom:** In Barrel Shield Bust-Up (World 2 Level 1, `$0030`, map shape 4),
+  the forest background (`BG2`/`BG3`) was blacked out on the right side in
+  widescreen (16:10, 16:9, 21:9) at the level start, and on the left side once
+  scrolling into the second hollow tree trunk.
+- **Root cause:** Barrel Shield Bust-Up uses both SNES hardware windows (`W1`
+  and `W2`, `windowsel=$00a00aa0`, `wbgobjlog=$0000` OR, `main_window=$06`
+  masking 32-column `BG2` and `BG3` plus Color Window) to hide the forest
+  background behind the transparent arch corners of up to two hollow tree
+  trunks. When a trunk is off-screen, the cartridge clamps both of its 8-bit
+  window edges to the screen boundary, parking the unused window at the
+  1-pixel degenerate sentinel `[255, 255]` (off the right) or `[0, 0]` (off
+  the left). In widescreen:
+  1. `PpuWidescreenAdjustPinnedWindowEdges()` (`snesrecomp/runner/src/snes/ppu.h`)
+     checked `*wNl == 0` and `*wNr == 255` independently, expanding `[255, 255]`
+     to `[255, window_right - 1]` and `[0, 0]` to `[screen_left, 0]`, turning
+     the 1-pixel parked sentinel into a full-margin black bar.
+  2. `@@ window-presentation-bias` (`cmake/runtime-patches/ppu.hunks`) then
+     shifted the unpinned endpoint by `-wsPresentationXBias` (e.g. `bias=+33`
+     at the start shifted `w2l` to `222`, masking `[222, 298]` in 16:9 and
+     `[222, 350]` in 21:9; `bias=-31` at the second trunk shifted `w1r` to
+     `+31`, masking `[-43, 31]`), extending the black bar into the native
+     viewport.
+- **Changes:**
+  - `cmake/runtime-patches/ppu.hunks` (`@@ window-presentation-bias`): when
+    widescreen margins are active (`win->edges[0] < 0 || window_right > 256`),
+    treat 1-pixel edge-parked sentinels (`[0, 0]` and `[255, 255]`) as empty
+    (`wl = 1, wr = 0`) and skip presentation-bias shifting for them. Exact
+    no-op at native 4:3 (`win->edges[0] == 0`, `window_right == 256`,
+    `wsPresentationXBias == 0`).
+  - `tests/test_dkc3_ppu_windows.c`: added `{4, 211, 255, 255}` and
+    `{0, 0, 105, 255}` to the 4:3 `ppu_legacy.c` oracle (now 288 BG3 cases)
+    and added 4 widescreen masked-window cases covering `[255, 255]` and
+    `[0, 0]` at zero, positive, and negative presentation bias (11 widescreen
+    window cases total).
+  - `tests/test_apply_dkc3_runtime_patches.py`: asserted `w1_parked` /
+    `w2_parked` in `test_ppu_windows_honors_combine_logic_and_presentation_bias`.
+- **Verified (Windows x64 Release, private ROM):**
+  - Reconfigured and rebuilt `dkc3_snesrecomp_headless.exe`,
+    `DKC3RecompSDL.exe`, `DKC3Recomp.exe`, and `test_dkc3_ppu_windows.exe`
+    cleanly.
+  - Python unit tests (`python -m unittest discover -s tests`): 26/26 passed.
+  - Full Windows Release CTest suite: 30/30 passed (including `dkc3_ppu_windows`
+    with 288 BG3 oracle + 24 OBJ/Color Window oracle + 11 widescreen
+    presentation-X-bias/parked-window cases, `dkc3_runtime_patches`,
+    `supplied_rom_headless_boot`, and all four Windows SDL aspect smoke tests).
+  - Barrel Shield Bust-Up (`$0030`) headless replay from the start savestate
+    through the first branch into the second tree trunk:
+    - 4:3 fast PPU vs `DKC3_PPU_LEGACY=1` at frame 5 (`w1=[4,211], w2=[255,255]`)
+      and frame 230 (`w1=[0,0], w2=[20,227]`): byte-identical (`0` diffs).
+    - 16:10, 16:9, and 21:9 visual inspection at frames 5, 100, 145, and 230:
+      continuous forest canopy on both sides with zero right- or left-side
+      black bars and zero 1-pixel vertical seams, while active hollow trunk
+      masks stay aligned.
+  - Live interactive Windows desktop playtest verified by the user.
+- **Unverified:** full playthrough of Barrel Shield Bust-Up and other
+  hollow-trunk stages to the flagpole, and macOS rebuild.

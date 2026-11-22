@@ -64,8 +64,12 @@ When the widened view keeps more enemies alive than the SNES's eight sprite
 palettes can hold (Squeals on Wheels' Sneek wheels with four Buzzes), the
 game's allocator falls back to palette 0 and the sprite turns fire-coloured.
 Wide aspects now draw that sprite with its own palette from a host-side
-table, leaving guest memory and the 4:3 image unchanged; quick saves that
-already captured the fallback are recovered too. A save made in a wide
+table, leaving guest memory unchanged; the 4:3 path returns early and is
+not expected to change, but a byte-identical 4:3 comparison has not been
+measured. Quick saves that already captured the fallback are recovered
+when the fallback sprite can be identified in the first frames after the
+load; this was checked on one release save only, and the interpreter path
+through the allocator does not record overflows. A save made in a wide
 aspect still shows the fallback colours if loaded at 4:3 until the sprite
 despawns.
 
@@ -76,6 +80,12 @@ static underwater backdrop wraps as a plane judged by row-level write
 tracking; and the first visible row of the margins now decodes like the
 rest instead of being blanked on tile boundaries. See
 [docs/BRINGUP.md](docs/BRINGUP.md) for the evidence.
+
+In builds from this source (Windows verified; the published v0.0.4 Mac
+archive predates it), the game's opening Rare logo, bouncing/developer credit
+intro, and copyright screen can be skipped directly to the Title Screen with
+the **Start** button on cold boot (`DKC3_SKIP_INTRO_START=0` restores the
+unskippable original first-boot behavior).
 
 ## Native macOS release
 
@@ -101,11 +111,6 @@ ad-hoc signed rather than notarized, so if Gatekeeper blocks the first launch,
 Control-click the app in Finder, choose **Open**, and confirm once. The project
 is still in bring-up: the tested boot, launcher, save-state, and Lakeside Limbo
 paths work, but full-game compatibility is not yet claimed.
-
-The game's opening Rare logo, bouncing/developer credit intro, and copyright
-screen can be skipped directly to the Title Screen with the **Start** button
-on cold boot (`DKC3_SKIP_INTRO_START=0` restores the unskippable original
-first-boot behavior).
 
 ## Building on Windows
 

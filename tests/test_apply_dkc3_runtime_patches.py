@@ -84,6 +84,23 @@ class RuntimePatches(unittest.TestCase):
         self.assertIn("switch ((ppu->wbgobjlog >> (layer * 2)) & 3u)", ppu)
         self.assertIn("const bool w1_parked =", ppu)
         self.assertIn("const bool w2_parked =", ppu)
+        self.assertIn(
+            "  if (win->edges[0] < 0 || window_right > kPpuXPixels) {\n"
+            "    if (w1_parked) {\n"
+            "      w1l = 1;\n"
+            "      w1r = 0;\n"
+            "    }\n"
+            "    if (w2_parked) {\n"
+            "      w2l = 1;\n"
+            "      w2r = 0;\n"
+            "    }\n"
+            "  }\n",
+            ppu,
+        )
+        self.assertIn(
+            "    if (!w1_parked && ppu->window1left <= ppu->window1right) {", ppu)
+        self.assertIn(
+            "    if (!w2_parked && ppu->window2left <= ppu->window2right) {", ppu)
         self.assertIn("if (ppu->wsPresentationXBias != 0)", ppu)
         self.assertNotIn("  win->bits = w1_bits | w2_bits;\n  debug_server_on_ppu_window", ppu)
 
@@ -179,8 +196,38 @@ class RuntimePatches(unittest.TestCase):
             patches.apply_directory(PATCHES, SNESRECOMP, out)
             bridge = (out / "interp_bridge.c").read_text()
         self.assertIn("static int      s_lle_sched_owner_depth = 0;", bridge)
-        self.assertIn("if (yield_pc == 0xFFFFFFFEu)\n        s_lle_sched_owner_depth = s_interp_bridge_depth;", bridge)
-        self.assertIn("s_lle_unwind_owner_depth = s_lle_sched_owner_depth;", bridge)
+        # The owner depth is set only by the scheduler frame and restored
+        # when every interpreter run returns, so it never leaks across calls.
+        self.assertIn(
+            "    const int _saved_sched_owner_depth = s_lle_sched_owner_depth;\n"
+            "    s_interp_bridge_depth++;\n"
+            "    if (yield_pc == 0xFFFFFFFEu)\n"
+            "        s_lle_sched_owner_depth = s_interp_bridge_depth;\n"
+            "    int _r = _interp_run_core(cpu, entry_pc24, s_exit, out_landing,\n"
+            "                              out_return_pc, yield_pc,\n"
+            "                              yield_flag_addr, yield_flag_value,\n"
+            "                              reset_cap_on_bounce, stop_pcs, n_stop,\n"
+            "                              stop_on_rti);\n"
+            "    s_interp_bridge_depth--;\n"
+            "    s_lle_sched_owner_depth = _saved_sched_owner_depth;\n",
+            bridge,
+        )
+        # A nested run past the deadline unwinds to that owner frame.
+        self.assertIn(
+            "            if (!stop_on_rti && s_lle_sched_depth > 0 &&\n"
+            "                s_lle_sched_owner_depth > 0 &&\n"
+            "                s_lle_sched_owner_depth < s_interp_bridge_depth &&\n"
+            "                !cpu_interrupt_context_active()) {\n"
+            "                sync_interp_to_cpu(&in, cpu);\n"
+            "                bridge_apu_flush(cpu);\n"
+            "                cpu_take_tailcall_return_context(NULL, NULL);\n"
+            "                s_lle_unwind_active = 1;\n"
+            "                s_lle_unwind_pc24 = pc_before & 0xFFFFFFu;\n"
+            "                s_lle_unwind_owner_depth = s_lle_sched_owner_depth;\n"
+            "                return 1;\n"
+            "            }\n",
+            bridge,
+        )
 
     def _apply_edited(self, edit):
         """Apply the patch set to a copy of the pinned runtime after `edit`."""

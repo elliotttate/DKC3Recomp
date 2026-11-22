@@ -757,10 +757,18 @@ enum {
   kDkc3WsExtObjMaxPalettes = 24,
 };
 
+enum { kDkc3OverflowRecoveryFrames = 8 };
+
 static uint16_t s_sprite_overflow_pal[kDkc3SpriteSlotCount];
+/* Frames left in which a $1D4B fallback captured before this session may be
+ * re-attached to a palette-0 sprite. Armed by a state load and by entering a
+ * wide aspect; consumed by the first attachment or when it runs out, so a
+ * stale $1D4B is never matched to an unrelated sprite later on. */
+static unsigned s_overflow_recovery_frames = 0;
 
 static void Dkc3ResetSpritePaletteOverflow(void) {
   memset(s_sprite_overflow_pal, 0, sizeof s_sprite_overflow_pal);
+  s_overflow_recovery_frames = kDkc3OverflowRecoveryFrames;
   Dkc3PpuClearWsExtObjPalettes();
 }
 
@@ -834,8 +842,10 @@ static uint16_t Dkc3SpriteTileRangeEnd(unsigned target_slot,
 static void Dkc3SyncWidescreenObjPalettes(bool in_level) {
   Dkc3PpuClearWsExtObjPalettes();
   if (!Dkc3VideoIsWidescreen() || !in_level) {
-    if (!in_level)
-      memset(s_sprite_overflow_pal, 0, sizeof s_sprite_overflow_pal);
+    /* Nothing is recorded at 4:3, so a tracked association would be stale by
+     * the time a wide aspect returns. Re-arm recovery for that return. */
+    memset(s_sprite_overflow_pal, 0, sizeof s_sprite_overflow_pal);
+    s_overflow_recovery_frames = in_level ? kDkc3OverflowRecoveryFrames : 0;
     return;
   }
 
@@ -855,9 +865,14 @@ static void Dkc3SyncWidescreenObjPalettes(bool in_level) {
   /* Savestate recovery: if a loaded savestate already captured an overflowed
    * palette ID in $1D4B and an active dynamic sprite is stuck on palette 0,
    * re-attach $1D4B to it when $1D4B is not already loaded in hardware CGRAM
-   * or tracked on another slot. */
+   * or tracked on another slot. Only runs in the short window after a load or
+   * an aspect change: live overflows are recorded by the hook instead. */
   const uint16_t last_overflow = Dkc3ReadWram16(kDkc3WramPaletteLastOverflow);
-  if (last_overflow != 0 && last_overflow != kDkc3CommonPaletteId) {
+  const bool try_recovery = s_overflow_recovery_frames != 0;
+  if (try_recovery)
+    s_overflow_recovery_frames--;
+  if (try_recovery && last_overflow != 0 &&
+      last_overflow != kDkc3CommonPaletteId) {
     bool known = false;
     for (unsigned p = 0; p < 8u; p++) {
       if (Dkc3ReadWram16((uint16_t)(kDkc3WramPaletteSlotIds + p * 2u)) ==
@@ -900,8 +915,10 @@ static void Dkc3SyncWidescreenObjPalettes(bool in_level) {
         if (in_oam)
           best_slot = (int)slot;
       }
-      if (best_slot >= 0)
+      if (best_slot >= 0) {
         s_sprite_overflow_pal[best_slot] = last_overflow;
+        s_overflow_recovery_frames = 0;
+      }
     }
   }
 

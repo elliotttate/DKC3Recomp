@@ -2462,8 +2462,10 @@ equal to the monitor; the menu item and Escape restored the bar and
     `@@ nested-deadline-owner-static`, `@@ nested-deadline-owner-depth`, and
     `@@ nested-deadline-unwind` so `interp_bridge_run_ex2()` records the
     bridge depth of the enclosing auto-quiescent scheduler frame
-    (`s_lle_sched_owner_depth`), and any nested non-interrupt interpreter run
-    that reaches `s_lle_master_deadline` cleanly unwinds to that scheduler
+    (`s_lle_sched_owner_depth`, set only when `yield_pc == 0xFFFFFFFE`), and
+    any nested interpreter run that is not in interrupt context, is not a
+    `stop_on_rti` run, and has a scheduler owner frame below it, and that
+    reaches `s_lle_master_deadline`, cleanly unwinds to that scheduler
     frame at `pc_before` via the existing `s_lle_unwind_active` mechanism. The
     top-level scheduler frame then yields the frame cleanly, `RtlRunFrame()`
     advances the SPC across the frame boundary, and the next frame resumes at
@@ -2512,7 +2514,7 @@ equal to the monitor; the menu item and Escape restored the bar and
     `Dkc3IntroSkipEnabledFromEnv()` (enabled by default; `DKC3_SKIP_INTRO_START=0`
     disables) and `Dkc3ApplyIntroStartSkip()`, which sets `$06AB |= $0005` in
     States 0/1 and advances `$00F4` to `$005A` in State 3 only when Start is
-    pressed and no fade (`$04ED != 0`, `$00BC & 1`) is active.
+    pressed and no fade is active (`$04ED == 0` and `($00BC & 1) == 0`).
   - `runner/dkc3_game.c`: called `Dkc3ApplyIntroStartSkip()` in
     `Dkc3RunOneFrame()` before NMI dispatch and synced `joypad1Index = 16` when
     triggered under `autoJoyRead`.
@@ -2597,6 +2599,16 @@ equal to the monitor; the menu item and Escape restored the bar and
   - Live interactive Windows desktop playtest verified by the user.
 - **Unverified:** full playthrough of Barrel Shield Bust-Up and other
   hollow-trunk stages to the flagpole, and macOS rebuild.
+- **Scope decision (review follow-up, 2026-11-22):** the parked-sentinel rule
+  applies to every stage, not only Barrel Shield Bust-Up. A 1-pixel window
+  at `[0, 0]` or `[255, 255]` is what the cartridge's edge clamp produces for
+  an off-screen mask, and in a wide aspect neither alternative is faithful:
+  pin-expanding it paints a full-margin bar, and keeping its single native
+  column leaves a 1-pixel seam inside the picture, because native column 0
+  or 255 is no longer the screen edge. Gating by stage ID would miss other
+  levels that use the same clamp. The cost is that one native edge column
+  loses its window in wide aspects; 4:3 is unaffected. No other stage has
+  been surveyed for a legitimate 1-pixel edge window.
 
 ## 2026-11-22 - Squeals on Wheels (world 2, level 3) - Sneek drawn with the fire palette in widescreen
 
@@ -2648,6 +2660,26 @@ equal to the monitor; the menu item and Escape restored the bar and
     was recorded and released; tags cleared when the sprites despawned.
   - The 4:3 render of the same save still shows palette 0: the guest state
     in the save carries the fallback, and the 4:3 image is the oracle.
+- **Accepted divergence:** for this save, wide aspects now draw the Sneek
+  differently from the 4:3 oracle, which shows palette 0. That is deliberate:
+  the overflow is produced by widened activation, so at 4:3 the cartridge
+  draws exactly what it computed, and the host table only repairs a state the
+  wide aspect caused. The 4:3 path is left untouched rather than "corrected",
+  because correcting it would mean the 4:3 image no longer follows guest
+  state. No follow-up is planned for 4:3.
+- **Review follow-up (2026-11-22):**
+  - The save-recovery heuristic no longer runs every frame. A state load, and
+    every in-level frame at 4:3, arm an 8-frame window; recovery runs only in
+    that window and disarms on the first attachment. Before, once the
+    original sprite despawned, a stale `$1D4B` could be attached to any later
+    palette-0 dynamic sprite.
+  - Leaving a wide aspect now clears the tracked slots, so returning to a
+    wide aspect cannot apply a stale overflow palette to a sprite that
+    legitimately uses palette 0.
+  - Verified: headless 16:9 replay of the release quick save still attaches
+    `$0058` to slot 20 on the first frame after load; the 4:3 replay
+    records nothing. The despawn-then-respawn case that motivated the change
+    was not reproduced.
 - **Unverified:** a byte-identical 4:3 A/B against the previous build on the
   saved-scene corpus (argued from the early returns, not measured); a live
   overflow reached from a level start rather than a save; the interpreter

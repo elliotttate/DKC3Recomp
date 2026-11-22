@@ -999,6 +999,63 @@ int main(void) {
       fprintf(stderr, "FAIL: a far dominant scroll was taken for the phase\n");
       return 1;
     }
+    /* Tidal Trouble on Enguarde: 32-row horizontal map stages v_scroll one
+     * 256-pixel page above camera_y (camera_y=$0218 -> v_scroll=23), while
+     * HDMA writes BG2HOFS from line 1. During a 7-8 px/frame charge, the
+     * frame-start register trails the rendered bands by >6 px. */
+    memset(&bands, 0, sizeof bands);
+    bands.count = 3;
+    bands.band[0].first_line = 1;   bands.band[0].last_line = 155;
+    bands.band[0].h_scroll[1] = 534; bands.band[0].v_scroll[1] = 23;
+    bands.band[1].first_line = 156; bands.band[1].last_line = 190;
+    bands.band[1].h_scroll[1] = 535; bands.band[1].v_scroll[1] = 23;
+    bands.band[2].first_line = 191; bands.band[2].last_line = 224;
+    bands.band[2].h_scroll[1] = 536; bands.band[2].v_scroll[1] = 23;
+    if (!Dkc3VideoSelectTerrainPhase(&bands, 1, 542, 23, 0x0a0fu, 0x0218u,
+                                     &h, &v) ||
+        h != 534 || v != 23) {
+      fprintf(stderr,
+              "FAIL: horizontal 32-row HDMA terrain phase during fast charge\n");
+      return 1;
+    }
+    /* Full-screen underwater ripple: three horizontal scroll values each
+     * cover under half the screen, but together share one terrain phase. */
+    bands.count = 3;
+    bands.band[0].first_line = 1;   bands.band[0].last_line = 60;
+    bands.band[0].h_scroll[1] = 533; bands.band[0].v_scroll[1] = 23;
+    bands.band[1].first_line = 61;  bands.band[1].last_line = 144;
+    bands.band[1].h_scroll[1] = 534; bands.band[1].v_scroll[1] = 23;
+    bands.band[2].first_line = 145; bands.band[2].last_line = 224;
+    bands.band[2].h_scroll[1] = 535; bands.band[2].v_scroll[1] = 23;
+    if (!Dkc3VideoSelectTerrainPhase(&bands, 1, 542, 23, 0x0a0fu, 0x0218u,
+                                     &h, &v) ||
+        h != 534 || v != 23) {
+      fprintf(stderr,
+              "FAIL: full-screen wavy ripple terrain phase selection\n");
+      return 1;
+    }
+    /* 32-row vertical wrap across 255 -> 0 during fast horizontal motion. */
+    bands.count = 1;
+    bands.band[0].first_line = 1;   bands.band[0].last_line = 224;
+    bands.band[0].h_scroll[1] = 534; bands.band[0].v_scroll[1] = 0;
+    if (!Dkc3VideoSelectTerrainPhase(&bands, 1, 542, 255, 0x0a0fu, 0x0201u,
+                                     &h, &v) ||
+        h != 534 || v != 0) {
+      fprintf(stderr, "FAIL: 32-row vertical wrap terrain phase selection\n");
+      return 1;
+    }
+    /* Frame-start register within lead of camera_h, but HDMA bands render
+     * on the opposite side of camera_h (>6 px from frame_h). */
+    bands.count = 1;
+    bands.band[0].first_line = 1;   bands.band[0].last_line = 224;
+    bands.band[0].h_scroll[1] = 525; bands.band[0].v_scroll[1] = 23;
+    if (!Dkc3VideoSelectTerrainPhase(&bands, 1, 533, 23, 0x0a0fu, 0x0018u,
+                                     &h, &v) ||
+        h != 525 || v != 23) {
+      fprintf(stderr,
+              "FAIL: stale frame-start register within camera lead replaced\n");
+      return 1;
+    }
   }
 
   {

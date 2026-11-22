@@ -2283,3 +2283,70 @@ equal to the monitor; the menu item and Escape restored the bar and
 - **Unverified:** Interactive live Alt+Tab in fullscreen on the user's desktop
   (automated tests run hidden without driving the live Alt+Tab switcher) and
   macOS rebuild.
+
+## 2026-11-21 - Fix widescreen margin distortion during fast movement in HDMA-scrolled horizontal levels
+
+- **Symptom:** Moving rapidly in widescreen (for example, charging on Enguarde
+  in Tidal Trouble, Lake Orangatanga level 3, `$00C0 = $0027`, shape 0
+  horizontal map) visibly distorted both side margins for the duration of the
+  high-speed dash.
+- **Root cause:**
+  1. In Tidal Trouble, HDMA channel 7 (`$210D`, mode 3) writes `BG1HOFS` and
+     `BG2HOFS` (terrain layer `BG2`, `BG2SC = $79`, 64x32 tilemap) on every
+     scanline starting at line 1 (flat above water, 3-value wavy ripple
+     underwater). Because HDMA overwrites `BG2HOFS` from line 1, the
+     frame-start `g_ppu->hScroll[1]` register holds the previous frame's last
+     scanline value. During Enguarde's 7–8 px/frame charge, `|band_h - frame_h|`
+     exceeds `kDkc3VideoTerrainPhaseLeadX` (6 px).
+  2. `Dkc3VideoSelectTerrainPhase()` (`runner/dkc3_video.c`) was designed to
+     adopt the rendered HDMA band scroll in this case, but failed on 32-row
+     horizontal levels for two reasons:
+     - Its vertical follow check compared `dominant_v` against
+       `camera_y & 0x03ff` modulo 1024 only. In 32-row horizontal levels
+       staged one 256-pixel page above `camera_y` (e.g., `camera_y = $0218`,
+       `v_scroll = 23`), the 10-bit distance is 511 (> `kDkc3VideoTerrainPhaseFollowY = 32`),
+       so `Dkc3VideoSelectTerrainPhase()` always returned `false`, leaving
+       `s_terrain_phase_h` stuck on the stale frame-start register and causing
+       `Dkc3ClassifyBands()` to drop 50–69 of 68–69 terrain scanline bands to
+       `kDkc3BandPolicyRepeat` (`R`) instead of `kDkc3BandPolicyWorld` (`W`).
+     - Its dominant-scroll fallback counted only exact `(h, v)` line matches
+       against the `>= 112` half-screen threshold, which can fail when a
+       full-screen underwater wavy HDMA ripple spreads 224 lines across 3+
+       adjacent horizontal scroll values.
+     - Its early-return guard kept `frame_h, frame_v` whenever it lay within
+       lead distance of `(camera_h, camera_v)` even when HDMA bands rendered
+       more than 6 px away on the opposite side of the camera.
+- **Changes:**
+  - `runner/dkc3_video.c`: updated `Dkc3VideoSelectTerrainPhase()` to:
+    - accept an 8-bit (256-pixel) vertical phase match against `camera_y & 0xff`
+      in the dominant-scroll fallback when `dominant_v` also follows `frame_v`
+      within `kDkc3VideoTerrainPhaseFollowY` (including 255 -> 0 wrap when both
+      `< 0x0100`), preserving rejection of far parallax scrolls on 64-row
+      vertical maps;
+    - count phase-compatible lines (`Dkc3VideoScrollAtTerrainPhase`) for the
+      half-screen majority gate, breaking ties by exact-line count so wavy
+      underwater bands pick their dominant scroll;
+    - only take the early return when the frame-start register already covers
+      at least half the rendered lines (or there are no HDMA bands).
+  - `tests/test_dkc3_video.c`: added ROM-free unit tests covering 32-row
+    horizontal fast-charge HDMA phase selection, full-screen 3-value wavy
+    underwater ripples, 32-row vertical wrap (`255 -> 0`), and stale
+    frame-start register replacement when within camera lead.
+- **Verified (Windows x64 Release, private ROM):**
+  - Rebuilt Release targets cleanly via `cmake --build build-windows --config Release`.
+  - CTest: 29/29 passed (`dkc3_video`, `supplied_rom_headless_boot`, and all
+    four Windows SDL aspect smoke tests).
+  - Python unit tests (`python -m unittest discover -s tests`): 24/24 passed.
+  - Headless Tidal Trouble Enguarde charge replay (`dkc3_snesrecomp_headless.exe`
+    from Lake Orangatanga node 4 savestate into Tidal Trouble, 2,320 frames):
+    - Before fix (16:9, frames 2270–2278): 9 frames dropped 50/68–69/69 terrain
+      bands to `R` (`kDkc3BandPolicyRepeat`), distorting 40.2% of the left
+      margin (3,871/9,632 px) and 6.9% of the right margin (666/9,632 px) at
+      frame 2275.
+    - After fix: `0` terrain `R`-band frames across the entire run in 16:10,
+      16:9, and 21:9 (frames 2270–2278: `68/68` and `69/69` `W` bands, `0` `R`
+      bands). At frame 2275 in 16:9, `terrain_ready=1`, `margin_matching=465/465`,
+      and the native 256x224 center window is bit-identical (`0` pixels changed)
+      to the pre-fix 16:9 render.
+- **Unverified:** macOS rebuild and live interactive desktop playtest in Tidal
+  Trouble.

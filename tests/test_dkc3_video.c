@@ -525,13 +525,27 @@ int main(void) {
       !CheckMargins(0x0800 - 208, 0x0800, 0, 26, 26) ||
       !CheckMargins(0x0800 - 8, 0x0800, -25, 26, 26) ||
       !CheckMargins(0x0800, 0x0800, -26, 26, 26) ||
-      !CheckMargins(0x0100, 0x0120, 16, 16, 16) ||
-      !CheckMargins(0x0120, 0x0120, -16, 16, 16) ||
       !CheckMargins(0x0100, 0x0100, 0, 0, 0) ||
       !CheckMargins(0x0100, 0x00ff, 0, 26, 26) ||
       !CheckMargins(0x0900, 0x0800, -26, 26, 0) ||
       !CheckMargins(0x0080, 0x0800, 26, 0, 26)) {
     fprintf(stderr, "FAIL: 16:10 glide margins\n");
+    return 1;
+  }
+  /* glide in a room narrower than two margins (the bonus room of the first
+   * level travels 24 pixels, $0100-$0118): the view stays locked
+   * to the cartridge camera and each margin is clamped to the room, so the
+   * background scrolls exactly as the native frame does. A room of exactly
+   * two margins still glides. */
+  if (!CheckMargins(0x0100, 0x0120, 0, 0, 26) ||
+      !CheckMargins(0x0110, 0x0120, 0, 16, 16) ||
+      !CheckMargins(0x0120, 0x0120, 0, 26, 0) ||
+      !CheckMargins(0x0100, 0x0118, 0, 0, 24) ||
+      !CheckMargins(0x010c, 0x0118, 0, 12, 12) ||
+      !CheckMargins(0x0118, 0x0118, 0, 24, 0) ||
+      !CheckMargins(0x0100, 0x0134, 26, 26, 26) ||
+      !CheckMargins(0x0134, 0x0134, -26, 26, 26)) {
+    fprintf(stderr, "FAIL: 16:10 glide in a narrow room\n");
     return 1;
   }
   {

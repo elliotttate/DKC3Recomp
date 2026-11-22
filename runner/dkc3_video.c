@@ -237,8 +237,17 @@ void Dkc3VideoPresentationMarginsBounded(uint16_t camera_x,
        * upper-reach], so the wide frame stays inside the level. */
       const int pin_low = lower + reach - (int)camera_x;
       const int pin_high = upper - reach - (int)camera_x;
+      /* A room narrower than two margins (DKC3's bonus rooms travel 24
+       * pixels) cannot hide both walls. Centering it would make the target
+       * bias follow the camera pixel for pixel, which the host's
+       * one-pixel-per-frame limit turns into a lag and a drift back after
+       * the player stops, and would slide the screen-fixed HUD with it.
+       * The glide keeps such a room locked to the cartridge camera and
+       * clamps each margin to the authored extent, as bars does. */
+      const bool camera_locked =
+          s_edge_policy == kDkc3VideoEdgeGlide && range < 2 * extra;
       int wanted = 0;
-      if (s_edge_policy == kDkc3VideoEdgeGlide) {
+      if (s_edge_policy == kDkc3VideoEdgeGlide && !camera_locked) {
         /* One margin of inward shift at each wall, released one pixel per
          * kDkc3VideoEdgeGlideSpan pixels of camera travel away from it. */
         const int span = extra * kDkc3VideoEdgeGlideSpan;
@@ -249,8 +258,10 @@ void Dkc3VideoPresentationMarginsBounded(uint16_t camera_x,
         if (east_travel >= 0 && east_travel < span)
           wanted -= extra - east_travel / kDkc3VideoEdgeGlideSpan;
       }
-      result_bias = Dkc3VideoClampInt(
-          Dkc3VideoClampInt(wanted, pin_low, pin_high), -extra, extra);
+      result_bias = camera_locked
+          ? 0
+          : Dkc3VideoClampInt(Dkc3VideoClampInt(wanted, pin_low, pin_high),
+                              -extra, extra);
       const int presented = (int)camera_x + result_bias;
       result_left = Dkc3VideoClampInt(presented - lower, 0, extra);
       result_right = Dkc3VideoClampInt(upper - presented, 0, extra);

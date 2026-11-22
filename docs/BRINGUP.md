@@ -2685,3 +2685,42 @@ equal to the monitor; the menu item and Escape restored the bar and
   overflow reached from a level start rather than a save; the interpreter
   (LLE) path through `$BB:95E6`, which does not call the hook; the live
   desktop app; macOS rebuild.
+
+## 2026-11-22 - bonus-room background slides in widescreen (glide in narrow rooms)
+
+- **Symptom:** in the first level's bonus room (level word `$00C0` = `$0051`,
+  the reported release quick save), widescreen showed black bars and the
+  background moved noticeably when walking left or right, kept sliding after
+  the player stopped, and the HUD banana counter drifted sideways.
+- **Measurement:** the room's camera range is `$0100..$0118` (24 pixels of
+  travel), narrower than two margins at every wide aspect (52 at 16:10, 86 at
+  16:9, 190 at 21:9). `Dkc3VideoPresentationMarginsBounded` under `glide`
+  pinned the presented center to `$010C`, so the target bias was
+  `$010C - camera`, moving one pixel per pixel of camera travel. The adapter
+  limits the presented bias to one pixel per frame (`runner/dkc3_game.c`), so
+  on a 16:9 replay (60 frames Right, 60 Left) the camera fell from `$0118` to
+  `$0104` in 8 frames while the bias went `-12` to `-4`, then the bias kept
+  climbing to `+12` over the next 24 frames with the camera nearly still:
+  the picture lagged, then slid back. Every sprite, HUD included, moved by
+  the bias.
+- **Fix:** `glide` now keeps a zero bias in a room narrower than two margins
+  (`range < 2 * extra`) and clamps each margin to the authored extent, which
+  is the `bars` geometry. Wider rooms, `shift`, `bars`, and `reflect` are
+  unchanged. Tests: the 16:10 glide cases for a `$0120` room now expect the
+  camera-locked geometry, plus the `$0118` bonus geometry and a `$0134` room
+  (exactly two margins) that still glides.
+- **Verified (headless, release quick save, 60 Right then 60 Left):** bias 0
+  on every frame at 16:10, 16:9, and 21:9; at 16:9 the native 256 columns of
+  every sampled frame (every 4th of 161) are pixel-identical to the 4:3 run;
+  every frame and the WRAM/VRAM/CGRAM/OAM hashes are identical to
+  `DKC3_WIDESCREEN_EDGE=bars`; with `DKC3_CULL_WIDEN=0` the 16:9 WRAM hash
+  equals the 4:3 hash. The right margin blanks 43 to 19 columns as the camera
+  moves west, as the clamp predicts. All 30 CTest checks pass. The 4:3 path
+  is unchanged by construction (the branch requires `extra > 0`).
+- **Open:** at the west wall the left margin still shows 24 columns of
+  continuous dock and sky where the clamp asks for none (19 black columns
+  remain); `bars` shows the same, so it predates this change and its source
+  layer is not yet identified. The black bars themselves are the honest
+  answer for a room the map does not extend.
+- **Unverified:** the live desktop app, other bonus rooms, ordinary levels at
+  a wall in a live run (covered only by the unchanged unit cases), macOS.

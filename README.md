@@ -25,6 +25,9 @@ Limbo.
 The 21:9 option uses the nearest symmetric width that preserves the shared
 runtime's safe sprite coordinate range: 446x224, or approximately 20.91:9.
 Screens the map does not cover center the native frame between black margins.
+Rooms narrower than the wide view (the bonus games) keep the view locked to
+the game camera, so the background scrolls exactly as at 4:3 and the black
+beyond each wall moves with it; the HUD no longer slides.
 The placed-object spatial scan and final activation checks, the sprite renderer
 culls, and the static banana/star grids are widened to the presented view by
 `scripts/apply_dkc3_widescreen_overrides.py`. Where the aspect permits, the

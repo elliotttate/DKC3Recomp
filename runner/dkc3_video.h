@@ -117,7 +117,9 @@ typedef enum Dkc3VideoEdgePolicy {
    * inward slide is released one pixel per kDkc3VideoEdgeGlideSpan pixels
    * of camera travel, so the background scrolls at seven eighths of the
    * camera speed until the view is centered instead of standing still.
-   * The default. */
+   * A room narrower than two margins (the bonus rooms) cannot hide both
+   * walls; there the view stays locked to the camera with each margin
+   * clamped to the room, exactly as bars. The default. */
   kDkc3VideoEdgeGlide,
   kDkc3VideoEdgePolicyCount,
 } Dkc3VideoEdgePolicy;
@@ -153,7 +155,9 @@ const char *Dkc3VideoEdgePolicyName(Dkc3VideoEdgePolicy policy);
  * active edge policy. Every known layout authors terrain from world
  * X=`$0100` through maximum_scroll_x+256. With `shift`, the presented
  * viewport is moved inward (bias) while the room can absorb the margin and
- * centered with clamped margins when it cannot. With `bars`, the bias is
+ * centered with clamped margins when it cannot. `glide` is shift's
+ * geometry released with travel, except that a room narrower than two
+ * margins keeps a zero bias and clamped margins, as bars. With `bars`, the bias is
  * zero and each visible margin is clamped to the authored extent. With
  * `reflect`, the bias is zero and both margins stay fully visible; the
  * terrain decoder mirrors authored columns into the unauthored strip. The

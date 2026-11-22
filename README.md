@@ -60,6 +60,14 @@ hardware wrap, with the native center and gameplay unchanged by widening.
 Pothole Panic's cave now fills the wide view from its authored level map.
 Its shape-1 layout uses 32 metatile rows per column, twice the height of
 the previously supported horizontal layout.
+When the widened view keeps more enemies alive than the SNES's eight sprite
+palettes can hold (Squeals on Wheels' Sneek wheels with four Buzzes), the
+game's allocator falls back to palette 0 and the sprite turns fire-coloured.
+Wide aspects now draw that sprite with its own palette from a host-side
+table, leaving guest memory and the 4:3 image unchanged; quick saves that
+already captured the fallback are recovered too. A save made in a wide
+aspect still shows the fallback colours if loaded at 4:3 until the sprite
+despawns.
 
 A second layer that streams a strip of the level map, Riverside Race's
 reflection under the water line, is served in the margins from the

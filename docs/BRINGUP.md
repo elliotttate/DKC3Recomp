@@ -2597,3 +2597,59 @@ equal to the monitor; the menu item and Escape restored the bar and
   - Live interactive Windows desktop playtest verified by the user.
 - **Unverified:** full playthrough of Barrel Shield Bust-Up and other
   hollow-trunk stages to the flagpole, and macOS rebuild.
+
+## 2026-11-22 - Squeals on Wheels (world 2, level 3) - Sneek drawn with the fire palette in widescreen
+
+- **Symptom:** in the release quick save (`saves/dkc3s0.sav`, SHA-256
+  `7542f1de...c0a`, made in a wide aspect), the Sneek in its wheel on the left is drawn
+  in red/yellow fire colours instead of its own purple/grey.
+- **Measurement (16:9, after load):** the OBJ palette allocator's eight
+  hardware slots at `$073C` hold IDs `$0F,$01,$02,$14,$26,$00,$1D,$47`; sprite
+  slot 20 (type `$0398`, the Sneek) has OAM attribute `$2060`, palette 0, and
+  `$1D4B` (last failed request) is `$0058`. Four Buzzes, the barrel, both
+  Kongs, and the Sneek were all alive in the widened window when `$0058` was
+  requested, so `$BB:95DF` raised exception `$20` and `$BB:95E6` fell back to
+  palette 0, which holds the common effect palette `$0F`. The allocator never
+  retries, so the sprite keeps palette 0 after slot 5 later frees.
+- **Root cause:** a consequence of widened object activation, not a runtime
+  defect: more concurrently live objects than the hardware's eight OBJ palettes.
+- **Changes (commit `68ad82c` plus this entry):**
+  - `scripts/apply_dkc3_widescreen_overrides.py` (`adapt_palette_overflow`):
+    after `cpu_trace_block(cpu, 0xBB95E6)` in `request_palette_direct_M0X0`,
+    call `Dkc3RecordSpritePaletteOverflow(cpu->D)`, which records the failed
+    ID (`$04EF`) against the sprite slot at DP `$76`. Fails closed if the
+    anchor moves. No guest state is written; it returns early at 4:3.
+  - `runner/dkc3_game.c` (`Dkc3SyncWidescreenObjPalettes`, every frame before
+    the PPU draws): drops entries whose slot despawned or received a real
+    palette, recovers a save that already captured the fallback (`$1D4B` not
+    in `$073C` and not tracked, attached to the active palette-0 dynamic sprite
+    whose tiles are in OAM), loads the 15 colours from the ROM table at
+    `$3D3201` (or the WRAM tinted copy when `$0775` bit 15 is set), and tags
+    palette-0 OAM entries in the slot's tile range.
+  - `cmake/runtime-patches/ppu.hunks`: a host-only extended OBJ CGRAM table (24
+    palettes) and per-line OAM tag buffer; `PpuLookupPixelColor` serves tagged
+    OBJ pixels (layers 4/6) from it in the main, color-math, and HUD-margin
+    composite paths. The SIMD sprite fast path is skipped only while a tag is
+    active. Inactive (plain `cgram` lookup) at 4:3 and whenever every sprite
+    fits the hardware palettes.
+  - `@@ composite-ext-obj-fallback-sub` now anchors on the
+    `math_enabled_cur & 0x100` line: its two-line replacement also appeared in
+    the main composite path, so reversing hunks found it twice and
+    `test_pinned_sources_apply_and_change_only_where_stated` failed.
+  - `tests/test_apply_dkc3_widescreen_overrides.py`: a palette allocator
+    fixture (the suite failed without one), hook placement assertions, and a
+    fail-closed test for a moved `$BB:95E6` anchor.
+  - `DKC3_EXT_PAL_TRACE=1` prints the tracked slot/palette pairs every frame.
+- **Verified (Windows x64 Release, private ROM):**
+  - Python unit tests 27/27; full Release CTest 30/30.
+  - Release quick save, headless, 400 frames (unpause, walk left into the
+    Buzzes, then right until the Sneek despawns): Sneek drawn in its own
+    palette in 16:10, 16:9, and 21:9; a second live overflow (`$0023`, slot 22)
+    was recorded and released; tags cleared when the sprites despawned.
+  - The 4:3 render of the same save still shows palette 0: the guest state
+    in the save carries the fallback, and the 4:3 image is the oracle.
+- **Unverified:** a byte-identical 4:3 A/B against the previous build on the
+  saved-scene corpus (argued from the early returns, not measured); a live
+  overflow reached from a level start rather than a save; the interpreter
+  (LLE) path through `$BB:95E6`, which does not call the hook; the live
+  desktop app; macOS rebuild.

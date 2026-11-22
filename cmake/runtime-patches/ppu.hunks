@@ -984,9 +984,11 @@ extern Snes *g_snes;
 
 @@ composite-ext-obj-fallback-sub
 <<<<
+            if (math_enabled_cur & 0x100) {  // addSubscreen ?
               if ((ppu->bgBuffers[1].data[i] & 0xff) != 0)
                 color2 = ppu->cgram[ppu->bgBuffers[1].data[i] & 0xff], color_map = half_color_map;
 ====
+            if (math_enabled_cur & 0x100) {  // addSubscreen ?
               if ((ppu->bgBuffers[1].data[i] & 0xff) != 0)
                 color2 = PpuLookupPixelColor(ppu, ppu->bgBuffers[1].data[i], i), color_map = half_color_map;
 >>>>

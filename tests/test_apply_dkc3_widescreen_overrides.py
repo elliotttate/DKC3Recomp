@@ -136,6 +136,17 @@ RecompReturn CODE_B2800F_M0X0(CpuState *cpu) {
 }
 """
 
+PALETTE_FIXTURE = """#include "funcs.h"
+RecompReturn request_palette_direct_M0X0(CpuState *cpu) {
+  L_95DF_M0X0:
+    cpu_trace_block(cpu, 0xBB95DF);
+    goto L_95E6_M0X0;
+  L_95E6_M0X0:
+    cpu_trace_block(cpu, 0xBB95E6);
+    WatchdogCheck();
+}
+"""
+
 
 class WidescreenOverrideTests(unittest.TestCase):
     def make_generated_dir(self, root: Path) -> Path:
@@ -149,6 +160,8 @@ class WidescreenOverrideTests(unittest.TestCase):
         (generated / "walk.c").write_text(WALK_FIXTURE, encoding="utf-8")
         (generated / "draw.c").write_text(DRAW_FIXTURE, encoding="utf-8")
         (generated / "music.c").write_text(MUSIC_FIXTURE, encoding="utf-8")
+        (generated / "palette.c").write_text(
+            PALETTE_FIXTURE, encoding="utf-8")
         sites = [address for address in MODULE.CULL_SITES
                  if MODULE.CULL_SITES[address][:2] == ("0x30", "0x160")]
         for index, address in enumerate(sorted(sites)):
@@ -181,6 +194,14 @@ class WidescreenOverrideTests(unittest.TestCase):
                 first["music.c"].index("cpu_trace_block(cpu, 0xB2800F);"),
                 first["music.c"].index(
                     "Dkc3RecordMusicTransition(cpu->A);"))
+            self.assertIn(MODULE.GAME_INCLUDE, first["palette.c"])
+            self.assertEqual(
+                first["palette.c"].count(
+                    "Dkc3RecordSpritePaletteOverflow(cpu->D);"), 1)
+            self.assertLess(
+                first["palette.c"].index("cpu_trace_block(cpu, 0xBB95E6);"),
+                first["palette.c"].index(
+                    "Dkc3RecordSpritePaletteOverflow(cpu->D);"))
             self.assertEqual(
                 first["compare.c"].count(
                     "Dkc3VideoExpandSpawnLeft(cpu_read16"), 1)
@@ -267,6 +288,15 @@ class WidescreenOverrideTests(unittest.TestCase):
             music.write_text(MUSIC_FIXTURE.replace("0xB2800F", "0xB28010"),
                              encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "B2:800F"):
+                MODULE.apply_overrides(generated)
+
+    def test_fails_closed_when_palette_overflow_anchor_moves(self):
+        with tempfile.TemporaryDirectory() as directory:
+            generated = self.make_generated_dir(Path(directory))
+            palette = generated / "palette.c"
+            palette.write_text(PALETTE_FIXTURE.replace("0xBB95E6", "0xBB95E7"),
+                               encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "BB:95E6"):
                 MODULE.apply_overrides(generated)
 
 

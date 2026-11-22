@@ -956,6 +956,15 @@ static void Dkc3SyncWidescreenObjPalettes(bool in_level) {
 
   if (any_active)
     Dkc3PpuSetWsOamExtPalettes(oam_ext_pal, true);
+  if (getenv("DKC3_EXT_PAL_TRACE")) {
+    fprintf(stderr, "ext_pal frame=%u last=%04x ext=%u active=%d slots:",
+            (unsigned)snes_frame_counter, last_overflow, ext_count,
+            any_active ? 1 : 0);
+    for (unsigned slot = 0; slot < kDkc3SpriteSlotCount; slot++)
+      if (s_sprite_overflow_pal[slot])
+        fprintf(stderr, " %u=%04x", slot, s_sprite_overflow_pal[slot]);
+    fprintf(stderr, "\n");
+  }
 }
 
 /* $BB:A647 normally walks one list selected from the level's persistent

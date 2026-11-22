@@ -110,9 +110,54 @@ class RuntimePatches(unittest.TestCase):
             out = pathlib.Path(temporary)
             patches.apply_directory(PATCHES, SNESRECOMP, out)
             bridge = (out / "interp_bridge.c").read_text()
-        self.assertIn("const uint16_t run_s_exit = pre_s_above ? cpu->S : entry_s;", bridge)
-        self.assertIn("return interp_bridge_lle_yield_unwind(cpu, target_pc24 & 0xFFFFFFu);", bridge)
-        self.assertIn("return interp_bridge_lle_yield_unwind(cpu, post_return_pc);", bridge)
+        self.assertNotIn(
+            "interp_bridge_run_ex2(cpu, target_pc24 & 0xFFFFFF, entry_s,\n"
+            "                                   &landing, NULL, 0, 0, 0, 0, NULL, 0, 0);",
+            bridge,
+        )
+        self.assertIn(
+            "static int interp_s_crossed_into_compiled_ancestor(uint16_t s) {\n"
+            "    const uint16_t owner_delta = (uint16_t)(s - s_interp_owner_exit_s);\n"
+            "    return s_interp_bounce_recomp_base > 0 &&\n"
+            "           s_interp_owner_exit_valid &&\n"
+            "           owner_delta != 0 && owner_delta < 0x8000u;\n"
+            "}\n",
+            bridge,
+        )
+        self.assertIn(
+            "        const uint16_t pre_s_delta = (uint16_t)(cpu->S - entry_s);\n"
+            "        if (pre_s_delta != 0 && pre_s_delta < 0x8000u &&\n"
+            "            s_interp_bounce_owner_depth > 0 &&\n"
+            "            !cpu_interrupt_context_active() &&\n"
+            "            !interp_s_crossed_into_compiled_ancestor(cpu->S)) {\n"
+            "            (void)hrv;\n"
+            "            return interp_bridge_lle_yield_unwind(cpu, target_pc24 & 0xFFFFFFu);\n"
+            "        }\n",
+            bridge,
+        )
+        self.assertIn(
+            "    uint32_t post_return_pc = 0xFFFFFFFFu;\n"
+            "    const uint16_t pre_s_delta = (uint16_t)(cpu->S - entry_s);\n"
+            "    const int pre_s_above = pre_s_delta != 0 && pre_s_delta < 0x8000u;\n"
+            "    const uint16_t run_s_exit = pre_s_above ? cpu->S : entry_s;\n"
+            "    s_run_hrv = (!pre_s_above && (hrv == 2 || hrv == 3)) ? hrv : 0;\n"
+            "    int ok = interp_bridge_run_ex2(cpu, target_pc24 & 0xFFFFFF, run_s_exit,\n"
+            "                                   &landing, &post_return_pc, 0, 0, 0, 0, NULL, 0, 0);\n"
+            "    s_run_hrv = 0;\n",
+            bridge,
+        )
+        self.assertIn(
+            "            const uint16_t over_delta = (uint16_t)(cpu->S - expected_post_s);\n"
+            "            if ((hrv == 2 || hrv == 3) &&\n"
+            "                over_delta < 0x8000u &&\n"
+            "                !interp_s_crossed_into_compiled_ancestor(cpu->S) &&\n"
+            "                post_return_pc != 0xFFFFFFFFu &&\n"
+            "                s_interp_bounce_owner_depth > 0 &&\n"
+            "                !cpu_interrupt_context_active()) {\n"
+            "                return interp_bridge_lle_yield_unwind(cpu, post_return_pc);\n"
+            "            }\n",
+            bridge,
+        )
 
     def test_apu_timeline_uses_single_clock_and_clears_port_queue_on_load(self):
         with tempfile.TemporaryDirectory() as temporary:

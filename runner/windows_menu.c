@@ -264,6 +264,10 @@ bool Dkc3WindowsMenuIsVisible(const Dkc3WindowsMenu *menu) {
       GetMenu(menu->window) == menu->bar;
 }
 
+bool Dkc3WindowsMenuUsesSysWMEvent(const Dkc3WindowsMenu *menu) {
+  return menu && menu->command_event == (Uint32)-1;
+}
+
 void Dkc3WindowsMenuDestroy(Dkc3WindowsMenu *menu) {
   if (!menu) return;
   RemoveWindowSubclass(menu->window, MenuProc, 1);

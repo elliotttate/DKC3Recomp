@@ -464,6 +464,13 @@ RecompReturn interp_tier_dispatch_balanced(CpuState *cpu, uint32_t target_pc24,
                                            uint8_t hrv) {
     interp_tier_note(target_pc24);
 ====
+static int interp_s_crossed_into_compiled_ancestor(uint16_t s) {
+    const uint16_t owner_delta = (uint16_t)(s - s_interp_owner_exit_s);
+    return s_interp_bounce_recomp_base > 0 &&
+           s_interp_owner_exit_valid &&
+           owner_delta != 0 && owner_delta < 0x8000u;
+}
+
 RecompReturn interp_tier_dispatch_balanced(CpuState *cpu, uint32_t target_pc24,
                                            uint32_t site_pc24, uint16_t entry_s,
                                            uint8_t hrv) {
@@ -479,17 +486,10 @@ RecompReturn interp_tier_dispatch_balanced(CpuState *cpu, uint32_t target_pc24,
         const uint16_t pre_s_delta = (uint16_t)(cpu->S - entry_s);
         if (pre_s_delta != 0 && pre_s_delta < 0x8000u &&
             s_interp_bounce_owner_depth > 0 &&
-            !cpu_interrupt_context_active()) {
-            const uint16_t owner_delta =
-                (uint16_t)(cpu->S - s_interp_owner_exit_s);
-            const int crossed_into_compiled_ancestor =
-                s_interp_bounce_recomp_base > 0 &&
-                s_interp_owner_exit_valid &&
-                owner_delta != 0 && owner_delta < 0x8000u;
-            if (!crossed_into_compiled_ancestor) {
-                (void)hrv;
-                return interp_bridge_lle_yield_unwind(cpu, target_pc24 & 0xFFFFFFu);
-            }
+            !cpu_interrupt_context_active() &&
+            !interp_s_crossed_into_compiled_ancestor(cpu->S)) {
+            (void)hrv;
+            return interp_bridge_lle_yield_unwind(cpu, target_pc24 & 0xFFFFFFu);
         }
     }
     interp_tier_note(target_pc24);
@@ -516,15 +516,9 @@ RecompReturn interp_tier_dispatch_balanced(CpuState *cpu, uint32_t target_pc24,
             if (skip > 0)
                 return (RecompReturn)skip;
             const uint16_t over_delta = (uint16_t)(cpu->S - expected_post_s);
-            const uint16_t owner_delta =
-                (uint16_t)(cpu->S - s_interp_owner_exit_s);
-            const int crossed_into_compiled_ancestor =
-                s_interp_bounce_recomp_base > 0 &&
-                s_interp_owner_exit_valid &&
-                owner_delta != 0 && owner_delta < 0x8000u;
             if ((hrv == 2 || hrv == 3) &&
                 over_delta < 0x8000u &&
-                !crossed_into_compiled_ancestor &&
+                !interp_s_crossed_into_compiled_ancestor(cpu->S) &&
                 post_return_pc != 0xFFFFFFFFu &&
                 s_interp_bounce_owner_depth > 0 &&
                 !cpu_interrupt_context_active()) {

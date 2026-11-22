@@ -203,6 +203,27 @@ static int test_obj_and_color_window_oracle(Ppu *ppu) {
         fprintf(stderr, "FAIL OBJ oracle pair=%zu logic=%u\n", p, logic);
         return 1;
       }
+      if (p == 0 && logic == 1) {
+        /* Overlapping W1=[33,128], W2=[80,190] with AND masks OBJ on [80,128]
+         * and leaves OBJ visible outside that intersection. */
+        const uint32_t obj_color = fast[10];
+        const uint32_t backdrop_color = fast[100];
+        if (obj_color == backdrop_color) {
+          fprintf(stderr,
+                  "FAIL OBJ test setup: OBJ and backdrop colors identical (%08x)\n",
+                  obj_color);
+          return 1;
+        }
+        for (int x = 0; x < 256; x++) {
+          uint32_t expect = (x >= 80 && x <= 128) ? backdrop_color : obj_color;
+          if (fast[x] != expect) {
+            fprintf(stderr,
+                    "FAIL OBJ AND baseline x=%d got=%08x expect=%08x\n",
+                    x, fast[x], expect);
+            return 1;
+          }
+        }
+      }
       cases++;
     }
   }
@@ -231,6 +252,31 @@ static int test_obj_and_color_window_oracle(Ppu *ppu) {
       if (memcmp(fast, scalar, sizeof(fast)) != 0) {
         fprintf(stderr, "FAIL Color Window oracle pair=%zu logic=%u\n", p, logic);
         return 1;
+      }
+      if (p == 0 && (logic == 0 || logic == 1)) {
+        /* Inside the combined color window, BG1 is unclipped and math is
+         * prevented (green); outside, main is clipped to black and fixedColor
+         * (red) is added. */
+        const int lo = (logic == 0) ? 33 : 80;
+        const int hi = (logic == 0) ? 190 : 128;
+        const uint32_t inside_color = fast[100];
+        const uint32_t outside_color = fast[10];
+        if (inside_color == outside_color) {
+          fprintf(stderr,
+                  "FAIL Color Window setup logic=%u: inside and outside "
+                  "colors identical (%08x)\n",
+                  logic, inside_color);
+          return 1;
+        }
+        for (int x = 0; x < 256; x++) {
+          uint32_t expect = (x >= lo && x <= hi) ? inside_color : outside_color;
+          if (fast[x] != expect) {
+            fprintf(stderr,
+                    "FAIL Color Window baseline logic=%u x=%d got=%08x expect=%08x\n",
+                    logic, x, fast[x], expect);
+            return 1;
+          }
+        }
       }
       cases++;
     }

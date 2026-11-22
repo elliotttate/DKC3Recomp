@@ -2069,7 +2069,7 @@ equal to the monitor; the menu item and Escape restored the bar and
   sequence as `$B6:B234`), full playthrough of both stages to the
   flagpole, and macOS rebuild.
 
-## Poisonous Pipeline (`$003F`) — PPU window logic, widescreen window alignment, and Koco wall-exit investigation
+## 2026-11-21 - Poisonous Pipeline (`$003F`) — PPU window logic, widescreen window alignment, and Koco wall-exit investigation
 
 - **Reported symptoms:**
   1. The pink water-surface pattern rendered far below the actual water
@@ -2247,8 +2247,9 @@ equal to the monitor; the menu item and Escape restored the bar and
       and stops OpenGL presentation while minimized/hidden or (on Windows)
       unfocused (`DKC3_RUN_IN_BACKGROUND=1` opts out of focus-loss pause while
       still pausing when minimized). Windowed paused instances repaint once on
-      demand for expose/resize; minimized and fullscreen unfocused windows
-      never call `SDL_GL_SwapWindow`.
+      demand for expose/resize; minimized windows never call
+      `SDL_GL_SwapWindow`, and unfocused fullscreen windows do not unless
+      `DKC3_RUN_IN_BACKGROUND=1`.
     - Sleeps in `MsgWaitForMultipleObjectsEx(0, NULL, 50, QS_ALLINPUT, ...)`
       while background-paused on Windows (with an anti-spin guard) instead of
       spinning or polling joysticks (`SDL_WaitEventTimeout` falls back to
@@ -2273,8 +2274,8 @@ equal to the monitor; the menu item and Escape restored the bar and
     `test_desktop_pacer.exe`, and `test_windows_menu.exe` (0 warnings in
     modified files).
   - Full Windows CTest suite: 29/29 passed (including updated `desktop_pacer`,
-    `windows_menu` asserting `SDL_SYSWMEVENT == SDL_DISABLE`, and all four
-    Windows SDL aspect smoke tests).
+    `windows_menu` asserting `SDL_SYSWMEVENT` matches the selected routing mode,
+    and all four Windows SDL aspect smoke tests).
   - Hidden-mode CPU measurement (`DKC3_DESKTOP_TEST_HIDDEN=1`, 16:9
     Reconstruct): before fix, 300 frames took `1.359 s` total CPU
     (`0.953 s` user, `0.406 s` kernel in `5.475 s` wall); after fix, 360 frames

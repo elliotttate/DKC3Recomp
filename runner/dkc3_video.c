@@ -1344,6 +1344,7 @@ bool Dkc3VideoSelectTerrainPhase(const Dkc3HdmaBands *bands,
       return false;
   }
   int best_lines = 0;
+  int best_phase_lines = 0;
   uint16_t best_h = frame_h;
   uint16_t best_v = frame_v;
   for (int index = 0; index < bands->count; index++) {
@@ -1353,31 +1354,43 @@ bool Dkc3VideoSelectTerrainPhase(const Dkc3HdmaBands *bands,
     if (!Dkc3VideoScrollAtTerrainPhase(h, v, camera_h, camera_v))
       continue;
     int lines = 0;
-    for (int other = index; other < bands->count; other++) {
+    int phase_lines = 0;
+    for (int other = 0; other < bands->count; other++) {
       const Dkc3HdmaBand *candidate = &bands->band[other];
-      if (candidate->h_scroll[layer] == h && candidate->v_scroll[layer] == v)
-        lines += (int)candidate->last_line - (int)candidate->first_line + 1;
+      const int span =
+          (int)candidate->last_line - (int)candidate->first_line + 1;
+      if (Dkc3VideoScrollAtTerrainPhase(candidate->h_scroll[layer],
+                                        candidate->v_scroll[layer], h, v)) {
+        phase_lines += span;
+        if (candidate->h_scroll[layer] == h &&
+            candidate->v_scroll[layer] == v)
+          lines += span;
+      }
     }
-    if (lines > best_lines) {
+    if (lines > best_lines ||
+        (lines == best_lines && phase_lines > best_phase_lines)) {
       best_lines = lines;
+      best_phase_lines = phase_lines;
       best_h = h;
       best_v = v;
     }
   }
-  if (best_lines == 0) {
-    /* Nothing renders at the 10-bit camera phase. When HDMA sets the terrain
-     * layer's scroll from its first line, the frame-start register is not
-     * what the frame renders: Toxic Tower's Rattly bounces move the camera
-     * five pixels vertically per frame, and Tidal Trouble's underwater HDMA
-     * writes BG2HOFS from scanline 1 so Enguarde's 7-8 px/frame charge
-     * leaves the register more than kDkc3VideoTerrainPhaseLeadX behind.
-     * Adopt the scroll whose terrain-phase neighborhood covers at least half
-     * the frame's lines (breaking ties by exact-line count so wavy water
-     * bands select their dominant scroll) when it lies within the follow
-     * distance of the camera — matching either the 10-bit vertical phase
-     * (64-row vertical maps) or the 8-bit 256-pixel vertical phase when the
-     * vertical scroll also follows the frame-start register (32-row
-     * horizontal maps staged one 256-pixel page above camera Y). */
+  if (best_lines == 0 || best_phase_lines * 2 < kDkc3HdmaLastLine) {
+    /* Either nothing renders at the 10-bit camera phase, or only a minority
+     * band does (e.g. a one-line HDMA band while the rest of the frame renders
+     * a shifted terrain phase). When HDMA sets the terrain layer's scroll from
+     * its first line, the frame-start register is not what the frame renders:
+     * Toxic Tower's Rattly bounces move the camera five pixels vertically per
+     * frame, and Tidal Trouble's underwater HDMA writes BG2HOFS from scanline
+     * 1 so Enguarde's 7-8 px/frame charge leaves the register more than
+     * kDkc3VideoTerrainPhaseLeadX behind. Adopt the scroll whose terrain-phase
+     * neighborhood covers at least half the frame's lines (breaking ties by
+     * exact-line count so wavy water bands select their dominant scroll) when
+     * it lies within the follow distance of the camera — matching either the
+     * 10-bit vertical phase (64-row vertical maps) or the 8-bit 256-pixel
+     * vertical phase within the first page when the vertical scroll also
+     * follows the frame-start register (32-row horizontal maps staged one
+     * 256-pixel page above camera Y). */
     int dominant_phase_lines = 0;
     int dominant_exact_lines = 0;
     uint16_t dominant_h = frame_h, dominant_v = frame_v;
@@ -1418,19 +1431,21 @@ bool Dkc3VideoSelectTerrainPhase(const Dkc3HdmaBands *bands,
          Dkc3VideoScrollPhaseDistance8(dominant_v, frame_v) <=
              kDkc3VideoTerrainPhaseFollowY);
     const bool v_matches_8bit =
-        v_follows_frame &&
+        v_follows_frame && dominant_v < 0x0100u &&
         Dkc3VideoScrollPhaseDistance8(dominant_v,
                                       (uint16_t)(camera_y & 0x00ffu)) <=
             kDkc3VideoTerrainPhaseFollowY;
-    if (dominant_phase_lines * 2 < kDkc3HdmaLastLine ||
-        (dominant_h == frame_h && dominant_v == frame_v) ||
-        Dkc3VideoScrollPhaseDistance(dominant_h, camera_h) >
-            kDkc3VideoTerrainPhaseFollowX ||
-        (!v_matches_10bit && !v_matches_8bit))
+    if (dominant_phase_lines * 2 >= kDkc3HdmaLastLine &&
+        (dominant_h != frame_h || dominant_v != frame_v) &&
+        Dkc3VideoScrollPhaseDistance(dominant_h, camera_h) <=
+            kDkc3VideoTerrainPhaseFollowX &&
+        (v_matches_10bit || v_matches_8bit)) {
+      *phase_h = dominant_h;
+      *phase_v = dominant_v;
+      return true;
+    }
+    if (best_lines == 0)
       return false;
-    *phase_h = dominant_h;
-    *phase_v = dominant_v;
-    return true;
   }
   *phase_h = best_h;
   *phase_v = best_v;

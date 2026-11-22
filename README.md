@@ -27,9 +27,15 @@ runtime's safe sprite coordinate range: 446x224, or approximately 20.91:9.
 Screens the map does not cover center the native frame between black margins.
 The placed-object spatial scan and final activation checks, the sprite renderer
 culls, and the static banana/star grids are widened to the presented view by
-`scripts/apply_dkc3_widescreen_overrides.py`, verified on Lakeside Limbo and
-on Doorstop Dash Bonus Level 1 ("Collect the Stars!") on Windows (macOS
-rebuild and other bonus stages remain unverified; see
+`scripts/apply_dkc3_widescreen_overrides.py`. Where the aspect permits, the
+placement scan and sprite culls also extend past the presented edges by an
+off-screen spawn/cull lead (48 pixels per side by default, configurable via
+`DKC3_SPAWN_LEAD`, clamped to 0–64; sprite-cull lead is further clamped by
+aspect to preserve nine-bit OAM X) so sprites activate and queue tile DMA
+before entering the frame. This widening is verified on Lakeside Limbo and
+in-game in 16:9 on Doorstop Dash Bonus Level 1 ("Collect the Stars!") on
+Windows; the `DKC3_CULL_WIDEN=0` native-parity capture, 16:10/21:9 traversal,
+other bonus stages, and macOS rebuild remain unverified (see
 [docs/BRINGUP.md](docs/BRINGUP.md)). The
 scan includes adjacent 256-pixel cells so 21:9 objects, including objects in
 quick saves made by older builds, do not wait for a cell boundary to activate.

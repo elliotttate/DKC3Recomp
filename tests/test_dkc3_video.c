@@ -1056,6 +1056,33 @@ int main(void) {
               "FAIL: stale frame-start register within camera lead replaced\n");
       return 1;
     }
+    /* A minority one-line HDMA band at the camera phase must not suppress
+     * a qualifying dominant-scroll fallback covering the rest of the frame. */
+    bands.count = 2;
+    bands.band[0].first_line = 1;   bands.band[0].last_line = 1;
+    bands.band[0].h_scroll[1] = 533; bands.band[0].v_scroll[1] = 23;
+    bands.band[1].first_line = 2;   bands.band[1].last_line = 224;
+    bands.band[1].h_scroll[1] = 520; bands.band[1].v_scroll[1] = 23;
+    if (!Dkc3VideoSelectTerrainPhase(&bands, 1, 533, 23, 0x0a0fu, 0x0018u,
+                                     &h, &v) ||
+        h != 520 || v != 23) {
+      fprintf(stderr,
+              "FAIL: one-line camera-phase band suppressed dominant fallback\n");
+      return 1;
+    }
+    /* The 8-bit vertical match is restricted to the first 256-pixel page
+     * (< 0x0100); a candidate far vertically whose low byte happens to match
+     * camera_y & 0xff must be rejected. */
+    bands.count = 1;
+    bands.band[0].first_line = 1;   bands.band[0].last_line = 224;
+    bands.band[0].h_scroll[1] = 520; bands.band[0].v_scroll[1] = 535;
+    if (Dkc3VideoSelectTerrainPhase(&bands, 1, 533, 535, 0x0a0fu, 0x0018u,
+                                    &h, &v) ||
+        h != 533 || v != 535) {
+      fprintf(stderr,
+              "FAIL: dominant_v >= 0x0100 matched via 8-bit low byte\n");
+      return 1;
+    }
   }
 
   {

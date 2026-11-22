@@ -693,6 +693,8 @@ static void Dkc3LoadExtra(SaveLoadInfo *sli, uint32_t version) {
   g_memsel = snapshot.memsel;
 }
 
+static void Dkc3ResetSpritePaletteOverflow(void);
+
 static void Dkc3OnStateLoaded(uint32_t version) {
   (void)version;
   /* Pack selection belongs to the current host session, not the snapshot.
@@ -714,6 +716,7 @@ static void Dkc3OnStateLoaded(uint32_t version) {
   s_bias_valid = false;
   s_state_loaded_recently = !getenv("DKC3_LOAD_AS_LEVEL_START");
   Dkc3VideoSetTerrainReady(false);
+  Dkc3ResetSpritePaletteOverflow();
 }
 
 static const RtlGameInfo kDkc3GameInfo = {
@@ -738,6 +741,221 @@ void Dkc3BeginDrawing(uint8_t *pixels, size_t pitch) {
 static uint16_t Dkc3ReadWram16(uint16_t address) {
   return (uint16_t)g_ram[address] |
          ((uint16_t)g_ram[(uint16_t)(address + 1u)] << 8);
+}
+
+enum {
+  kDkc3SpriteSlotCount = 24,
+  kDkc3SpriteTableBase = 0x0878u,
+  kDkc3SpriteSlotStride = 0x006Eu,
+  kDkc3WramPaletteReqId = 0x04EFu,
+  kDkc3WramPaletteSlotIds = 0x073Cu,
+  kDkc3WramPaletteTintedFlags = 0x0775u,
+  kDkc3WramPaletteLastOverflow = 0x1D4Bu,
+  kDkc3SpriteStaticTileBase = 0x01E0u,
+  kDkc3CommonPaletteId = 0x000Fu,
+  kDkc3BurstEffectSpriteType = 0x026Cu,
+  kDkc3WsExtObjMaxPalettes = 24,
+};
+
+static uint16_t s_sprite_overflow_pal[kDkc3SpriteSlotCount];
+
+static void Dkc3ResetSpritePaletteOverflow(void) {
+  memset(s_sprite_overflow_pal, 0, sizeof s_sprite_overflow_pal);
+  Dkc3PpuClearWsExtObjPalettes();
+}
+
+void Dkc3RecordSpritePaletteOverflow(uint16_t direct_page) {
+  if (!Dkc3VideoIsWidescreen())
+    return;
+  const uint16_t palette_id = Dkc3ReadWram16(kDkc3WramPaletteReqId);
+  if (palette_id == 0 || palette_id == kDkc3CommonPaletteId)
+    return;
+  const uint16_t slot_addr =
+      Dkc3ReadWram16((uint16_t)(direct_page + 0x0076u));
+  if (slot_addr < kDkc3SpriteTableBase)
+    return;
+  const uint16_t offset = (uint16_t)(slot_addr - kDkc3SpriteTableBase);
+  if ((offset % kDkc3SpriteSlotStride) != 0)
+    return;
+  const unsigned slot = (unsigned)(offset / kDkc3SpriteSlotStride);
+  if (slot >= kDkc3SpriteSlotCount)
+    return;
+  s_sprite_overflow_pal[slot] = palette_id;
+}
+
+static bool Dkc3LoadSpritePaletteColors(uint16_t palette_id,
+                                        uint16_t out[16]) {
+  if (!out || !g_rom || !g_snes || !g_snes->cart || palette_id == 0)
+    return false;
+  const size_t rom_size = (size_t)g_snes->cart->romSize;
+  const size_t ptr_off = 0x3D3201u + (size_t)palette_id * 2u;
+  if (ptr_off + 2u > rom_size)
+    return false;
+  const uint16_t ptr = (uint16_t)g_rom[ptr_off] |
+                       ((uint16_t)g_rom[ptr_off + 1u] << 8);
+  out[0] = 0;
+  if ((Dkc3ReadWram16(kDkc3WramPaletteTintedFlags) & 0x8000u) != 0) {
+    const uint16_t wram_ptr = (uint16_t)(ptr - 0x341Bu + 0x3180u);
+    for (unsigned c = 0; c < 15u; c++) {
+      out[c + 1u] = Dkc3ReadWram16((uint16_t)(wram_ptr + c * 2u));
+    }
+    return true;
+  }
+  const size_t data_off = 0x3D0000u + (size_t)ptr;
+  if (data_off + 30u > rom_size)
+    return false;
+  for (unsigned c = 0; c < 15u; c++) {
+    const size_t o = data_off + (size_t)c * 2u;
+    out[c + 1u] = (uint16_t)g_rom[o] | ((uint16_t)g_rom[o + 1u] << 8);
+  }
+  return true;
+}
+
+static uint16_t Dkc3SpriteTileRangeEnd(unsigned target_slot,
+                                       uint16_t tile_base) {
+  uint16_t tile_end = kDkc3SpriteStaticTileBase;
+  for (unsigned other = 0; other < kDkc3SpriteSlotCount; other++) {
+    if (other == target_slot)
+      continue;
+    const uint16_t base =
+        (uint16_t)(kDkc3SpriteTableBase + other * kDkc3SpriteSlotStride);
+    if (Dkc3ReadWram16(base) == 0)
+      continue;
+    const uint16_t oam_attr = Dkc3ReadWram16((uint16_t)(base + 0x1Eu));
+    if (oam_attr == 0)
+      continue;
+    const uint16_t other_base = (uint16_t)(oam_attr & 0x01FFu);
+    if (other_base > tile_base && other_base < tile_end)
+      tile_end = other_base;
+  }
+  return tile_end;
+}
+
+static void Dkc3SyncWidescreenObjPalettes(bool in_level) {
+  Dkc3PpuClearWsExtObjPalettes();
+  if (!Dkc3VideoIsWidescreen() || !in_level) {
+    if (!in_level)
+      memset(s_sprite_overflow_pal, 0, sizeof s_sprite_overflow_pal);
+    return;
+  }
+
+  /* Clear entries whose sprite slot despawned or received a real hardware
+   * palette (1..7). */
+  for (unsigned slot = 0; slot < kDkc3SpriteSlotCount; slot++) {
+    if (s_sprite_overflow_pal[slot] == 0)
+      continue;
+    const uint16_t base =
+        (uint16_t)(kDkc3SpriteTableBase + slot * kDkc3SpriteSlotStride);
+    const uint16_t type = Dkc3ReadWram16(base);
+    const uint16_t oam_attr = Dkc3ReadWram16((uint16_t)(base + 0x1Eu));
+    if (type == 0 || oam_attr == 0 || ((oam_attr >> 9) & 7u) != 0)
+      s_sprite_overflow_pal[slot] = 0;
+  }
+
+  /* Savestate recovery: if a loaded savestate already captured an overflowed
+   * palette ID in $1D4B and an active dynamic sprite is stuck on palette 0,
+   * re-attach $1D4B to it when $1D4B is not already loaded in hardware CGRAM
+   * or tracked on another slot. */
+  const uint16_t last_overflow = Dkc3ReadWram16(kDkc3WramPaletteLastOverflow);
+  if (last_overflow != 0 && last_overflow != kDkc3CommonPaletteId) {
+    bool known = false;
+    for (unsigned p = 0; p < 8u; p++) {
+      if (Dkc3ReadWram16((uint16_t)(kDkc3WramPaletteSlotIds + p * 2u)) ==
+          last_overflow) {
+        known = true;
+        break;
+      }
+    }
+    for (unsigned slot = 0; !known && slot < kDkc3SpriteSlotCount; slot++) {
+      if (s_sprite_overflow_pal[slot] == last_overflow)
+        known = true;
+    }
+    if (!known) {
+      int best_slot = -1;
+      for (unsigned slot = 0; slot < kDkc3SpriteSlotCount; slot++) {
+        if (s_sprite_overflow_pal[slot] != 0)
+          continue;
+        const uint16_t base =
+            (uint16_t)(kDkc3SpriteTableBase + slot * kDkc3SpriteSlotStride);
+        const uint16_t type = Dkc3ReadWram16(base);
+        const uint16_t oam_attr = Dkc3ReadWram16((uint16_t)(base + 0x1Eu));
+        if (type == 0 || type == kDkc3BurstEffectSpriteType ||
+            oam_attr == 0 || ((oam_attr >> 9) & 7u) != 0)
+          continue;
+        const uint16_t tile_base = (uint16_t)(oam_attr & 0x01FFu);
+        if (tile_base >= kDkc3SpriteStaticTileBase)
+          continue;
+        const uint16_t tile_end = Dkc3SpriteTileRangeEnd(slot, tile_base);
+        bool in_oam = false;
+        for (unsigned i = 0; i < 128u; i++) {
+          const uint16_t oam1 = g_ppu->oam[i * 2u + 1u];
+          if (((oam1 >> 9) & 7u) == 0) {
+            const uint16_t tile = (uint16_t)(oam1 & 0x01FFu);
+            if (tile >= tile_base && tile < tile_end) {
+              in_oam = true;
+              break;
+            }
+          }
+        }
+        if (in_oam)
+          best_slot = (int)slot;
+      }
+      if (best_slot >= 0)
+        s_sprite_overflow_pal[best_slot] = last_overflow;
+    }
+  }
+
+  uint16_t ext_ids[kDkc3WsExtObjMaxPalettes];
+  unsigned ext_count = 0;
+  uint8_t oam_ext_pal[128];
+  memset(oam_ext_pal, 0, sizeof oam_ext_pal);
+  bool any_active = false;
+
+  for (unsigned slot = 0; slot < kDkc3SpriteSlotCount; slot++) {
+    const uint16_t palette_id = s_sprite_overflow_pal[slot];
+    if (palette_id == 0)
+      continue;
+    const uint16_t base =
+        (uint16_t)(kDkc3SpriteTableBase + slot * kDkc3SpriteSlotStride);
+    const uint16_t oam_attr = Dkc3ReadWram16((uint16_t)(base + 0x1Eu));
+    const uint16_t tile_base = (uint16_t)(oam_attr & 0x01FFu);
+    if (tile_base >= kDkc3SpriteStaticTileBase)
+      continue;
+
+    uint8_t ext_slot = 0;
+    for (unsigned e = 0; e < ext_count; e++) {
+      if (ext_ids[e] == palette_id) {
+        ext_slot = (uint8_t)(e + 1u);
+        break;
+      }
+    }
+    if (ext_slot == 0) {
+      if (ext_count >= kDkc3WsExtObjMaxPalettes)
+        continue;
+      uint16_t colors[16];
+      if (!Dkc3LoadSpritePaletteColors(palette_id, colors))
+        continue;
+      ext_ids[ext_count] = palette_id;
+      ext_slot = (uint8_t)(ext_count + 1u);
+      ext_count++;
+      Dkc3PpuSetWsExtObjPalette(ext_slot, colors);
+    }
+
+    const uint16_t tile_end = Dkc3SpriteTileRangeEnd(slot, tile_base);
+    for (unsigned i = 0; i < 128u; i++) {
+      const uint16_t oam1 = g_ppu->oam[i * 2u + 1u];
+      if (((oam1 >> 9) & 7u) != 0)
+        continue;
+      const uint16_t tile = (uint16_t)(oam1 & 0x01FFu);
+      if (tile >= tile_base && tile < tile_end) {
+        oam_ext_pal[i] = ext_slot;
+        any_active = true;
+      }
+    }
+  }
+
+  if (any_active)
+    Dkc3PpuSetWsOamExtPalettes(oam_ext_pal, true);
 }
 
 /* $BB:A647 normally walks one list selected from the level's persistent
@@ -2480,6 +2698,7 @@ void Dkc3DrawPpuFrame(void) {
     PpuSetExtraSpace(g_ppu, 0);
   }
   Dkc3PatchInterpreterCull();
+  Dkc3SyncWidescreenObjPalettes(Dkc3InLevel());
 
   dma_startDma(g_dma, g_snesrecomp_last_hdmaen, true);
   for (int channel = 0; channel < 8; channel++) {

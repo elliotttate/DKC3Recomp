@@ -342,6 +342,32 @@ def adapt_music_transition(sources: dict, generated_dir: Path) -> None:
     sources[path] = text.replace(marker, marker + "\n    " + hook, 1)
 
 
+def adapt_palette_overflow(sources: dict, generated_dir: Path) -> None:
+    """Record sprite palette allocator overflows without changing guest state.
+
+    When all eight SNES hardware OBJ palettes ($073C[0..7]) are full in
+    widescreen, $BB:95E6 falls back to palette slot 0. Recording the failed
+    palette ID ($04EF) and active sprite slot (DP $76) lets the widescreen PPU
+    render that sprite with its true ROM/WRAM palette from an extended table.
+    """
+    path = find_unit(generated_dir, "request_palette_direct_M0X0")
+    if path in sources:
+        raise ValueError(f"{path.name} already adapted for another site")
+    text = add_include(path.read_text(encoding="utf-8"), GAME_INCLUDE)
+    hook = "Dkc3RecordSpritePaletteOverflow(cpu->D);"
+    if hook in text:
+        if text.count(hook) != 1:
+            raise ValueError("ambiguous existing palette overflow observer")
+        sources[path] = text
+        return
+    marker = "    cpu_trace_block(cpu, 0xBB95E6);"
+    if text.count(marker) != 1:
+        raise ValueError(
+            "expected one $BB:95E6 palette overflow block; "
+            f"found {text.count(marker)}")
+    sources[path] = text.replace(marker, marker + "\n    " + hook, 1)
+
+
 def apply_overrides(generated_dir: Path) -> list[Path]:
     """Widen DKC3's object activation and sprite culls to the presented view.
 
@@ -372,6 +398,7 @@ def apply_overrides(generated_dir: Path) -> list[Path]:
         scan, "0x7e4180", "Dkc3PlacementScanNext")
     sources[scan_path] = scan
     adapt_music_transition(sources, generated_dir)
+    adapt_palette_overflow(sources, generated_dir)
 
     found: set[str] = set()
     for path in sorted(generated_dir.glob("*.c")):

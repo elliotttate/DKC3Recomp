@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -77,3 +78,13 @@ uint16_t Dkc3PlacementScanNext(uint16_t native_placement);
  * cartridge frame; other hosts may ignore it without changing game state. */
 void Dkc3RecordMusicTransition(uint16_t command);
 int Dkc3TakeMusicTransition(uint16_t *command);
+
+/* The generated $BB:95E6 palette-allocator overflow block records the failed
+ * palette ID and sprite slot so widescreen can serve the sprite's true palette
+ * from host extended OBJ CGRAM without mutating guest WRAM or 4:3 output. */
+void Dkc3RecordSpritePaletteOverflow(uint16_t direct_page);
+
+/* Host-only widescreen extended OBJ palette setters in patched ppu.c. */
+void Dkc3PpuClearWsExtObjPalettes(void);
+void Dkc3PpuSetWsExtObjPalette(uint8_t slot, const uint16_t colors[16]);
+void Dkc3PpuSetWsOamExtPalettes(const uint8_t oam_ext_pal[128], bool active);

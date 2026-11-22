@@ -144,6 +144,47 @@ static inline void ClearBackdrop(const Ppu *ppu, PpuPixelPrioBufs *buf) {
   for (size_t i = begin; i < end; i += 4)
     *(uint64*)&buf->data[i] = 0x0500050005000500;
 }
+
+/* Host-only widescreen extended OBJ palette table for scenes where widened
+ * object windows exceed the 8 hardware SNES OBJ palette slots. Inactive at
+ * native 4:3 and whenever all active sprites fit in CGRAM 0..7. */
+enum { kDkc3WsExtObjMaxPalettes = 24 };
+static bool s_ws_ext_obj_active = false;
+static uint8_t s_ws_oam_ext_pal[128];
+static uint16_t s_ws_ext_obj_cgram[kDkc3WsExtObjMaxPalettes][16];
+static uint8_t s_ws_obj_ext_line[kPpuBufWidth];
+
+void Dkc3PpuClearWsExtObjPalettes(void) {
+  s_ws_ext_obj_active = false;
+}
+
+void Dkc3PpuSetWsExtObjPalette(uint8_t slot, const uint16_t colors[16]) {
+  if (slot == 0 || slot > kDkc3WsExtObjMaxPalettes || !colors)
+    return;
+  memcpy(s_ws_ext_obj_cgram[slot - 1], colors, sizeof(s_ws_ext_obj_cgram[0]));
+}
+
+void Dkc3PpuSetWsOamExtPalettes(const uint8_t oam_ext_pal[128], bool active) {
+  if (!active || !oam_ext_pal) {
+    s_ws_ext_obj_active = false;
+    return;
+  }
+  memcpy(s_ws_oam_ext_pal, oam_ext_pal, sizeof(s_ws_oam_ext_pal));
+  s_ws_ext_obj_active = true;
+}
+
+static inline uint32 PpuLookupPixelColor(const Ppu *ppu, uint16 pixel, uint32 i) {
+  if (s_ws_ext_obj_active) {
+    const uint8 layer = (pixel >> 8) & 0xf;
+    if (layer == 4 || layer == 6) {
+      const uint8 ext = s_ws_obj_ext_line[i];
+      if (ext != 0 && ext <= kDkc3WsExtObjMaxPalettes) {
+        return s_ws_ext_obj_cgram[ext - 1][pixel & 0x0f];
+      }
+    }
+  }
+  return ppu->cgram[pixel & 0xff];
+}
 >>>>
 
 @@ active-span-obj-clear
@@ -151,6 +192,11 @@ static inline void ClearBackdrop(const Ppu *ppu, PpuPixelPrioBufs *buf) {
     ClearBackdrop(&ppu->objBuffer);
 ====
     ClearBackdrop(ppu, &ppu->objBuffer);
+    if (s_ws_ext_obj_active) {
+      size_t ext_begin, ext_end;
+      PpuActiveSpan(ppu, &ext_begin, &ext_end);
+      memset(s_ws_obj_ext_line + ext_begin, 0, ext_end - ext_begin);
+    }
 >>>>
 
 @@ active-span-layerbuf-clear count=2
@@ -459,7 +505,7 @@ static inline void ClearBackdrop(const Ppu *ppu, PpuPixelPrioBufs *buf) {
       if (math_enabled_cur == 0 || fixed_color == 0 && !PPU_halfColor(ppu) && !rendered_subscreen) {
         for (; i < world_hi; i++) {
           uint16 pixel = ppu->bgBuffers[0].data[i];
-          uint32 color = ppu->cgram[pixel & 0xff];
+          uint32 color = PpuLookupPixelColor(ppu, pixel, i);
           *dst++ = ppu->brightnessMult[color & clip_color_mask] << 16 |
             ppu->brightnessMult[(color >> 5) & clip_color_mask] << 8 |
             ppu->brightnessMult[(color >> 10) & clip_color_mask];
@@ -470,7 +516,7 @@ static inline void ClearBackdrop(const Ppu *ppu, PpuPixelPrioBufs *buf) {
         for (; i < world_hi; i++) {
           uint16 pixel = ppu->bgBuffers[0].data[i];
           uint8 main_layer = (pixel >> 8) & 0xf;
-          uint32 color = ppu->cgram[pixel & 0xff], color2;
+          uint32 color = PpuLookupPixelColor(ppu, pixel, i), color2;
           uint32 r = color & clip_color_mask;
           uint32 g = (color >> 5) & clip_color_mask;
           uint32 b = (color >> 10) & clip_color_mask;
@@ -478,7 +524,7 @@ static inline void ClearBackdrop(const Ppu *ppu, PpuPixelPrioBufs *buf) {
           if (math_flags & (1 << main_layer)) {
             if (math_flags & 0x100) {  // addSubscreen ?
               if ((ppu->bgBuffers[1].data[i] & 0xff) != 0)
-                color2 = ppu->cgram[ppu->bgBuffers[1].data[i] & 0xff], color_map = half_color_map;
+                color2 = PpuLookupPixelColor(ppu, ppu->bgBuffers[1].data[i], i), color_map = half_color_map;
               else  // Don't halve if PPU_addSubscreen(ppu) && backdrop
                 color2 = fixed_color;
             } else {
@@ -863,7 +909,7 @@ extern Snes *g_snes;
               if (capture_slot) {
 ====
 #if defined(DKC3_PPU_NEON) || defined(DKC3_PPU_SSE2)
-            if (!capture_slot && px_left == 0 && px_right == 8) {
+            if (!capture_slot && !s_ws_ext_obj_active && px_left == 0 && px_right == 8) {
               const uint32 chunky = Dkc3Chunky4bpp(plane, (oam1 & 0x4000) != 0);
 #if defined(DKC3_PPU_NEON)
               const int16x8_t sh_ = {0, -4, -8, -12, 0, -4, -8, -12};
@@ -897,4 +943,50 @@ extern Snes *g_snes;
                     (bits >> 14) & 4 | (bits >> 21) & 8;
         if (pixel == 0) continue;
               if (capture_slot) {
+>>>>
+
+@@ sprite-ext-pal-store
+<<<<
+        // Lower OAM indices are processed later and overwrite higher ones.
+                dst[0] = z + pixel;
+====
+        // Lower OAM indices are processed later and overwrite higher ones.
+                dst[0] = z + pixel;
+                if (s_ws_ext_obj_active)
+                  s_ws_obj_ext_line[dst - ppu->objBuffer.data] = s_ws_oam_ext_pal[slot];
+>>>>
+
+@@ composite-ext-obj-fallback-nomath
+<<<<
+        if (outside_world && !keep_hud) {
+          dst[0] = 0;
+        } else {
+          uint32 color = ppu->cgram[pixel & 0xff];
+====
+        if (outside_world && !keep_hud) {
+          dst[0] = 0;
+        } else {
+          uint32 color = PpuLookupPixelColor(ppu, pixel, i);
+>>>>
+
+@@ composite-ext-obj-fallback-math
+<<<<
+        if (outside_world && !keep_hud) {
+          dst[0] = 0;
+        } else {
+          uint32 color = ppu->cgram[pixel & 0xff], color2;
+====
+        if (outside_world && !keep_hud) {
+          dst[0] = 0;
+        } else {
+          uint32 color = PpuLookupPixelColor(ppu, pixel, i), color2;
+>>>>
+
+@@ composite-ext-obj-fallback-sub
+<<<<
+              if ((ppu->bgBuffers[1].data[i] & 0xff) != 0)
+                color2 = ppu->cgram[ppu->bgBuffers[1].data[i] & 0xff], color_map = half_color_map;
+====
+              if ((ppu->bgBuffers[1].data[i] & 0xff) != 0)
+                color2 = PpuLookupPixelColor(ppu, ppu->bgBuffers[1].data[i], i), color_map = half_color_map;
 >>>>

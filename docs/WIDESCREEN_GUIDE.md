@@ -84,10 +84,12 @@ beyond the authored world never shows; the slide exposes ring columns the
 store must serve (`WsShadowSetNativeViewportInset`) and the PPU decodes
 nine-bit sprite X as positive up to 256 + extra + bias. A wall can be a
 camera bound or a map-derived hold (void beside the window and the player
-pinned there). A room narrower than two margins (the bonus rooms: 24
-pixels of camera travel against 43-pixel margins at 16:9) cannot hide both
-walls; the glide keeps it locked to the camera with each margin clamped
-to the room, exactly as `bars`, rather than centering it.
+pinned there). A room shorter than the two releases (2 x extra x 8
+pixels of camera travel: 688 at 16:9) cannot hide both walls at the glide
+rate. Its shift shrinks to travel / 16 so both releases still fit at one
+pixel per eight, without pins, and each margin is clamped to the room; a
+room narrower than two margins gets no shift and is exactly `bars`. The
+first level's bonus rooms travel 24 and 128 pixels.
 
 **Objects.** The cartridge activates, releases, and culls objects against
 its 256-column screen with a little slack. The overrides script rewrites
@@ -137,7 +139,7 @@ one 256-pixel page early until it was.
 | Backdrop through a hole beside a held wall | classifier fill map ('.', '+', '#') for the source window | player-held wall with void beyond; structural wall rule, mirror on rejected rows |
 | Wrong strip of tiles at one native edge while the view is slid | compare glide against reflect per world column | biased ring tail not served by the store (inset) |
 | Abrupt jump stepping away from a wall | | endpoint bias; replaced by glide |
-| Background keeps sliding after the player stops and the HUD drifts sideways in a small room (bonus games) | prefill trace: bias against camera per frame | glide centering a room narrower than two margins: the target bias followed the camera 1:1 and the 1 px/frame limit lagged it; such rooms now lock to the camera |
+| Background keeps sliding after the player stops and the HUD drifts sideways in a small room (bonus games) | prefill trace: bias against camera per frame | glide pinning a room shorter than its two releases: the target bias followed the camera nearly 1:1 and the 1 px/frame limit lagged it; such rooms now take a shift of travel / 16 (none below two margins) |
 | Objects pop in inside the margin, or vanish while still visible | spawn trace, OAM trace, before/after with widening off | activation window, release window, or renderer cull not widened |
 | Banana arcs or other tile rows appear only at the native edge | OAM census for first appearance at x in [256, 266) | separate grid renderer with its own clips and sign-derived ninth bit |
 | Objects cut exactly at the authentic margin near a wall | | PPU nine-bit X limit must include the bias |
@@ -256,8 +258,8 @@ of the frame's west edge with the camera unmoved, or the first eight
 frames after a level change; a state restore is not a level start). The
 presented bias moves at most one pixel per frame toward its target. That
 limit is only safe while the target moves slower than the camera, which is
-why a room narrower than two margins takes no bias at all: a centered
-target there tracks the camera pixel for pixel.
+why a room shorter than the two releases takes a reduced, unpinned shift:
+a pinned target there tracks the camera nearly pixel for pixel.
 
 ### 6.6 Special streamed layers
 

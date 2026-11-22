@@ -535,17 +535,31 @@ int main(void) {
   /* glide in a room narrower than two margins (the bonus room of the first
    * level travels 24 pixels, $0100-$0118): the view stays locked
    * to the cartridge camera and each margin is clamped to the room, so the
-   * background scrolls exactly as the native frame does. A room of exactly
-   * two margins still glides. */
+   * background scrolls exactly as the native frame does. */
   if (!CheckMargins(0x0100, 0x0120, 0, 0, 26) ||
       !CheckMargins(0x0110, 0x0120, 0, 16, 16) ||
       !CheckMargins(0x0120, 0x0120, 0, 26, 0) ||
       !CheckMargins(0x0100, 0x0118, 0, 0, 24) ||
       !CheckMargins(0x010c, 0x0118, 0, 12, 12) ||
-      !CheckMargins(0x0118, 0x0118, 0, 24, 0) ||
-      !CheckMargins(0x0100, 0x0134, 26, 26, 26) ||
-      !CheckMargins(0x0134, 0x0134, -26, 26, 26)) {
+      !CheckMargins(0x0118, 0x0118, 0, 24, 0)) {
     fprintf(stderr, "FAIL: 16:10 glide in a narrow room\n");
+    return 1;
+  }
+  /* glide in a room shorter than its two releases (2 * 26 * 8 = 416 pixels
+   * at 16:10; the first level's second bonus room travels 128): the wall
+   * shift shrinks to range / 16 so both releases fit at one pixel per
+   * eight, no pin forces the bias to track the camera, and each margin is
+   * clamped to the room. A room of exactly 416 pixels glides in full. */
+  if (!CheckMargins(0x0100, 0x0134, 3, 3, 26) ||
+      !CheckMargins(0x0134, 0x0134, -3, 26, 3) ||
+      !CheckMargins(0x0100, 0x0180, 8, 8, 26) ||
+      !CheckMargins(0x0108, 0x0180, 7, 15, 26) ||
+      !CheckMargins(0x0140, 0x0180, 0, 26, 26) ||
+      !CheckMargins(0x0178, 0x0180, -7, 26, 15) ||
+      !CheckMargins(0x0180, 0x0180, -8, 26, 8) ||
+      !CheckMargins(0x0100, 0x02a0, 26, 26, 26) ||
+      !CheckMargins(0x02a0, 0x02a0, -26, 26, 26)) {
+    fprintf(stderr, "FAIL: 16:10 glide in a short room\n");
     return 1;
   }
   {

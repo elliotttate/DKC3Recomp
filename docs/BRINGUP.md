@@ -2724,3 +2724,34 @@ equal to the monitor; the menu item and Escape restored the bar and
   answer for a room the map does not extend.
 - **Unverified:** the live desktop app, other bonus rooms, ordinary levels at
   a wall in a live run (covered only by the unchanged unit cases), macOS.
+
+## 2026-11-22 - second bonus room still slides in widescreen (glide in short rooms)
+
+- **Symptom:** in the same level's other bonus room (the reported release
+  quick save, a "Collect the Stars!" room), the background kept moving after
+  the player stopped in widescreen, as in the first bonus room.
+- **Measurement:** camera range `$0100..$0180` (128 pixels). That is wider
+  than two 16:9 margins (86), so the previous narrow-room lock did not
+  apply, but shorter than the glide's two releases (2 x 43 x 8 = 688). The
+  pins held the presented center inside `[$012B, $0155]`, 42 pixels for 128
+  of camera travel, so the target bias moved about two pixels for every
+  three of camera. On a 16:9 replay (90 frames Right, 90 Left) the bias went
+  from `-43` and was still climbing one pixel a frame at `+15` with the
+  camera parked at `$0102`, 15 frames after it stopped.
+- **Fix:** under `glide`, a room shorter than `2 * extra * 8` pixels uses a
+  wall shift of `range / 16` (none when narrower than two margins), released
+  at the usual one pixel per eight, without the pins; margins clamp to the
+  authored extent. Both releases then fit in the room, so the bias changes
+  at most one pixel per eight of camera travel and never outruns the
+  one-pixel-per-frame limit. Rooms of `2 * extra * 8` pixels or more,
+  `shift`, `bars`, and `reflect` are unchanged. Tests: 16:10 short rooms of
+  52 and 128 pixels, and a 416-pixel room that still glides in full.
+- **Verified (headless, release quick save):** at 16:9 the bias moves from
+  `-8` to `+8` in steps of at most one, stops when the camera stops, and
+  the native 256 columns of all 56 sampled frames match the 4:3 run pixel
+  for pixel at the biased offset. 16:10 gives the same `-8..+8`, and 21:9
+  (two margins = 190 > 128) stays at bias 0. With `DKC3_CULL_WIDEN=0` the
+  16:9 WRAM hash equals the 4:3 hash. The first bonus room's frames and
+  hashes are unchanged from the previous fix. All 30 CTest checks pass.
+- **Unverified:** the live desktop app, the bonus rooms of later
+  levels, macOS.

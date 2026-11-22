@@ -237,29 +237,39 @@ void Dkc3VideoPresentationMarginsBounded(uint16_t camera_x,
        * upper-reach], so the wide frame stays inside the level. */
       const int pin_low = lower + reach - (int)camera_x;
       const int pin_high = upper - reach - (int)camera_x;
-      /* A room narrower than two margins (DKC3's bonus rooms travel 24
-       * pixels) cannot hide both walls. Centering it would make the target
-       * bias follow the camera pixel for pixel, which the host's
-       * one-pixel-per-frame limit turns into a lag and a drift back after
-       * the player stops, and would slide the screen-fixed HUD with it.
-       * The glide keeps such a room locked to the cartridge camera and
-       * clamps each margin to the authored extent, as bars does. */
-      const bool camera_locked =
-          s_edge_policy == kDkc3VideoEdgeGlide && range < 2 * extra;
+      /* The glide's shift at each wall: one margin, released one pixel per
+       * kDkc3VideoEdgeGlideSpan pixels of camera travel, so the two walls'
+       * releases need 2 * extra * kDkc3VideoEdgeGlideSpan pixels of room.
+       * A shorter room (DKC3's bonus rooms travel 24 to 128 pixels) cannot
+       * hide both walls at that rate: pinning it would make the target bias
+       * follow the camera nearly pixel for pixel, which the host's
+       * one-pixel-per-frame limit turns into a lag and a drift long after
+       * the player stops, sliding the screen-fixed HUD with it. There the
+       * shift shrinks so both releases fit at the same rate, the pins are
+       * dropped, and each margin is clamped to the authored extent. A room
+       * narrower than two margins takes no shift at all and is exactly
+       * bars. */
+      int shift = extra;
+      bool short_room = false;
+      if (s_edge_policy == kDkc3VideoEdgeGlide &&
+          range < 2 * extra * kDkc3VideoEdgeGlideSpan) {
+        short_room = true;
+        shift = range < 2 * extra
+                    ? 0
+                    : range / (2 * kDkc3VideoEdgeGlideSpan);
+      }
       int wanted = 0;
-      if (s_edge_policy == kDkc3VideoEdgeGlide && !camera_locked) {
-        /* One margin of inward shift at each wall, released one pixel per
-         * kDkc3VideoEdgeGlideSpan pixels of camera travel away from it. */
-        const int span = extra * kDkc3VideoEdgeGlideSpan;
+      if (s_edge_policy == kDkc3VideoEdgeGlide && shift > 0) {
+        const int span = shift * kDkc3VideoEdgeGlideSpan;
         const int west_travel = (int)camera_x - lower;
         const int east_travel = upper - (int)camera_x;
         if (west_travel >= 0 && west_travel < span)
-          wanted += extra - west_travel / kDkc3VideoEdgeGlideSpan;
+          wanted += shift - west_travel / kDkc3VideoEdgeGlideSpan;
         if (east_travel >= 0 && east_travel < span)
-          wanted -= extra - east_travel / kDkc3VideoEdgeGlideSpan;
+          wanted -= shift - east_travel / kDkc3VideoEdgeGlideSpan;
       }
-      result_bias = camera_locked
-          ? 0
+      result_bias = short_room
+          ? Dkc3VideoClampInt(wanted, -shift, shift)
           : Dkc3VideoClampInt(Dkc3VideoClampInt(wanted, pin_low, pin_high),
                               -extra, extra);
       const int presented = (int)camera_x + result_bias;

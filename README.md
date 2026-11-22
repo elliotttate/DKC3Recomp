@@ -94,6 +94,11 @@ Control-click the app in Finder, choose **Open**, and confirm once. The project
 is still in bring-up: the tested boot, launcher, save-state, and Lakeside Limbo
 paths work, but full-game compatibility is not yet claimed.
 
+The game's opening Rare logo, bouncing/developer credit intro, and copyright
+screen can be skipped directly to the Title Screen with the **Start** button
+on cold boot (`DKC3_SKIP_INTRO_START=0` restores the unskippable original
+first-boot behavior).
+
 ## Building on Windows
 
 The Windows x64 SDL build has passed the full project CTest suite (see

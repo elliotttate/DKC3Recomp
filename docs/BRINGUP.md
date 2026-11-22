@@ -2485,3 +2485,56 @@ equal to the monitor; the menu item and Escape restored the bar and
   - Live interactive Windows desktop verification by the user beating the first
     boss (Belcha's Barn) and collecting the token with no black screen or crash.
 - **Unverified:** macOS rebuild.
+
+## 2026-11-22 - Skip opening logo and bouncing/developer credit scenes with Start
+
+- **Feature:** Allow pressing the **Start** button on cold boot to skip DKC3's
+  opening Rare bouncing/rolling log (`$B2:8751`, State 0), bouncing/developer
+  credit intro (`$B2:8B2C`, State 1), and copyright screen (`$B2:8EE5`,
+  State 3) directly to the Title Screen (`$B2:8E05`, State 2).
+- **Cartridge mechanism (verified from bank `$80` and `$B2` disassembly):**
+  - On cold boot `$80:82B4` initializes `$06AB = $0000`, causing both
+    `$B2:8788` (State 0) and `$B2:8B76` (State 1) to skip controller polling.
+    After the first attract-mode loop completes State 3 (`$B2:8F28`), the
+    cartridge sets bits 0 and 2 of `$06AB` (`$0005`), enabling its own button
+    check (`$04CE & $9080`), fade-out (`$B2:8603`), and direct transition to
+    State 2 (Title Screen via `$B2:850E`).
+  - State 3 (`$B2:8EE5`) polls buttons but waits until scene frame timer
+    `$00F4 >= $005A` (90 frames) before calling `$B2:8603`.
+  - When skipping State 0/1 before State 3 has polled `$4016` (`JOYSER0`) 16
+    times, `snesrecomp`'s `joypad1Index` is still 0 (whereas real hardware's
+    VBlank auto-joypad read shifts all 16 bits, leaving `$4016` bit 0 = 1),
+    causing `$80:8B49` to discard `$04CA`/`$04CE`. Advancing `joypad1Index` to
+    16 under `autoJoyRead` when the skip triggers lets the cartridge's own
+    first poll succeed cleanly.
+- **Changes:**
+  - `runner/dkc3_intro_skip.h`, `runner/dkc3_intro_skip.c`: added
+    `Dkc3IntroSkipEnabledFromEnv()` (enabled by default; `DKC3_SKIP_INTRO_START=0`
+    disables) and `Dkc3ApplyIntroStartSkip()`, which sets `$06AB |= $0005` in
+    States 0/1 and advances `$00F4` to `$005A` in State 3 only when Start is
+    pressed and no fade (`$04ED != 0`, `$00BC & 1`) is active.
+  - `runner/dkc3_game.c`: called `Dkc3ApplyIntroStartSkip()` in
+    `Dkc3RunOneFrame()` before NMI dispatch and synced `joypad1Index = 16` when
+    triggered under `autoJoyRead`.
+  - `tests/test_dkc3_intro_skip.c` and `CMakeLists.txt`: wired into all three
+    game targets (`dkc3_snesrecomp_headless`, `dkc3_snesrecomp_sdl`,
+    `dkc3_snesrecomp_desktop`) and added ROM-free unit test `dkc3_intro_skip`.
+  - `README.md`: documented the Start-button intro skip and env override.
+- **Verified (Windows x64 Release, private ROM):**
+  - Rebuilt `dkc3_snesrecomp_headless.exe`, `DKC3RecompSDL.exe`,
+    `DKC3Recomp.exe`, and `test_dkc3_intro_skip.exe` cleanly.
+  - Full Windows Release CTest suite: 30/30 passed (including `dkc3_intro_skip`,
+    `supplied_rom_headless_boot`, and all four Windows SDL aspect smoke tests).
+  - Headless ROM verification (7 scripted scenarios):
+    - 900-frame no-input boot: frame and WRAM hashes bit-identical to pre-change
+      baseline (`2dbea76e20ae...` / `f05d976d802c...`).
+    - Start at frame 200 (State 0) and Start held from frame 1 through fade-in:
+      both fade out cleanly and reach Title Screen (`$B2:8E05`) by frame 350.
+    - Start at frame 500 (State 1): reaches Title Screen (`$B2:8E05`) by frame 650.
+    - Start at frame 1140 (State 3): reaches Title Screen (`$B2:8E05`) by frame 1260.
+    - Start during State 0 followed by Start on Title Screen: enters File Select
+      (`$80:9586`) cleanly.
+    - `DKC3_SKIP_INTRO_START=0` with Start at frame 200: stays in State 0
+      (`$B2:8751`, `$06AB=$0000`).
+  - Live interactive Windows desktop playtest verified by the user.
+- **Unverified:** macOS rebuild.

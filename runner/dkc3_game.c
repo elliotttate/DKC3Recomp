@@ -1,5 +1,6 @@
 #include "dkc3_game.h"
 #include "dkc3_hdma.h"
+#include "dkc3_intro_skip.h"
 #include "dkc3_video.h"
 #include "dkc3_facts.h"
 #include "dkc3_spc_music.h"
@@ -615,6 +616,19 @@ static void Dkc3RunOneFrame(void) {
   if (first_frame) {
     cpu_state_init(&g_cpu, g_ram);
     s_cpu_initialized = true;
+  }
+  if (!first_frame && g_snes) {
+    if (Dkc3ApplyIntroStartSkip(
+            g_ram, 0x20000u, g_snes->input1_currentState,
+            Dkc3IntroSkipEnabledFromEnv(getenv("DKC3_SKIP_INTRO_START")))) {
+      /* On real hardware, VBlank auto-joypad read shifts all 16 bits out of
+       * JOYSER0 ($4016), leaving subsequent reads returning 1 (controller
+       * present). When skipping State 0/1 before State 3 has polled 16 times,
+       * advance joypad1Index to 16 so $80:8B49 sees the plugged-in pad on the
+       * very first button poll. */
+      if (g_snes->autoJoyRead && g_snes->joypad1Index < 16u)
+        g_snes->joypad1Index = 16u;
+    }
   }
   if (!first_frame && g_snes->nmiEnabled) {
     /* DKC3's boot/intro NMI is a non-returning frame dispatcher. The handler

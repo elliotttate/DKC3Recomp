@@ -533,3 +533,42 @@ RecompReturn interp_tier_dispatch_balanced(CpuState *cpu, uint32_t target_pc24,
         }
         return RECOMP_RETURN_NORMAL;
 >>>>
+
+# DKC3 sets a per-frame master-cycle deadline (Dkc3RunOneFrame) and advances
+# the SPC on RtlRunFrame's absolute guest timeline (rtl_sync_apu_to_cpu_locked
+# on APU port reads, apu_schedulePortWrite on writes, and
+# rtl_sync_apu_frame_boundary at frame end). Running the legacy relative
+# bridge_apu_flush catch-up on top of that timeline double-counts SPC cycles
+# during interpreter-heavy frames (such as SPC music uploads), overflowing the
+# 8192-sample DSP ring and stalling subsequent frames into audio starvation.
+@@ apu-flush-use-frame-timeline
+<<<<
+    if (interp_bridge_use_absolute_apu_timeline(
+            rtl_apu_frame_timeline_active(),
+            g_snes && cart_has_sa1(g_snes->cart))) {
+        s_apu_pending_master = 0;
+        g_apu_last_sync_master = cpu->master_cycles;
+        return;
+    }
+====
+    if (rtl_apu_frame_timeline_active()) {
+        s_apu_pending_master = 0;
+        g_apu_last_sync_master = cpu->master_cycles;
+        return;
+    }
+>>>>
+
+@@ apu-loop-use-frame-timeline
+<<<<
+                if (!interp_bridge_use_absolute_apu_timeline(
+                        rtl_apu_frame_timeline_active(),
+                        g_snes && cart_has_sa1(g_snes->cart))) {
+                    s_apu_pending_master += _master;
+                    if (s_apu_pending_master >= 4096) bridge_apu_flush(cpu);
+                }
+====
+                if (!rtl_apu_frame_timeline_active()) {
+                    s_apu_pending_master += _master;
+                    if (s_apu_pending_master >= 4096) bridge_apu_flush(cpu);
+                }
+>>>>

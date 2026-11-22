@@ -1,0 +1,81 @@
+# DKC3 adaptations of common_rtl.c. Applied to a build-directory copy by
+# scripts/apply_dkc3_runtime_patches.py.
+file: runner/src/common_rtl.c
+
+# After reset, savestate load, or rewind restore, apu_clearPortQueue leaves
+# apu->portTimeValid false until the next CPU write to $2140-$217F. While it
+# stays false, apu_runToGuestCycle returns immediately without advancing the
+# SPC, starving audio on every frame that does not write an APU port. Anchor
+# the guest timeline at the start of the frame so rtl_sync_apu_frame_boundary
+# advances the SPC by exactly one frame (17,088 cycles / 534 DSP samples) on
+# every frame, whether or not the CPU touched an APU port.
+@@ apu-anchor-frame-timeline
+<<<<
+  /* Establish the guest timestamp origin before any frame code can touch an
+   * APU port. Host turbo changes how quickly frames arrive, not their guest
+   * duration. */
+  g_apu_frame_start_master = g_cpu.master_cycles;
+  g_apu_frame_time_valid = true;
+====
+  /* Establish the guest timestamp origin before any frame code can touch an
+   * APU port. Host turbo changes how quickly frames arrive, not their guest
+   * duration. */
+  g_apu_frame_start_master = g_cpu.master_cycles;
+  g_apu_frame_time_valid = true;
+  RtlApuLock();
+  if (g_snes && g_snes->apu && !g_snes->apu->portTimeValid) {
+    uint64_t frame_start_guest =
+        (uint64_t)snes_frame_counter * RTL_APU_CYCLES_PER_FRAME;
+    g_snes->apu->portGuestAnchor = frame_start_guest;
+    g_snes->apu->portTargetAnchor = g_snes->apu->portClock;
+    g_snes->apu->portLastGuest = frame_start_guest;
+    g_snes->apu->portLastTarget = g_snes->apu->portClock;
+    g_snes->apu->portTimeValid = true;
+  }
+  RtlApuUnlock();
+>>>>
+
+# apu_saveload snapshots only guest APU state [ram, pad+6); the host port
+# queue and guest-to-SPC mapping live after pad and are intentionally not
+# serialized. Clear them on snapshot load (both file and rewind memory loads)
+# so stale queued writes and a stale portGuestAnchor from before the load do
+# not survive across a snes_frame_counter jump.
+@@ apu-clear-port-queue-on-file-load
+<<<<
+  if (hdr[1] >= 5 && g_rtl_game_info && g_rtl_game_info->state_load_extra) {
+    long pos = ftell(f);
+    if (pos >= 0 && fseek(f, 0, SEEK_END) == 0) {
+      long end = ftell(f);
+      if (fseek(f, pos, SEEK_SET) == 0 && end > pos)
+        g_rtl_game_info->state_load_extra(&fs.base, hdr[1]);
+    }
+  }
+  RtlApuUnlock();
+====
+  if (hdr[1] >= 5 && g_rtl_game_info && g_rtl_game_info->state_load_extra) {
+    long pos = ftell(f);
+    if (pos >= 0 && fseek(f, 0, SEEK_END) == 0) {
+      long end = ftell(f);
+      if (fseek(f, pos, SEEK_SET) == 0 && end > pos)
+        g_rtl_game_info->state_load_extra(&fs.base, hdr[1]);
+    }
+  }
+  if (!fs.error && g_snes && g_snes->apu)
+    apu_clearPortQueue(g_snes->apu);
+  RtlApuUnlock();
+>>>>
+
+@@ apu-clear-port-queue-on-memory-load
+<<<<
+  if (hdr[1] >= 5 && g_rtl_game_info && g_rtl_game_info->state_load_extra &&
+      memory.position < size && !memory.error)
+    g_rtl_game_info->state_load_extra(&memory.base, hdr[1]);
+  RtlApuUnlock();
+====
+  if (hdr[1] >= 5 && g_rtl_game_info && g_rtl_game_info->state_load_extra &&
+      memory.position < size && !memory.error)
+    g_rtl_game_info->state_load_extra(&memory.base, hdr[1]);
+  if (!memory.error && g_snes && g_snes->apu)
+    apu_clearPortQueue(g_snes->apu);
+  RtlApuUnlock();
+>>>>

@@ -114,6 +114,18 @@ class RuntimePatches(unittest.TestCase):
         self.assertIn("return interp_bridge_lle_yield_unwind(cpu, target_pc24 & 0xFFFFFFu);", bridge)
         self.assertIn("return interp_bridge_lle_yield_unwind(cpu, post_return_pc);", bridge)
 
+    def test_apu_timeline_uses_single_clock_and_clears_port_queue_on_load(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            out = pathlib.Path(temporary)
+            patches.apply_directory(PATCHES, SNESRECOMP, out)
+            bridge = (out / "interp_bridge.c").read_text()
+            rtl = (out / "common_rtl.c").read_text()
+        self.assertNotIn("interp_bridge_use_absolute_apu_timeline(", bridge)
+        self.assertIn("if (rtl_apu_frame_timeline_active()) {", bridge)
+        self.assertIn("if (!rtl_apu_frame_timeline_active()) {", bridge)
+        self.assertIn("if (g_snes && g_snes->apu && !g_snes->apu->portTimeValid) {", rtl)
+        self.assertEqual(rtl.count("apu_clearPortQueue(g_snes->apu);"), 3)
+
     def _apply_edited(self, edit):
         """Apply the patch set to a copy of the pinned runtime after `edit`."""
         with tempfile.TemporaryDirectory() as temporary:

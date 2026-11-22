@@ -2350,3 +2350,74 @@ equal to the monitor; the menu item and Escape restored the bar and
       to the pre-fix 16:9 render.
 - **Unverified:** macOS rebuild and live interactive desktop playtest in Tidal
   Trouble.
+
+## 2026-11-21 - Fix general audio distortion (DSP ring overflow and starvation)
+
+- **Symptom:** Audio distorted / buzzed during launch (~5–7 seconds in, right
+  as the title screen music starts) and after savestate loads / rewinds.
+- **Root causes in the pinned `snesrecomp` APU synchronization path:**
+  1. **Double-counted SPC cycles in `interp_bridge.c`:**
+     `interp_bridge_use_absolute_apu_timeline()` only suppressed the legacy
+     relative `bridge_apu_flush()` catch-up for SA-1 cartridges. Because DKC3
+     is not SA-1, `interp_bridge.c` ran `bridge_apu_flush()` (`snes_catchupApu`)
+     *on top of* `RtlRunFrame()`'s absolute guest-cycle timeline
+     (`rtl_sync_apu_to_cpu_locked()`, `apu_schedulePortWrite()`, and
+     `rtl_sync_apu_frame_boundary()`). During interpreter-heavy phases such as
+     SPC music uploads (frames 60–120 and 378–397), the SPC ran ahead of real
+     time, overflowing the 8,192-sample DSP ring (before fix on a 600-frame SDL
+     boot with `SNESRECOMP_AUDIO_STATS=1`: `8,719` dropped samples, `2,807`
+     audible dropped across `29` drop runs, `hiwater=8192`). Once the upload
+     finished, `apu_runToGuestCycle()` saw `portClock >= target` and stalled
+     for ~20 frames until guest time caught up, draining the ring dry and
+     starving `rtl_render_native()` for 6 consecutive frames (`underflows=10`,
+     400 zero samples per 533-sample frame at frames 412–417, producing a 60 Hz
+     chopping buzz).
+  2. **Unanchored guest timeline and stale port queue after reset / savestate
+     load / rewind (`common_rtl.c`):**
+     - `apu_saveload()` intentionally does not serialize the host port queue or
+       guest-to-SPC anchor, yet neither `RtlLoadSnapshot()` nor
+       `RtlLoadSnapshotFromMemory()` called `apu_clearPortQueue()`. Across a
+       `snes_frame_counter` jump (savestate load or rewind), stale anchors
+       caused either repeated `[apu] frame-boundary guest-clock sync timed out`
+       stalls (forward jump) or silent starvation (backward jump).
+     - Whenever `apu->portTimeValid` was `false` (after reset or
+       `apu_clearPortQueue()`), `apu_runToGuestCycle()` returned immediately
+       without advancing the SPC until the next CPU write to `$2140-$217F`. On
+       `saves/dkc3s0.sav`, 596 of 598 frames starved with 445 zero samples per
+       533-sample frame.
+- **Changes:**
+  - `cmake/runtime-patches/interp_bridge.hunks`: added
+    `@@ apu-flush-use-frame-timeline` and `@@ apu-loop-use-frame-timeline` so
+    `interp_bridge.c` defers to `rtl_apu_frame_timeline_active()` instead of
+    also running `bridge_apu_flush()` relative catch-up (DKC3 enforces a
+    per-frame master-cycle deadline in `Dkc3RunOneFrame()`, so the absolute
+    timeline advances monotonically on every frame).
+  - `cmake/runtime-patches/common_rtl.hunks` (new):
+    - `@@ apu-anchor-frame-timeline`: anchors `portGuestAnchor` /
+      `portTargetAnchor` at frame start in `RtlRunFrame()` whenever
+      `!g_snes->apu->portTimeValid`, so `rtl_sync_apu_frame_boundary()` always
+      advances the SPC by exactly 17,088 cycles (534 DSP samples) per frame.
+    - `@@ apu-clear-port-queue-on-file-load` and
+      `@@ apu-clear-port-queue-on-memory-load`: clear the host APU port queue
+      and mapping on successful `RtlLoadSnapshot()` and
+      `RtlLoadSnapshotFromMemory()` calls under `RtlApuLock()`.
+  - `tests/test_apply_dkc3_runtime_patches.py`: added
+    `test_apu_timeline_uses_single_clock_and_clears_port_queue_on_load`.
+- **Verified (Windows x64 Release, private ROM):**
+  - Rebuilt `dkc3_snesrecomp_headless.exe`, `DKC3RecompSDL.exe`, and
+    `DKC3Recomp.exe` cleanly.
+  - Python unit tests (`python -m unittest discover -s tests`): 25/25 passed.
+  - Full Windows Release CTest suite: 29/29 passed (including
+    `supplied_rom_headless_boot`, `dkc3_runtime_patches`, and all four Windows
+    SDL aspect smoke tests exercising overlay, rewind, fast-forward, and
+    save/load).
+  - 600-frame SDL hidden boot (`SNESRECOMP_AUDIO_STATS=1`): `dropped=0` (was
+    `8,719`), `dropped_audible=0` (was `2,807`), `drop_runs=0` (was `29`),
+    `underflows=0` (was `10`), `hiwater=2188` (was `8192`).
+  - 1,800-frame headless boot PCM: all six starvation chops at frames 412–417
+    eliminated (only the 4 genuine game silences remain across 30 seconds).
+  - `saves/dkc3s0.sav` 600-frame headless replay: 0 starvation runs across all
+    598 active frames (down from 596), 0 APU sync timeouts, and all five
+    guest-state hashes (`frame`, `wram`, `vram`, `cgram`, `oam`) unchanged.
+  - Live interactive Windows desktop audio playback verified by the user.
+- **Unverified:** macOS rebuild.

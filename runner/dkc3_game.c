@@ -634,8 +634,10 @@ static void Dkc3KongTrackFrame(void) {
       Dkc3KongMapSettleUpdate(&s_kong_map_settle, g_ram, 0x20000u);
   bool changed = Dkc3KongTrackerObserveFrame(&s_kong_tracker, g_ram, 0x20000u);
   if (g_sram && g_sram_size > 0)
-    changed = Dkc3KongTrackerSyncSram(&s_kong_tracker, g_sram,
-                                      (size_t)g_sram_size) || changed;
+    changed = Dkc3KongTrackerSyncSram(
+                  &s_kong_tracker, g_sram, (size_t)g_sram_size,
+                  Dkc3KongInFileSelect(g_ram, 0x20000u)) ||
+              changed;
   if (changed || s_kong_tracker.dirty) {
     /* A failed write stays dirty and is retried, but warns only once. */
     static bool warned;
@@ -670,12 +672,12 @@ bool Dkc3KongTrackingEnable(const char *path) {
   s_kong_badges =
       Dkc3KongBadgesEnabledFromEnv(getenv("DKC3_KONG_BADGES"));
   s_kong_tracking = true;
-  /* Adopt the loaded battery save now so stale flags of blank slots go. */
-  if (g_sram && g_sram_size > 0 &&
-      Dkc3KongTrackerSyncSram(&s_kong_tracker, g_sram, (size_t)g_sram_size) &&
-      loaded == kDkc3KongLoadOk &&
-      Dkc3KongTrackerSaveFile(&s_kong_tracker, s_kong_path))
-    s_kong_tracker.dirty = false;
+  /* Adopt the loaded battery save as the baseline for the file select's
+   * copy and erase. This never clears flags: a slot without a valid save
+   * may be a file played only through quick saves. */
+  if (g_sram && g_sram_size > 0)
+    (void)Dkc3KongTrackerSyncSram(&s_kong_tracker, g_sram,
+                                  (size_t)g_sram_size, false);
   return loaded != kDkc3KongLoadInvalid;
 }
 
@@ -810,6 +812,9 @@ static void Dkc3OnStateLoaded(uint32_t version) {
   s_state_loaded_recently = !getenv("DKC3_LOAD_AS_LEVEL_START");
   s_kong_map_settled = false;
   memset(&s_kong_map_settle, 0, sizeof s_kong_map_settle);
+  /* A quick save carries the cartridge SRAM; adopt what it restored rather
+   * than reading the difference as a copy or erase. */
+  Dkc3KongTrackerForgetSram(&s_kong_tracker);
   Dkc3VideoSetTerrainReady(false);
   Dkc3ResetSpritePaletteOverflow();
 }

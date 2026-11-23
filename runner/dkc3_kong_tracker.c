@@ -203,8 +203,17 @@ static bool SlotBlank(const uint8_t *slot) {
   return !Dkc3KongSramSlotValid(slot);
 }
 
+void Dkc3KongTrackerForgetSram(Dkc3KongTracker *tracker) {
+  if (tracker) tracker->sram_shadow_valid = false;
+}
+
+bool Dkc3KongInFileSelect(const uint8_t *wram, size_t wram_size) {
+  return WramUsable(wram, wram_size) &&
+         MainLoop(wram) == kDkc3KongMainLoopFileSelect;
+}
+
 bool Dkc3KongTrackerSyncSram(Dkc3KongTracker *tracker, const uint8_t *sram,
-                             size_t sram_size) {
+                             size_t sram_size, bool follow_edits) {
   if (!tracker || !sram ||
       sram_size < (size_t)kDkc3KongSramSlotOffsets[kDkc3KongSlotCount - 1] +
                       kDkc3KongSramSlotSize)
@@ -215,10 +224,11 @@ bool Dkc3KongTrackerSyncSram(Dkc3KongTracker *tracker, const uint8_t *sram,
 
   const bool was_dirty = tracker->dirty;
   tracker->dirty = false;
-  if (!tracker->sram_shadow_valid) {
-    for (unsigned i = 0; i < kDkc3KongSlotCount; i++)
-      if (SlotBlank(slots[i])) Dkc3KongTrackerClearSlot(tracker, i);
-  } else {
+  /* Only the file select's own copy and erase are followed. An invalid slot
+   * at adoption may be a file played only through quick saves, and SRAM
+   * changing elsewhere is an in-game save or a quick load of older SRAM;
+   * neither says anything about the letters, so the SRAM is just adopted. */
+  if (tracker->sram_shadow_valid && follow_edits) {
     uint8_t before[kDkc3KongSlotCount][kDkc3KongLevelBitmapBytes];
     memcpy(before, tracker->levels, sizeof before);
     for (unsigned j = 0; j < kDkc3KongSlotCount; j++) {

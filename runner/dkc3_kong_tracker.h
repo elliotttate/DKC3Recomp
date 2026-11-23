@@ -60,6 +60,8 @@ enum {
 
   kDkc3KongMainLoopLevel = 0xb38076,
   kDkc3KongMainLoopMap = 0xb4b179,
+  /* The file select, where its copy and erase run. */
+  kDkc3KongMainLoopFileSelect = 0x809586,
 
   kDkc3KongRomWorldDescriptors = 0xb4cfb9,
   kDkc3KongNodeTableOffset = 6,
@@ -125,13 +127,20 @@ bool Dkc3KongTrackerObserveFrame(Dkc3KongTracker *tracker,
  * as 1) and the XOR of the words from +6 to the end ($80:9177). Erase
  * zeroes only the word at +0. */
 bool Dkc3KongSramSlotValid(const uint8_t *slot);
-/* Follows the file select's copy and erase: a slot whose SRAM changed and
- * no longer passes the slot check loses its flags, and a slot that changed
- * to an exact copy of another valid slot takes that slot's flags. The first
- * call adopts the SRAM and clears the flags of every invalid slot. Returns
- * true when any flag changed. */
+/* Follows the file select's copy and erase. With follow_edits set (the
+ * file select is running), a slot whose SRAM changed and no longer passes
+ * the slot check loses its flags, and a slot that changed to an exact copy
+ * of another valid slot takes that slot's flags. Without it, or on the first
+ * call after Dkc3KongTrackerForgetSram, the SRAM is only adopted: a slot that
+ * has never been saved in game (a file played through quick saves) keeps its
+ * flags, and a quick load that brings back older SRAM is not an erase.
+ * Returns true when any flag changed. */
 bool Dkc3KongTrackerSyncSram(Dkc3KongTracker *tracker, const uint8_t *sram,
-                             size_t sram_size);
+                             size_t sram_size, bool follow_edits);
+/* Makes the next sync adopt the SRAM as it is (after a quick load). */
+void Dkc3KongTrackerForgetSram(Dkc3KongTracker *tracker);
+/* Whether the main loop is the file select, where copy and erase run. */
+bool Dkc3KongInFileSelect(const uint8_t *wram, size_t wram_size);
 
 /* Writes the KONG level numbers of world 1-8 into out and returns how many
  * there were (0 when the ROM tables are out of range). */

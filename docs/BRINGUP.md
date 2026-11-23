@@ -3185,3 +3185,41 @@ equal to the monitor; the menu item and Escape restored the bar and
   - `tests/test_dkc3_kong_tracker.c`: version and size rejection are
     tested independently with a recomputed checksum; ambiguous copies and
     a short or absent output buffer are covered.
+
+## 2026-11-23 - KONG letters kept for files played through quick saves
+
+- **Problem (reported):** the tracker cleared the flags of every slot
+  without a valid SRAM file when it adopted the battery save at launch.
+  A file played only through quick saves never gets a valid slot, so its
+  letters were lost on the next launch. Quick saves also carry the
+  cartridge SRAM (`cart_saveload` serialises `cart->ram`, which is
+  `g_sram`), so loading one taken before the file was saved in game made
+  the slot invalid again, and the tracker read that as an erase. It
+  could likewise read two slots left identical by a quick load as a copy.
+- **Fix:**
+  - Adopting SRAM never clears flags, at launch or anywhere else.
+  - Copy and erase are followed only while the file select runs (main
+    loop `$80:9586`); the earlier erase and copy runs never left it.
+    Outside it, an SRAM change is an in-game save or a quick load and is
+    only adopted.
+  - `Dkc3OnStateLoaded` calls `Dkc3KongTrackerForgetSram`, so the first
+    sync after any quick load (or rewind) adopts the restored SRAM even if
+    it lands in the file select.
+  - `Dkc3KongTrackerSyncSram` takes `follow_edits`; the adapter passes
+    `Dkc3KongInFileSelect`.
+- **Trade-off:** a file played only through quick saves keeps its letters
+  until its slot is erased in the file select. If its slot is never saved
+  and a new game is started there, the new game inherits those letters;
+  erasing the slot first clears them.
+- **Verified (Windows x64 Release, private ROM, user's `save.srm`):**
+  - `test_dkc3_kong_tracker` passes, with new cases: adoption keeps
+    invalid slots' flags; an older quick load invalidating a slot, or
+    leaving two slots identical, changes nothing; a forget-then-sync in
+    the file select only adopts; a real erase still clears.
+  - Headless: flags on slots 1 and 2 (no valid save in `save.srm`)
+    survive boot into the file select (the previous build cleared them at
+    launch). Erasing file 1 in the file select still clears slot 0 and
+    leaves slots 1 and 2. Loading the user's in-level quick save leaves
+    all flags as they were.
+- **Unverified:** a quick load in the desktop app, and rewind, both of
+  which reach the same `Dkc3OnStateLoaded` hook.

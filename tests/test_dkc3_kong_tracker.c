@@ -228,39 +228,89 @@ static void TestObserve(void) {
   CHECK(!Dkc3KongTrackerObserveFrame(&tracker, s_wram, 0x100));
 }
 
+/* SRAM changing outside the file select is an in-game save or a quick load,
+ * never a copy or erase. */
+static void TestSramOutsideFileSelect(void) {
+  Dkc3KongTracker tracker;
+  Dkc3KongTrackerInit(&tracker);
+  memset(s_sram, 0, sizeof s_sram);
+  SetSlotData(0, 1);
+  CHECK(Dkc3KongTrackerSetLevel(&tracker, 0, 0x25));
+  CHECK(Dkc3KongTrackerSetLevel(&tracker, 1, 0x26));
+  CHECK(!Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram, false));
+
+  /* A quick load restores SRAM from before slot 0 was ever saved: slot 0
+   * turns invalid while the game is running. */
+  uint8_t saved[kDkc3KongSramSlotSize];
+  memcpy(saved, s_sram + kDkc3KongSramSlotOffsets[0], sizeof saved);
+  memset(s_sram + kDkc3KongSramSlotOffsets[0], 0, kDkc3KongSramSlotSize);
+  CHECK(!Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram, false));
+  CHECK(Dkc3KongTrackerHasLevel(&tracker, 0, 0x25));
+
+  /* A quick load that leaves two slots identical is not a copy either. */
+  memcpy(s_sram + kDkc3KongSramSlotOffsets[0], saved, sizeof saved);
+  memcpy(s_sram + kDkc3KongSramSlotOffsets[1], saved, sizeof saved);
+  CHECK(!Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram, false));
+  CHECK(Dkc3KongTrackerHasLevel(&tracker, 1, 0x26));
+  CHECK(!Dkc3KongTrackerHasLevel(&tracker, 1, 0x25));
+
+  /* After a quick load the host forgets the SRAM, so even a first sync that
+   * lands in the file select only adopts it. */
+  Dkc3KongTrackerForgetSram(&tracker);
+  memset(s_sram + kDkc3KongSramSlotOffsets[0], 0, kDkc3KongSramSlotSize);
+  CHECK(!Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram, true));
+  CHECK(Dkc3KongTrackerHasLevel(&tracker, 0, 0x25));
+  Dkc3KongTrackerForgetSram(NULL);
+
+  /* The real erase, in the file select, still clears. */
+  memcpy(s_sram + kDkc3KongSramSlotOffsets[0], saved, sizeof saved);
+  CHECK(!Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram, false));
+  Write16(s_sram, kDkc3KongSramSlotOffsets[0], 0);
+  CHECK(Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram, true));
+  CHECK(!Dkc3KongTrackerHasLevel(&tracker, 0, 0x25));
+
+  memset(s_wram, 0, sizeof s_wram);
+  CHECK(!Dkc3KongInFileSelect(s_wram, sizeof s_wram));
+  SetMainLoop(kDkc3KongMainLoopFileSelect);
+  CHECK(Dkc3KongInFileSelect(s_wram, sizeof s_wram));
+  CHECK(!Dkc3KongInFileSelect(s_wram, 0x100));
+}
+
 static void TestSramSync(void) {
   Dkc3KongTracker tracker;
   Dkc3KongTrackerInit(&tracker);
   memset(s_sram, 0, sizeof s_sram);
   SetSlotData(0, 1);
   CHECK(Dkc3KongTrackerSetLevel(&tracker, 0, 0x25));
-  CHECK(Dkc3KongTrackerSetLevel(&tracker, 1, 0x26)); /* stale: slot 1 blank */
+  /* Slot 1 has never been saved in game: a file played through quick
+   * saves. */
+  CHECK(Dkc3KongTrackerSetLevel(&tracker, 1, 0x26));
   tracker.dirty = false;
 
-  /* Adopting the SRAM drops flags of blank slots only. */
-  CHECK(Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram));
-  CHECK(tracker.dirty);
+  /* Adopting the SRAM, even in the file select, keeps every flag. */
+  CHECK(!Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram, true));
+  CHECK(!tracker.dirty);
   CHECK(Dkc3KongTrackerHasLevel(&tracker, 0, 0x25));
-  CHECK(!Dkc3KongTrackerHasLevel(&tracker, 1, 0x26));
-  tracker.dirty = false;
-  CHECK(!Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram));
+  CHECK(Dkc3KongTrackerHasLevel(&tracker, 1, 0x26));
+  CHECK(!Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram, true));
   CHECK(!tracker.dirty);
 
   /* An ordinary save changes a slot without touching its flags. */
   s_sram[kDkc3KongSramSlotOffsets[0] + 40] ^= 0x55;
   SealSlot(s_sram + kDkc3KongSramSlotOffsets[0], 0x0152);
-  CHECK(!Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram));
+  CHECK(!Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram, true));
   CHECK(Dkc3KongTrackerHasLevel(&tracker, 0, 0x25));
 
   /* A new game in an empty slot starts with no flags. */
   SetSlotData(2, 9);
-  CHECK(!Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram));
+  CHECK(!Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram, true));
 
   /* Copy slot 0 onto slot 1. */
   memcpy(s_sram + kDkc3KongSramSlotOffsets[1],
          s_sram + kDkc3KongSramSlotOffsets[0], kDkc3KongSramSlotSize);
-  CHECK(Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram));
+  CHECK(Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram, true));
   CHECK(Dkc3KongTrackerHasLevel(&tracker, 1, 0x25));
+  CHECK(!Dkc3KongTrackerHasLevel(&tracker, 1, 0x26)); /* replaced */
   CHECK(Dkc3KongTrackerHasLevel(&tracker, 0, 0x25));
 
   /* Erase slot 0 the way the file select does (its first word zeroed, the
@@ -268,12 +318,12 @@ static void TestSramSync(void) {
   Write16(s_sram, kDkc3KongSramSlotOffsets[0], 0);
   memset(s_sram + kDkc3KongSramSlotOffsets[1], 0x55, kDkc3KongSramSlotSize);
   tracker.dirty = false;
-  CHECK(Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram));
+  CHECK(Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram, true));
   CHECK(tracker.dirty);
   CHECK(!Dkc3KongTrackerHasLevel(&tracker, 0, 0x25));
   CHECK(!Dkc3KongTrackerHasLevel(&tracker, 1, 0x25));
 
-  CHECK(!Dkc3KongTrackerSyncSram(&tracker, s_sram, 0x700));
+  CHECK(!Dkc3KongTrackerSyncSram(&tracker, s_sram, 0x700, true));
 
   /* Two slots hold the same image with different flags (played without
    * saving after a copy); a copy onto the third keeps only the levels both
@@ -286,10 +336,10 @@ static void TestSramSync(void) {
   CHECK(Dkc3KongTrackerSetLevel(&tracker, 0, 0x25));
   CHECK(Dkc3KongTrackerSetLevel(&tracker, 0, 0x28));
   CHECK(Dkc3KongTrackerSetLevel(&tracker, 1, 0x25));
-  (void)Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram);
+  (void)Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram, true);
   memcpy(s_sram + kDkc3KongSramSlotOffsets[2],
          s_sram + kDkc3KongSramSlotOffsets[0], kDkc3KongSramSlotSize);
-  CHECK(Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram));
+  CHECK(Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram, true));
   CHECK(Dkc3KongTrackerHasLevel(&tracker, 2, 0x25));
   CHECK(!Dkc3KongTrackerHasLevel(&tracker, 2, 0x28));
   CHECK(Dkc3KongTrackerHasLevel(&tracker, 0, 0x28));
@@ -304,12 +354,12 @@ static void TestSramSync(void) {
   CHECK(Dkc3KongTrackerSetLevel(&tracker, 0, 0x25));
   CHECK(Dkc3KongTrackerSetLevel(&tracker, 0, 0x28));
   CHECK(Dkc3KongTrackerSetLevel(&tracker, 1, 0x30));
-  (void)Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram);
+  (void)Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram, true);
   memcpy(s_sram + kDkc3KongSramSlotOffsets[1],
          s_sram + kDkc3KongSramSlotOffsets[0], kDkc3KongSramSlotSize);
   memcpy(s_sram + kDkc3KongSramSlotOffsets[2],
          s_sram + kDkc3KongSramSlotOffsets[0], kDkc3KongSramSlotSize);
-  CHECK(Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram));
+  CHECK(Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram, true));
   for (unsigned slot = 1; slot < 3; slot++) {
     CHECK(Dkc3KongTrackerHasLevel(&tracker, slot, 0x25));
     CHECK(Dkc3KongTrackerHasLevel(&tracker, slot, 0x28));
@@ -322,12 +372,12 @@ static void TestSramSync(void) {
   memset(s_sram, 0, sizeof s_sram);
   SetSlotData(0, 3);
   CHECK(Dkc3KongTrackerSetLevel(&tracker, 0, 0x25));
-  (void)Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram);
+  (void)Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram, true);
   s_sram[kDkc3KongSramSlotOffsets[0] + 40] ^= 0x55;
   SealSlot(s_sram + kDkc3KongSramSlotOffsets[0], 0x0152);
   memcpy(s_sram + kDkc3KongSramSlotOffsets[1],
          s_sram + kDkc3KongSramSlotOffsets[0], kDkc3KongSramSlotSize);
-  CHECK(Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram));
+  CHECK(Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram, true));
   CHECK(Dkc3KongTrackerHasLevel(&tracker, 1, 0x25));
   CHECK(Dkc3KongTrackerHasLevel(&tracker, 0, 0x25));
 }
@@ -493,6 +543,7 @@ int main(void) {
   TestFiles();
   TestObserve();
   TestSramSync();
+  TestSramOutsideFileSelect();
   TestWorldsAndMapBadge();
   TestMapSettle();
   TestDrawBadge();

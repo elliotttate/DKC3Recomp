@@ -124,7 +124,9 @@ Northern Kremisphere shows it too once all five of its levels are done.
 The cartridge never saves KONG letters, so this lives in its own file,
 `saves/kong_letters.dat`; `saves/save.srm` is only read and stays exactly
 what the game writes, so it still works in other emulators. Copying or
-erasing a file on the file-select screen copies or clears its letters.
+erasing a file on the file-select screen copies or clears its letters;
+nothing else clears them, so files played only through quick saves keep
+theirs.
 **Settings > Gameplay > KONG letter badges on the map** (on by default,
 remembered in `launcher.cfg`) shows or hides the badges at once; the letters
 are recorded either way. `DKC3_KONG_BADGES=0` or `=1` sets the same option at

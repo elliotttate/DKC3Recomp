@@ -744,6 +744,20 @@ static void DrawSettingsPage(Dkc3DesktopOverlay *overlay) {
     settings.skip_launcher = skip ? 1 : 0;
 
   ImGui::Spacing();
+  ImGui::TextUnformatted("Gameplay");
+  ImGui::Separator();
+  bool kong_badges = Dkc3LauncherKongBadges() != 0;
+  if (ImGui::Checkbox("KONG letter badges on the map", &kong_badges))
+    Dkc3LauncherSetKongBadges(kong_badges ? 1 : 0);
+  ImGui::PushStyleColor(ImGuiCol_Text,
+                        ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+  ImGui::TextWrapped(
+      "Shows KONG beside levels whose four letters you have collected, and "
+      "beside a world once all its levels are done. Letters are recorded "
+      "either way.");
+  ImGui::PopStyleColor();
+
+  ImGui::Spacing();
   ImGui::TextUnformatted("Hotkeys");
   ImGui::Separator();
   ImGui::BulletText("Overlay: Escape (controller: Guide or Start+Back)");

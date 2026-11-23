@@ -8,6 +8,7 @@
 #include <SDL.h>
 
 #include "dkc3_game.h"
+#include "dkc3_kong_tracker.h"
 #include "dkc3_video.h"
 #include "diagnostics.h"
 #include "desktop_filter.h"
@@ -726,6 +727,14 @@ static void UpdateFpsWindowTitle(Dkc3DesktopFpsCounter *counter,
   (void)SetWindowTextA(s_window, title);
 }
 
+/* The Settings checkbox, unless DKC3_KONG_BADGES overrides it (and is then
+ * remembered, as DKC3_HAPTICS is). */
+static void ApplyKongBadgeSetting(void) {
+  const char *env = getenv("DKC3_KONG_BADGES");
+  if (env) Dkc3LauncherSetKongBadges(Dkc3KongBadgesEnabledFromEnv(env));
+  Dkc3KongSetBadgesVisible(Dkc3LauncherKongBadges() != 0);
+}
+
 static void ApplyOverlaySettings(RecompLauncherCSettings *settings) {
   if (!settings || !s_overlay) return;
   RecompLauncherCSettings updated;
@@ -767,6 +776,7 @@ static void ApplyOverlaySettings(RecompLauncherCSettings *settings) {
          sizeof s_assist_key_bind);
   memcpy(s_assist_pad_bind, updated.assist_pad_bind,
          sizeof s_assist_pad_bind);
+  Dkc3KongSetBadgesVisible(Dkc3LauncherKongBadges() != 0);
   if (Dkc3VideoGetAspect() != (Dkc3VideoAspect)updated.aspect_index) {
     Dkc3VideoSetAspect((Dkc3VideoAspect)updated.aspect_index);
     memset(s_pixels, 0, sizeof s_pixels);
@@ -869,6 +879,8 @@ static int RunDesktop(const char *rom_path,
       RtlReadSram();
       fprintf(stdout, "SRAM: persistence enabled at saves/save.srm (%d bytes)\n",
               g_sram_size);
+      (void)Dkc3KongTrackingEnable("saves/kong_letters.dat");
+      ApplyKongBadgeSetting();
     } else {
       fprintf(stderr,
               "warning: unable to create the saves directory; SRAM "

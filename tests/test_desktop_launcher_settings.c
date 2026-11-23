@@ -35,15 +35,22 @@ int main(void) {
   if (Check(Dkc3LauncherHaptics() == 1,
             "haptics did not default to enabled"))
     return 1;
+  if (Check(Dkc3LauncherKongBadges() == 1,
+            "KONG badges did not default to enabled"))
+    return 1;
   Dkc3LauncherSetHaptics(0);
+  Dkc3LauncherSetKongBadges(0);
   if (Check(Dkc3LauncherSettingsSave(&settings),
             "launcher settings could not be saved"))
     return 1;
 
   Dkc3LauncherSetHaptics(1);
+  Dkc3LauncherSetKongBadges(1);
   Dkc3LauncherSettingsLoad(&settings);
   if (Check(Dkc3LauncherHaptics() == 0,
-            "saved haptics setting was not restored"))
+            "saved haptics setting was not restored") ||
+      Check(Dkc3LauncherKongBadges() == 0,
+            "saved KONG badge setting was not restored"))
     return 1;
 
   FILE *file = fopen(config, "r");
@@ -55,6 +62,8 @@ int main(void) {
       Check(fclose(file) == 0, "saved launcher config could not be closed") ||
       Check(strstr(contents, "HapticsEnabled=0\n") != NULL,
             "saved launcher config omitted haptics") ||
+      Check(strstr(contents, "KongBadges=0\n") != NULL,
+            "saved launcher config omitted KONG badges") ||
       Check(remove(config) == 0, "test launcher config could not be removed"))
     return 1;
   return 0;

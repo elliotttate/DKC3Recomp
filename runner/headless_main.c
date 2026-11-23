@@ -26,6 +26,8 @@
  * Environment:
  *   DKC3_ASPECT=4:3|16:10|16:9|21:9 presentation width (default 4:3)
  *   DKC3_SRAM_INPUT=<file>          exact battery-save image to start from
+ *   DKC3_KONG_TRACKER=<file>        track KONG letters in this sidecar and
+ *                                   draw the map badges (off by default)
  *   DKC3_SAVESTATE_INPUT=<file>     quick save to restore after boot
  *   SNESRECOMP_INPUT_PLAY=<file>    scripted input ("MASK * N" lines)
  *   DKC3_FRAME_PPM=<file>           final frame as a binary PPM
@@ -177,6 +179,13 @@ int main(int argc, char **argv) {
       free(rom);
       return 13;
     }
+  }
+  const char *kong_tracker = getenv("DKC3_KONG_TRACKER");
+  if (kong_tracker && *kong_tracker &&
+      !Dkc3KongTrackingEnable(kong_tracker)) {
+    fprintf(stderr, "unreadable KONG letter file: %s\n", kong_tracker);
+    free(rom);
+    return 21;
   }
 
   const char *trace_pc_text = getenv("DKC3_TRACE_PC");

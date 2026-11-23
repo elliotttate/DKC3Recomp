@@ -117,6 +117,7 @@ if(DKC3_BUILD_SNESRECOMP)
         ${DKC3_SNESRECOMP_GEN_SOURCES}
         runner/dkc3_game.c
         runner/dkc3_intro_skip.c
+        runner/dkc3_kong_tracker.c
         runner/dkc3_video.c
         runner/dkc3_hdma.c
         runner/headless_host.c
@@ -170,6 +171,7 @@ if(DKC3_BUILD_SNESRECOMP)
             ${DKC3_SNESRECOMP_GEN_SOURCES}
             runner/dkc3_game.c
             runner/dkc3_intro_skip.c
+            runner/dkc3_kong_tracker.c
             runner/dkc3_video.c
             runner/dkc3_hdma.c
             runner/diagnostics.c
@@ -230,6 +232,7 @@ if(DKC3_BUILD_SNESRECOMP)
         runner/dkc3_game.c
         runner/dkc3_haptics.c
         runner/dkc3_intro_skip.c
+        runner/dkc3_kong_tracker.c
         runner/dkc3_video.c
         runner/dkc3_hdma.c
         runner/diagnostics.c
@@ -569,6 +572,16 @@ if(BUILD_TESTING)
     add_test(NAME dkc3_haptics COMMAND test_dkc3_haptics)
     set_tests_properties(dkc3_haptics PROPERTIES
         LABELS "unit;desktop;input;haptics")
+
+    add_executable(test_dkc3_kong_tracker
+        tests/test_dkc3_kong_tracker.c
+        runner/dkc3_kong_tracker.c)
+    target_include_directories(test_dkc3_kong_tracker PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/runner)
+    dkc3_enable_project_warnings(test_dkc3_kong_tracker)
+    add_test(NAME dkc3_kong_tracker COMMAND test_dkc3_kong_tracker)
+    set_tests_properties(dkc3_kong_tracker PROPERTIES
+        LABELS "unit;native;saves")
 
     add_executable(test_dkc3_intro_skip
         tests/test_dkc3_intro_skip.c

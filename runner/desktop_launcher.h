@@ -31,6 +31,10 @@ void Dkc3LauncherSetReconstructShading(int percent);
  * shared launcher settings. */
 int Dkc3LauncherHaptics(void);
 void Dkc3LauncherSetHaptics(int enabled);
+/* Whether the map shows KONG letter badges (dkc3_kong_tracker.h); on by
+ * default and persisted as KongBadges. Recording is unaffected. */
+int Dkc3LauncherKongBadges(void);
+void Dkc3LauncherSetKongBadges(int enabled);
 
 void Dkc3LauncherSettingsDefault(RecompLauncherCSettings *settings);
 void Dkc3LauncherSettingsLoad(RecompLauncherCSettings *settings);

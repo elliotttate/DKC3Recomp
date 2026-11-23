@@ -117,6 +117,19 @@ intro, and copyright screen can be skipped directly to the Title Screen with
 the **Start** button on cold boot (`DKC3_SKIP_INTRO_START=0` restores the
 unskippable original first-boot behavior).
 
+In builds from this source, the desktop and SDL apps remember, per save
+file, which levels have had all four K-O-N-G letters collected, and show
+**KONG** beside that level's name on the world map. A world's name on the
+Northern Kremisphere shows it too once all five of its levels are done.
+The cartridge never saves KONG letters, so this lives in its own file,
+`saves/kong_letters.dat`; `saves/save.srm` is only read and stays exactly
+what the game writes, so it still works in other emulators. Copying or
+erasing a file on the file-select screen copies or clears its letters.
+**Settings > Gameplay > KONG letter badges on the map** (on by default,
+remembered in `launcher.cfg`) shows or hides the badges at once; the letters
+are recorded either way. `DKC3_KONG_BADGES=0` or `=1` sets the same option at
+launch. See [docs/BRINGUP.md](docs/BRINGUP.md) for what was verified.
+
 ## Native macOS release
 
 The v0.0.6 release fixes the Windows menu bar staying on screen in
@@ -287,7 +300,9 @@ in `runner/headless_main.c` write frames as PPM (`DKC3_FRAME_PPM`,
 `DKC3_FRAME_PPM_PREFIX` with `START/END/STEP`), raw audio
 (`DKC3_AUDIO_PCM`), and memory dumps, restore an SRAM image or a quick
 save (`DKC3_SRAM_INPUT`, `DKC3_SAVESTATE_INPUT`), and replay scripted
-input (`SNESRECOMP_INPUT_PLAY`).
+input (`SNESRECOMP_INPUT_PLAY`). `DKC3_KONG_TRACKER=<file>` turns on the
+KONG letter tracker and its map badges with that sidecar file; it is off by
+default, so headless hashes do not depend on it.
 `DKC3_PPU_LEGACY=1` selects the independent scalar renderer for pixel-oracle
 comparisons. CMake applies the checked Mode 2 priority adaptation, with the
 other runtime hunks, to build copies of the pinned sources; the submodule

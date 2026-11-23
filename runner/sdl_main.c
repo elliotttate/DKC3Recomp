@@ -14,6 +14,7 @@
 
 #include "dkc3_game.h"
 #include "dkc3_haptics.h"
+#include "dkc3_kong_tracker.h"
 #include "dkc3_video.h"
 #include "diagnostics.h"
 #include "desktop_filter.h"
@@ -1027,6 +1028,7 @@ static void ApplyOverlaySettings(SdlHost *host,
          sizeof host->player_key_bind);
   memcpy(host->player_pad_bind, updated.player_pad_bind,
          sizeof host->player_pad_bind);
+  Dkc3KongSetBadgesVisible(Dkc3LauncherKongBadges() != 0);
   memcpy(host->assist_key_bind, updated.assist_key_bind,
          sizeof host->assist_key_bind);
   memcpy(host->assist_pad_bind, updated.assist_pad_bind,
@@ -1174,8 +1176,18 @@ static int RunGame(const char *rom_path,
     return 3;
   }
   if (sram_enabled) {
-    if (EnsureSaveDirectory()) RtlReadSram();
-    else sram_enabled = false;
+    if (EnsureSaveDirectory()) {
+      RtlReadSram();
+      (void)Dkc3KongTrackingEnable("saves/kong_letters.dat");
+      /* The Settings checkbox, unless DKC3_KONG_BADGES overrides it (and is
+       * then remembered, as DKC3_HAPTICS is). */
+      if (getenv("DKC3_KONG_BADGES"))
+        Dkc3LauncherSetKongBadges(
+            Dkc3KongBadgesEnabledFromEnv(getenv("DKC3_KONG_BADGES")));
+      Dkc3KongSetBadgesVisible(Dkc3LauncherKongBadges() != 0);
+    } else {
+      sram_enabled = false;
+    }
   }
   if (!Dkc3DesktopColorFilterInit(&host.color_filter, screen_filter)) {
     free(rom);

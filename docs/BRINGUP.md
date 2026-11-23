@@ -3013,3 +3013,135 @@ equal to the monitor; the menu item and Escape restored the bar and
   scratch, which has not been observed. Open.
 - **Verified:** Python unit tests and the full Release CTest suite (see
   the commit). The policy-switch re-snap was not exercised in the app.
+
+## 2026-11-22 - KONG letter tracker and map badges
+
+- **Feature:** the host records, per save file, every level whose four
+  K-O-N-G letters have been collected, and draws "KONG" beside that
+  level's name on its world map. A world's name on the Northern
+  Kremisphere gets the same badge once all five of its levels are
+  recorded.
+- **Save compatibility:** the cartridge never saves KONG letters; they
+  exist only in WRAM while a level runs. The tracker keeps its own
+  sidecar, `saves/kong_letters.dat` (112 bytes: `DKC3KONG`, version 1,
+  three 32-byte level bitmaps, FNV-1a), and only reads SRAM. `save.srm`
+  stays exactly what the cartridge writes and remains portable to other
+  emulators. Losing or deleting the sidecar loses only the badges.
+- **Cartridge facts (from the private ROM; addresses only):**
+  - `$05D7` bits 0-3 are K, O, N, G. The pickup at `$BB:CD3A` sets its
+    bit with TSB and calls the life award (`$B8:8084`) when `$05D7 + 1`
+    has a zero low nibble. A star barrel copies the byte to `$05C3`
+    (`$BB:9B2F`) and a respawn restores it (`$BB:9AF6`); leaving a level
+    clears it (`$BB:A270`, `$BB:A32A`). Bit 4 is a different collectible
+    (`$BB:D216`) and is ignored.
+  - `$00C0` is the level number. Entering a bonus room parks it in
+    `$04E6` and sets `$04EA` (`$BB:A2EE`..`$A2F9`); returning restores it
+    and clears `$04EA` (`$BB:A38B`..`$A396`). The tracker credits `$00C0`
+    when it is a KONG level, else the parked parent while `$04EA` is set.
+  - `$04C8` is the file slot: `$80:91CB` indexes the SRAM table at
+    `$80:9171` (`$6062`, `$62EC`, `$6576`, so SRAM offsets `$062`, `$2EC`,
+    `$576`, `$28A` bytes each) with it.
+  - A slot is valid ($80:9141) when its word at +4, bit 0 ignored, is
+    `$52`, `$152`, or `$252`, and the words at +0 and +2 equal the 16-bit
+    sum (0 becoming 1) and XOR of the words from +6 to `$288` (`$80:9177`).
+    The file select's erase zeroes only the word at +0 and leaves the
+    rest of the slot.
+  - Maps: `$05E5` is the world (0 is the Northern Kremisphere) and `$05E7`
+    the node under the Kongs. The world descriptor is the word at
+    `$B4:CFB9 + 2 * world` (`$B4:B0C5`), its node table the word at
+    descriptor + 6, a node 11 bytes with the destination at +1
+    (`$B4:B804`). On a world map a destination `>= $1D` is a level
+    (`$B4:B37B`); on the Kremisphere `$40|w` opens world `w`
+    (`$B4:B31F`). Reading all eight tables gives five levels per world,
+    `$25`-`$4C` in all, and the bosses `$1D`-`$24`. Byte 0 bit 7 is not a
+    level/non-level flag: Razor Ridge's boss node has it clear.
+  - The idle map's main loop is `$B4:B179` on world maps and the
+    Kremisphere alike; a level runs `$B3:8076`.
+  - The map's name text is pure `#FFFF00` with a black outline on native
+    rows 201-214.
+- **Changes:**
+  - `runner/dkc3_kong_tracker.{h,c}`: the tracker (flags, sidecar format
+    and atomic replace, frame observation, SRAM copy/erase following, ROM
+    node tables, world completion, map badge choice, node-settle wait,
+    badge drawing). It takes WRAM, ROM, SRAM, and frame pointers, so it is
+    unit-tested without a ROM.
+  - `runner/dkc3_game.{h,c}`: `Dkc3KongTrackingEnable(path)`; observation
+    and SRAM sync after every game frame, saving the sidecar on any
+    change; the badge drawn into the rendered frame at the end of
+    `Dkc3DrawPpuFrame`. Inert until a host enables it.
+  - `runner/desktop_main.c`, `runner/sdl_main.c`: enable it with
+    `saves/kong_letters.dat` after loading `save.srm` (not when SRAM
+    persistence is disabled). `DKC3_KONG_BADGES=0` hides the badges but
+    keeps recording.
+  - `runner/headless_main.c`: `DKC3_KONG_TRACKER=<file>` opts in; off by
+    default, so headless hashes are unchanged.
+  - `tests/test_dkc3_kong_tracker.c`, `CMakeLists.txt`: unit test
+    `dkc3_kong_tracker`; the module is linked into all three game
+    targets.
+- **Badge placement:** the badge is a 7x7 font doubled to the name's 14
+  rows, yellow with a black outline, one game space (10 px) right of the
+  rightmost name pixel found in rows 201-214 of the whole frame, so it
+  follows the name in every aspect; with no room it is centred above the
+  name. Nothing is drawn when no name text is on screen.
+- **Node-settle wait:** `$05E7` switches to the destination the frame the
+  Kongs set off, while the departing name is still erasing. The first
+  version drew the badge on "WRINKLY'S SAVE CAVE" for frames 1302-1304 of
+  the walk below. The badge now waits for the map to stay idle on one
+  node for 16 game frames; the departing name is gone within 6, and the
+  next name appeared 64 frames after the node changed.
+- **Verified (Windows x64 Release, private ROM, user's `save.srm`, file
+  1 "MATTT" in Kremwood Forest):**
+  - `test_dkc3_kong_tracker` and the Release unit label: 26/26 passed.
+    `DKC3Recomp.exe`, `DKC3RecompSDL.exe`, and the headless host build;
+    no new warnings.
+  - Sidecar flagging `$32`: after walking left from the cave, "RIVERSIDE
+    RACE" shows the badge at frame 1700; the cave and "BARREL SHIELD
+    BUST-UP!" (`$30`, unflagged) do not.
+  - Walk cave to Barrel Shield Bust-Up and back with `$30` flagged,
+    rendered with and without the tracker every 2 frames from 1280 to
+    1918: the frames differ only for 1366-1604, the frames that show
+    "BARREL SHIELD BUST-UP!".
+  - Leaving Kremwood Forest (Right from Barrel Shield Bust-Up) reaches the
+    Kremisphere at node 5 (destination `$42`). With `$30 $32 $29 $2F $34`
+    flagged, "KREMWOOD FOREST" shows the badge at 4:3 and 16:9; with
+    `$34` missing, the frame is byte-identical to a run without the
+    tracker.
+  - Recording: the user's quick save in level `$29` (file slot 0) holds
+    K and O (`$05D7 = 3`) and writes no sidecar; forcing `$05D7 = $0F`
+    for one frame records exactly `$29` for slot 0.
+  - File select, driven by scripted input: Erase on file 1 zeroes SRAM
+    `$062`-`$063` only and the tracker drops slot 0's flags; Copy of file
+    1 to file 2 gives slot 1 the same flags.
+- **Unverified:**
+  - Collecting real letters in play; recording was shown with a poked
+    `$05D7`, not by touching the four letter sprites, and not in a bonus
+    room (the parent-level path is unit-tested only).
+  - The desktop and SDL apps were built but not run; macOS not built.
+  - Worlds other than Kremwood Forest were not visited; their level
+    lists come from the ROM tables above. Krematoa (the Lost World) and
+    Kremisphere destinations other than `$41`-`$48` were not looked at
+    in play.
+  - Two-player modes and the Banana Bird and Brothers Bear screens.
+
+### Settings checkbox for the KONG badges
+
+- **Feature:** the overlay's Settings tab has a "Gameplay" section with
+  **KONG letter badges on the map**, on by default. It shows or hides the
+  badges while the menu is open; recording continues either way.
+- **Changes:**
+  - `runner/desktop_launcher.{h,c}`: `Dkc3LauncherKongBadges` and
+    `Dkc3LauncherSetKongBadges`, default 1, persisted in `launcher.cfg` as
+    `KongBadges`, beside `HapticsEnabled`.
+  - `runner/desktop_overlay.cpp`: the checkbox.
+  - `runner/dkc3_game.{h,c}`: `Dkc3KongSetBadgesVisible`.
+  - `runner/desktop_main.c`, `runner/sdl_main.c`: after enabling the
+    tracker, a set `DKC3_KONG_BADGES` overrides the saved choice and is
+    remembered, as `DKC3_HAPTICS` is; the value is pushed to the game at
+    start and on every `ApplyOverlaySettings` call.
+  - `tests/test_desktop_launcher_settings.c`: default on, saved `0`
+    restored, `KongBadges=0` written.
+- **Verified:** the Windows Release suite passed 31/31, including
+  `desktop_launcher_settings`, `dkc3_kong_tracker`, and the SDL aspect
+  smoke tests; `DKC3Recomp.exe` and the headless host rebuilt.
+  `DKC3RecompSDL.exe` was relinked once the running app was closed. The live app had shown the badges working before the
+  checkbox was added; the checkbox itself has not been clicked in the app.

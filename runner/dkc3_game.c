@@ -1,6 +1,7 @@
 #include "dkc3_game.h"
 #include "dkc3_hdma.h"
 #include "dkc3_intro_skip.h"
+#include "dkc3_kong_tracker.h"
 #include "dkc3_video.h"
 #include "dkc3_facts.h"
 #include "dkc3_spc_music.h"
@@ -29,6 +30,12 @@ enum {
 };
 
 static bool s_cpu_initialized;
+static Dkc3KongTracker s_kong_tracker;
+static bool s_kong_tracking;
+static bool s_kong_badges;
+static bool s_kong_map_settled;
+static Dkc3KongMapSettle s_kong_map_settle;
+static char s_kong_path[512];
 static uint32_t s_resume_pc = kDkc3ResetPc;
 static int s_last_lle_result = 1;
 static uint64_t s_next_frame_master;
@@ -621,6 +628,69 @@ enum {
   kDkc3NtscFrameMasterClocks = 1364 * 262,
 };
 
+static void Dkc3KongTrackFrame(void) {
+  if (!s_kong_tracking) return;
+  s_kong_map_settled =
+      Dkc3KongMapSettleUpdate(&s_kong_map_settle, g_ram, 0x20000u);
+  bool changed = Dkc3KongTrackerObserveFrame(&s_kong_tracker, g_ram, 0x20000u);
+  if (g_sram && g_sram_size > 0)
+    changed = Dkc3KongTrackerSyncSram(&s_kong_tracker, g_sram,
+                                      (size_t)g_sram_size) || changed;
+  if (changed || s_kong_tracker.dirty) {
+    /* A failed write stays dirty and is retried, but warns only once. */
+    static bool warned;
+    if (Dkc3KongTrackerSaveFile(&s_kong_tracker, s_kong_path)) {
+      s_kong_tracker.dirty = false;
+      warned = false;
+    } else if (!warned) {
+      fprintf(stderr, "warning: unable to write %s\n", s_kong_path);
+      warned = true;
+    }
+  }
+}
+
+bool Dkc3KongTrackingEnable(const char *path) {
+  Dkc3KongTrackerInit(&s_kong_tracker);
+  s_kong_tracking = false;
+  s_kong_map_settled = false;
+  memset(&s_kong_map_settle, 0, sizeof s_kong_map_settle);
+  if (!path || !*path || strlen(path) >= sizeof s_kong_path) return false;
+  snprintf(s_kong_path, sizeof s_kong_path, "%s", path);
+  const Dkc3KongLoadResult loaded =
+      Dkc3KongTrackerLoadFile(&s_kong_tracker, s_kong_path);
+  if (loaded == kDkc3KongLoadInvalid) {
+    fprintf(stderr, "warning: ignoring unreadable KONG letter file %s\n",
+            s_kong_path);
+    Dkc3KongTrackerInit(&s_kong_tracker);
+  }
+  s_kong_badges =
+      Dkc3KongBadgesEnabledFromEnv(getenv("DKC3_KONG_BADGES"));
+  s_kong_tracking = true;
+  /* Adopt the loaded battery save now so stale flags of blank slots go. */
+  if (g_sram && g_sram_size > 0 &&
+      Dkc3KongTrackerSyncSram(&s_kong_tracker, g_sram, (size_t)g_sram_size) &&
+      loaded == kDkc3KongLoadOk &&
+      Dkc3KongTrackerSaveFile(&s_kong_tracker, s_kong_path))
+    s_kong_tracker.dirty = false;
+  return loaded != kDkc3KongLoadInvalid;
+}
+
+void Dkc3KongSetBadgesVisible(bool visible) {
+  s_kong_badges = visible;
+}
+
+static void Dkc3KongDrawFrameBadge(void) {
+  if (!s_kong_tracking || !s_kong_badges || !s_kong_map_settled || !g_ppu ||
+      !g_snes || !g_snes->cart)
+    return;
+  if (Dkc3KongTrackerMapBadge(&s_kong_tracker, g_ram, 0x20000u, g_rom,
+                              (size_t)g_snes->cart->romSize) ==
+      kDkc3KongBadgeNone)
+    return;
+  (void)Dkc3KongDrawBadge(g_ppu->renderBuffer, (size_t)g_ppu->renderPitch,
+                          Dkc3VideoWidth(), kDkc3VideoHeight);
+}
+
 static void Dkc3RunOneFrame(void) {
   bool first_frame = !s_cpu_initialized;
   if (s_next_frame_master == 0) {
@@ -671,6 +741,7 @@ static void Dkc3RunOneFrame(void) {
     snes_sync_master_clock(g_snes, g_cpu.master_cycles);
   }
   s_next_frame_master += kDkc3NtscFrameMasterClocks;
+  Dkc3KongTrackFrame();
 }
 
 static void Dkc3SaveExtra(SaveLoadInfo *sli) {
@@ -733,6 +804,8 @@ static void Dkc3OnStateLoaded(uint32_t version) {
   s_hold_camera_valid = false;
   s_bias_valid = false;
   s_state_loaded_recently = !getenv("DKC3_LOAD_AS_LEVEL_START");
+  s_kong_map_settled = false;
+  memset(&s_kong_map_settle, 0, sizeof s_kong_map_settle);
   Dkc3VideoSetTerrainReady(false);
   Dkc3ResetSpritePaletteOverflow();
 }
@@ -2949,6 +3022,8 @@ void Dkc3DrawPpuFrame(void) {
       }
     }
   }
+  /* Host-only annotation over the finished picture (dkc3_kong_tracker.h). */
+  Dkc3KongDrawFrameBadge();
 
   /* The static-recomp host advances one complete game frame and one complete
    * render pass as separate operations. Model the VBlank boundary after the

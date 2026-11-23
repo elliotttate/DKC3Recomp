@@ -47,6 +47,15 @@ int Dkc3AliasOffsetRows(int layer);
 void Dkc3TintLineCounters(unsigned *seen, unsigned *water, unsigned *matched);
 
 void Dkc3BeginDrawing(uint8_t *pixels, size_t pitch);
+/* Starts the KONG letter tracker (dkc3_kong_tracker.h) with its sidecar
+ * file. Hosts call it once the battery save is in g_sram; tracking runs after
+ * every game frame and the map badge is drawn into each rendered frame
+ * unless DKC3_KONG_BADGES=0 or Dkc3KongSetBadgesVisible(false). Returns false when the sidecar existed but was
+ * unreadable (it is then left untouched until the next record). */
+bool Dkc3KongTrackingEnable(const char *path);
+/* Shows or hides the map badges (the desktop Settings checkbox); recording
+ * continues either way. */
+void Dkc3KongSetBadgesVisible(bool visible);
 void Dkc3DrawPpuFrame(void);
 uint32_t Dkc3ResumePc(void);
 int Dkc3LastLleResult(void);

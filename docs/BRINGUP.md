@@ -2755,3 +2755,38 @@ equal to the monitor; the menu item and Escape restored the bar and
   hashes are unchanged from the previous fix. All 30 CTest checks pass.
 - **Unverified:** the live desktop app, the bonus rooms of later
   levels, macOS.
+
+## 2026-11-22 - stale pixels beyond a wall in widescreen margins (bonus rooms)
+
+- **Symptom:** in the first level's 128-pixel bonus room (reported release
+  quick save, unpaused), walking right to the east wall drew the room's last
+  columns correctly, but past them the right margin showed a slanted,
+  repeated strip of sky, dock, and lake that changed as the camera moved
+  vertically.
+- **Measurement:** walking right (input mask `80`, hex) took the camera to
+  `$0180` while camera Y fell from `$01B4` to `$01CD`. The clamp
+  (`Dkc3VideoMarginsForBias`) gave a right margin of 8 columns, yet 35
+  columns past the native window held content. Layer-isolated renders all,
+  including empty BG4 and OBJ, showed the same diagonal boundary, so the
+  pixels did not come from a layer. The runtime PPU writes only
+  `[-extraLeftCur, 256 + extraRightCur)` on ordinary lines and nothing clears
+  the rest of the host row, so each column the margin gave up while the
+  camera reached the wall kept the pixels of the last frame that drew it,
+  frozen at a different camera height: the shear. A run started at the wall
+  is black there, which is why a fresh restore did not show it.
+- **Fix:** `Dkc3VideoClearOutsideMargins` blacks the columns outside the
+  clamped span, and the adapter calls it right after
+  `PpuSetExtraSideSpace`, before the frame's lines render. Lines that
+  composite the full budget (HUD split, anchor bands, repeat bands, forced
+  blank) still write the whole row and overwrite it. No runtime patch. Unit
+  test for left, right, none, and a too-narrow row.
+- **Verified (headless):** on the reported save at 16:10, 16:9, and 21:9,
+  every pixel that changed against the previous build is now black and lies
+  outside the clamped span (16:9: columns 307..341). The native 256 columns
+  of all 98 sampled 16:9 frames still match the 4:3 run at the biased offset.
+  On the first bonus room's save, the only change is the 24 leftover west-wall
+  columns (19..42) becoming black, which settles that entry's open item; its
+  memory hashes are unchanged. An ordinary level save (walk right, left,
+  jump) renders identically to the previous build at 16:9 and 21:9. All 30
+  CTest checks pass.
+- **Unverified:** the live desktop app, other bonus rooms, macOS.

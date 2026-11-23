@@ -189,6 +189,16 @@ void Dkc3VideoMarginsForBias(uint16_t camera_x, uint16_t minimum_scroll_x,
                              int *left_margin, int *right_margin);
 
 
+/* Black the host columns outside the live span of a wide frame: the first
+ * `extra - left_margin` and the last `extra - right_margin` of each row of
+ * `width` pixels (kDkc3VideoBytesPerPixel each). The PPU writes only the
+ * clamped span on ordinary lines, so without this a margin that narrows at
+ * a wall keeps the pixels it last showed, which shear as the camera moves
+ * vertically. Lines that composite the full budget overwrite the strips. */
+void Dkc3VideoClearOutsideMargins(uint8_t *buffer, size_t pitch, int width,
+                                  int height, int extra, int left_margin,
+                                  int right_margin);
+
 void Dkc3VideoPresentationMargins(uint16_t camera_x,
                                   uint16_t maximum_scroll_x,
                                   int *bias,

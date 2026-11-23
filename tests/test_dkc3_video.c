@@ -562,6 +562,42 @@ int main(void) {
     fprintf(stderr, "FAIL: 16:10 glide in a short room\n");
     return 1;
   }
+  /* Columns outside the live span are cleared; the span and other rows'
+   * padding are untouched. 16:10 rows are 308 pixels: a left margin of 10
+   * leaves 16 dead columns, a right margin of 26 leaves none. */
+  {
+    enum { kRows = 3, kPitch = 308 * 4 + 8 };
+    static uint8_t buffer[kRows * kPitch];
+    memset(buffer, 0xab, sizeof buffer);
+    Dkc3VideoClearOutsideMargins(buffer, kPitch, 308, kRows, 26, 10, 26);
+    bool ok = true;
+    for (int y = 0; y < kRows && ok; y++) {
+      const uint8_t *row = buffer + (size_t)y * kPitch;
+      for (int x = 0; x < 308 && ok; x++) {
+        const uint8_t expected = x < 16 ? 0 : 0xab;
+        for (int b = 0; b < 4; b++)
+          ok = ok && row[x * 4 + b] == expected;
+      }
+      for (int b = 308 * 4; b < kPitch; b++)
+        ok = ok && row[b] == 0xab;
+    }
+    memset(buffer, 0xab, sizeof buffer);
+    Dkc3VideoClearOutsideMargins(buffer, kPitch, 308, kRows, 26, 26, 3);
+    for (int y = 0; y < kRows && ok; y++) {
+      const uint8_t *row = buffer + (size_t)y * kPitch;
+      for (int x = 0; x < 308; x++)
+        ok = ok && row[x * 4] == (x >= 308 - 23 ? 0 : 0xab);
+    }
+    memset(buffer, 0xab, sizeof buffer);
+    Dkc3VideoClearOutsideMargins(buffer, kPitch, 308, kRows, 26, 26, 26);
+    Dkc3VideoClearOutsideMargins(buffer, kPitch, 256, kRows, 26, 0, 0);
+    for (size_t i = 0; i < sizeof buffer; i++)
+      ok = ok && buffer[i] == 0xab;
+    if (!ok) {
+      fprintf(stderr, "FAIL: clear outside the live margins\n");
+      return 1;
+    }
+  }
   {
     const int lhs = Dkc3VideoWidth() * 7 * 10;
     const int rhs = kDkc3VideoHeight * 6 * 16;

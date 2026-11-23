@@ -140,6 +140,7 @@ one 256-pixel page early until it was.
 | Wrong strip of tiles at one native edge while the view is slid | compare glide against reflect per world column | biased ring tail not served by the store (inset) |
 | Abrupt jump stepping away from a wall | | endpoint bias; replaced by glide |
 | Background keeps sliding after the player stops and the HUD drifts sideways in a small room (bonus games) | prefill trace: bias against camera per frame | glide pinning a room shorter than its two releases: the target bias followed the camera nearly 1:1 and the 1 px/frame limit lagged it; such rooms now take a shift of travel / 16 (none below two margins) |
+| A sheared, slanted strip beyond a wall after walking up to it and then moving vertically; content where the clamp says black | diff against a run started at that camera; isolated layers all show the same diagonal black/backdrop boundary | stale host pixels: the PPU writes only the clamped span, so columns a narrowing margin gave up kept their last frame; clear them before each frame renders |
 | Objects pop in inside the margin, or vanish while still visible | spawn trace, OAM trace, before/after with widening off | activation window, release window, or renderer cull not widened |
 | Banana arcs or other tile rows appear only at the native edge | OAM census for first appearance at x in [256, 266) | separate grid renderer with its own clips and sign-derived ninth bit |
 | Objects cut exactly at the authentic margin near a wall | | PPU nine-bit X limit must include the bias |

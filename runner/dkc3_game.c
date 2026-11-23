@@ -2625,8 +2625,16 @@ void Dkc3DrawPpuFrame(void) {
     blank_margins = !terrain_ready;
     PpuSetWidescreenPresentationXBias(g_ppu, presentation_bias);
     Dkc3VideoSetPresentationBias(presentation_bias);
-    if (terrain_ready)
+    if (terrain_ready) {
       PpuSetExtraSideSpace(g_ppu, left_margin, right_margin, 0);
+      /* The PPU leaves columns outside the clamped span untouched, so a
+       * margin that narrows at a wall would keep last frame's pixels
+       * there (a sheared strip once the camera moves vertically). Black
+       * them before the lines render; full-budget lines overwrite them. */
+      Dkc3VideoClearOutsideMargins(g_ppu->renderBuffer, g_ppu->renderPitch,
+                                   Dkc3VideoWidth(), kDkc3VideoHeight, extra,
+                                   left_margin, right_margin);
+    }
     uint8_t physical_wide_mask =
         terrain_ready
             ? Dkc3VideoPhysicalWideLayerMask(

@@ -171,6 +171,28 @@ void Dkc3VideoPresentationMargins(uint16_t camera_x,
                                       bias, left_margin, right_margin);
 }
 
+void Dkc3VideoClearOutsideMargins(uint8_t *buffer, size_t pitch, int width,
+                                  int height, int extra, int left_margin,
+                                  int right_margin) {
+  if (!buffer || extra <= 0 || height <= 0 ||
+      width < kDkc3VideoNativeWidth + 2 * extra)
+    return;
+  const int left_dead = extra - Dkc3VideoClampInt(left_margin, 0, extra);
+  const int right_dead = extra - Dkc3VideoClampInt(right_margin, 0, extra);
+  if (left_dead == 0 && right_dead == 0)
+    return;
+  const size_t right_offset =
+      (size_t)(width - right_dead) * kDkc3VideoBytesPerPixel;
+  for (int y = 0; y < height; y++) {
+    uint8_t *row = buffer + (size_t)y * pitch;
+    if (left_dead > 0)
+      memset(row, 0, (size_t)left_dead * kDkc3VideoBytesPerPixel);
+    if (right_dead > 0)
+      memset(row + right_offset, 0,
+             (size_t)right_dead * kDkc3VideoBytesPerPixel);
+  }
+}
+
 void Dkc3VideoMarginsForBias(uint16_t camera_x, uint16_t minimum_scroll_x,
                              uint16_t maximum_scroll_x, int bias,
                              int *left_margin, int *right_margin) {

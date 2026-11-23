@@ -2928,3 +2928,56 @@ equal to the monitor; the menu item and Escape restored the bar and
 - **Unverified:** the live desktop app, other levels' region tables
   (bonus rooms, vertical levels, boss arenas), any level where `$0478`
   points at a region whose links the cartridge never uses, and macOS.
+
+## 2026-11-22 - the overworld keeps its margins after the hovercraft
+
+- **Symptom:** a later release quick save, taken after the hovercraft is
+  bought at Funky's, showed black margins on the overworld again.
+- **Cause:** the gate still passed (same Mode 1 maps at `$7800`, `$6C00`,
+  `$7000`), but the static-map proof latched. The hovercraft opens the map
+  north of the original screen, and the camera now climbs (vscroll `$11F`
+  down to `$AF` in the replay). The game streams tilemap rows ahead of it.
+  Driving each of the eight directions for 900 frames, up-right latched at
+  frame 101 (first row write) and up-left at frame 884.
+- **Measurement:** per-frame VRAM diffs over a 2,550-frame path through
+  every direction. All 44 layer-frames with writes changed words in both
+  256-pixel pages. Each write is a 32-word run per page that starts one word
+  into a row, so its last word lands in column 0 (and 32) of the next row.
+  At most one changed row per frame was on screen: the run's tail. A game
+  streaming columns would touch every shown row instead.
+- **Change:** the whole-map hash is replaced by a per-row comparison with
+  the previous drawn frame's copy (`Dkc3OverworldMapsResident`). A frame
+  passes when each enabled layer's changed rows include at most
+  `kDkc3OverworldShownRowWrites` (2) rows that the frame shows
+  (`Dkc3VideoOverworldWritesAreRows`, `Dkc3VideoTilemapRowVisible`). A
+  layer whose vertical scroll register an active HDMA channel writes
+  (`Dkc3VideoHdmaVerticalScrollLayers`: `$210E`, `$2110`, `$2112` by
+  transfer mode) counts every changed row as shown. Other writes while
+  displayed still latch black margins. The code landed in `c9b28d6`
+  together with the camera-region change.
+- **Verification (headless, the hovercraft save):**
+  - No direction latched. Along the 2,550-frame path, 2,547 of 2,548
+    overworld frames widened at 16:9 and at 21:9; the remaining frame is
+    the first after the restore. In 50 sampled frames per aspect, the west
+    margin was never black. East columns were black only where the camera
+    stood at or near the map's east bound (`$200`), as the clamp requires.
+  - A tilemap oracle keyed each cell by world column and row from the
+    tiles the native 256 columns showed in any frame. 542,317 of 596,541
+    BG1 margin cells at 16:9 matched it, 50,483 were never shown in the
+    center, and 3,741 (18 distinct cells) disagreed. The 18 are cells the
+    initial screen drew one way and a streamed row later drew another way.
+    The margin shows the streamed VRAM, which is what the native view shows
+    at that spot after streaming.
+  - Unit tests cover row visibility at `$11F`, `$0`, `$100`, and one-line
+    edges; the measured row-streaming shapes; column-shaped writes; and
+    HDMA vertical-scroll detection for modes 0, 1, 2, and 4. All 30 CTest
+    checks pass.
+- **Found, not fixed:** in the headless replay, native 4:3 shows garbled
+  tiles in the rows streamed north of the original screen (from about frame
+  700), identically with `DKC3_CULL_WIDEN=0`. The user verified the fix in
+  the desktop app at this save and saw no garbling there, so this may be
+  specific to the headless host or the scripted replay. Not investigated.
+- **Unverified:** 4:3 byte-identity was not re-measured against the
+  previous build (the new path runs only when widescreen is on). The user
+  verified the margins in the desktop app at this save. Unverified: other
+  overworld maps and macOS.

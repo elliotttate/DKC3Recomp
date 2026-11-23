@@ -701,6 +701,38 @@ int main(void) {
       return 1;
     }
   }
+  /* $B3:C0F4's trunk windows. The Ripsaw Rage quick save: W2's trunk
+   * starts 273 pixels right of the camera, so the cartridge wrote it as
+   * [255, 255]; both windows are the clamp of their unclamped edges. */
+  {
+    const uint16_t world[4] = {0x0158, 0x0227, 0x02d8, 0x03a7};
+    int16_t edges[4];
+    const uint8_t save_regs[4] = {0, 96, 255, 255};
+    bool ok = Dkc3VideoUnclampedTrunkWindows(world, 0x01c7, save_regs,
+                                             edges) == 3u &&
+              edges[0] == -111 && edges[1] == 96 && edges[2] == 273 &&
+              edges[3] == 480;
+    /* The second trunk on screen (camera $0211). */
+    const uint8_t later_regs[4] = {0, 22, 199, 255};
+    ok = ok && Dkc3VideoUnclampedTrunkWindows(world, 0x0211, later_regs,
+                                              edges) == 3u &&
+         edges[2] == 199 && edges[3] == 406;
+    /* A register some other writer changed fails its window only. */
+    const uint8_t other_regs[4] = {0, 96, 255, 0};
+    ok = ok && Dkc3VideoUnclampedTrunkWindows(world, 0x01c7, other_regs,
+                                              edges) == 1u;
+    /* W1L is written as a low byte when past 255; that is not a clamp. */
+    const uint8_t wrapped_regs[4] = {0x18, 255, 255, 255};
+    ok = ok && Dkc3VideoUnclampedTrunkWindows(world, 0x0040, wrapped_regs,
+                                              edges) == 2u &&
+         edges[0] == 280;
+    ok = ok && Dkc3VideoUnclampedTrunkWindows(NULL, 0, save_regs, edges) ==
+                   0u;
+    if (!ok) {
+      fprintf(stderr, "FAIL: unclamped trunk windows\n");
+      return 1;
+    }
+  }
   {
     const int lhs = Dkc3VideoWidth() * 7 * 10;
     const int rhs = kDkc3VideoHeight * 6 * 16;

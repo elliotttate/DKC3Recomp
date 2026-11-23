@@ -93,6 +93,17 @@ int Dkc3TakeMusicTransition(uint16_t *command);
  * from host extended OBJ CGRAM without mutating guest WRAM or 4:3 output. */
 void Dkc3RecordSpritePaletteOverflow(uint16_t direct_page);
 
+/* The generated $B3:C0F4 block that writes W2R records the tree-trunk
+ * windows' world edges (DP $1A-$20) so a wide aspect can mask a trunk that
+ * lies in a margin. No guest state is read beyond them; 4:3 returns at
+ * once. */
+void Dkc3RecordTrunkWindows(uint16_t direct_page);
+
+/* Host-only unclamped window edges in patched ppu.c (window 0 = W1). */
+void Dkc3PpuSetWsWindowUnclamped(int window, bool active, int left,
+                                 int right, uint8_t reg_left,
+                                 uint8_t reg_right);
+
 /* Host-only widescreen extended OBJ palette setters in patched ppu.c. */
 void Dkc3PpuClearWsExtObjPalettes(void);
 void Dkc3PpuSetWsExtObjPalette(uint8_t slot, const uint16_t colors[16]);

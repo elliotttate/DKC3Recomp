@@ -72,6 +72,11 @@ quick saves made by older builds, do not wait for a cell boundary to activate.
 Murky Mill's HDMA-windowed BG3 light cones are evaluated across the physical
 widescreen span instead of being clipped and repeated at the native edges,
 verified at the reported quick-save state in both 16:10 and 16:9.
+Ripsaw Rage's tree-trunk BG3 masks now cover a trunk inside a wide margin:
+the cartridge clamps each mask to the 256-pixel screen, so the forest showed
+through the trunk's hollow beside the native edge. The host records the
+unclamped edges (headless-verified in 16:9 and 21:9 against the native view;
+a paused save shows the fix from the first unpaused frame).
 Floodlit Fish's underwater BG3 color-math composition now receives its
 subscreen tint across transparent side-margin pixels without clipping the
 reconstructed BG1 terrain at the native edges, verified at the reported

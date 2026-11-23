@@ -148,6 +148,22 @@ RecompReturn request_palette_direct_M0X0(CpuState *cpu) {
 """
 
 
+TRUNK_FIXTURE = """#include "funcs.h"
+RecompReturn CODE_B3C0F4_M0X0(CpuState *cpu) {
+  L_C19C_M0X0:
+    cpu_trace_block(cpu, 0xB3C19C);
+    uint16 _v50 = cpu_read_a16(cpu);
+    cpu_write8(cpu, cpu->DB, (uint16)(0x2128), _v50);
+  L_C1B1_M0X0:
+    cpu_trace_block(cpu, 0xB3C1B1);
+    uint16 _v58 = cpu_read_a16(cpu);
+    cpu_write8(cpu, cpu->DB, (uint16)(0x2129), _v58);
+    uint16 _v59 = cpu_read16(cpu, cpu->DB, (uint16)(0x0760));
+  L_C1C3_M0X0:
+    cpu_trace_block(cpu, 0xB3C1C3);
+}
+"""
+
 class WidescreenOverrideTests(unittest.TestCase):
     def make_generated_dir(self, root: Path) -> Path:
         generated = root / "generated"
@@ -162,6 +178,7 @@ class WidescreenOverrideTests(unittest.TestCase):
         (generated / "music.c").write_text(MUSIC_FIXTURE, encoding="utf-8")
         (generated / "palette.c").write_text(
             PALETTE_FIXTURE, encoding="utf-8")
+        (generated / "trunk.c").write_text(TRUNK_FIXTURE, encoding="utf-8")
         sites = [address for address in MODULE.CULL_SITES
                  if MODULE.CULL_SITES[address][:2] == ("0x30", "0x160")]
         for index, address in enumerate(sorted(sites)):
@@ -202,6 +219,15 @@ class WidescreenOverrideTests(unittest.TestCase):
                 first["palette.c"].index("cpu_trace_block(cpu, 0xBB95E6);"),
                 first["palette.c"].index(
                     "Dkc3RecordSpritePaletteOverflow(cpu->D);"))
+            self.assertIn(MODULE.GAME_INCLUDE, first["trunk.c"])
+            self.assertEqual(
+                first["trunk.c"].count("Dkc3RecordTrunkWindows(cpu->D);"), 1)
+            self.assertLess(
+                first["trunk.c"].index("(uint16)(0x2129), _v58);"),
+                first["trunk.c"].index("Dkc3RecordTrunkWindows(cpu->D);"))
+            self.assertLess(
+                first["trunk.c"].index("Dkc3RecordTrunkWindows(cpu->D);"),
+                first["trunk.c"].index("(uint16)(0x0760)"))
             self.assertEqual(
                 first["compare.c"].count(
                     "Dkc3VideoExpandSpawnLeft(cpu_read16"), 1)
@@ -299,6 +325,25 @@ class WidescreenOverrideTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "BB:95E6"):
                 MODULE.apply_overrides(generated)
 
+
+    def test_fails_closed_when_trunk_window_anchor_moves(self):
+        with tempfile.TemporaryDirectory() as directory:
+            generated = self.make_generated_dir(Path(directory))
+            trunk = generated / "trunk.c"
+            trunk.write_text(TRUNK_FIXTURE.replace("0xB3C1B1", "0xB3C1B2"),
+                             encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "B3:C1B1"):
+                MODULE.apply_overrides(generated)
+
+    def test_fails_closed_when_trunk_window_write_moves(self):
+        with tempfile.TemporaryDirectory() as directory:
+            generated = self.make_generated_dir(Path(directory))
+            trunk = generated / "trunk.c"
+            trunk.write_text(
+                TRUNK_FIXTURE.replace("(0x2129), _v58", "(0x2127), _v58"),
+                encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, r"\$2129"):
+                MODULE.apply_overrides(generated)
 
 if __name__ == "__main__":
     unittest.main()

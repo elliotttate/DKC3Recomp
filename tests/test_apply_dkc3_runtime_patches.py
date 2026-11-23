@@ -83,6 +83,13 @@ class RuntimePatches(unittest.TestCase):
             ppu = (out / "ppu.c").read_text()
         self.assertIn("switch ((ppu->wbgobjlog >> (layer * 2)) & 3u)", ppu)
         self.assertIn("const bool w1_parked =", ppu)
+        self.assertIn("void Dkc3PpuSetWsWindowUnclamped(", ppu)
+        self.assertIn(
+            "    PpuWsWindowUnclamped(ppu, 1, win->edges[0], window_right, "
+            "&w2l, &w2r);", ppu)
+        self.assertLess(
+            ppu.index("    if (w2_parked) {"),
+            ppu.index("    PpuWsWindowUnclamped(ppu, 0, win->edges[0]"))
         self.assertIn("const bool w2_parked =", ppu)
         self.assertIn(
             "  if (win->edges[0] < 0 || window_right > kPpuXPixels) {\n"

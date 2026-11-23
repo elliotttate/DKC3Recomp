@@ -368,6 +368,46 @@ def adapt_palette_overflow(sources: dict, generated_dir: Path) -> None:
     sources[path] = text.replace(marker, marker + "\n    " + hook, 1)
 
 
+def adapt_trunk_windows(sources: dict, generated_dir: Path) -> None:
+    """Record the tree-trunk BG3 windows without changing guest state.
+
+    $B3:C0F4 loads two world spans into DP $1A-$20 and writes W1 and W2 as
+    those spans minus the camera, each edge clamped to the 256-pixel
+    screen. A trunk inside a wide margin is therefore written as [255, 255]
+    or [0, 0]. Right after the last register write ($2129, block $B3:C1B1),
+    the host reads the spans back so the widescreen PPU can mask the margin
+    part of the trunk the clamp removed.
+    """
+    path = find_unit(generated_dir, "CODE_B3C0F4_M0X0")
+    if path in sources:
+        raise ValueError(f"{path.name} already adapted for another site")
+    text = add_include(path.read_text(encoding="utf-8"), GAME_INCLUDE)
+    hook = "Dkc3RecordTrunkWindows(cpu->D);"
+    if hook in text:
+        if text.count(hook) != 1:
+            raise ValueError("ambiguous existing trunk window observer")
+        sources[path] = text
+        return
+    marker = "    cpu_trace_block(cpu, 0xB3C1B1);"
+    if text.count(marker) != 1:
+        raise ValueError(
+            "expected one $B3:C1B1 trunk window block; "
+            f"found {text.count(marker)}")
+    start = text.index(marker)
+    following = text.find("cpu_trace_block(cpu, 0x", start + len(marker))
+    end = following if following >= 0 else len(text)
+    block = text[start:end]
+    write = re.compile(
+        r"\n    cpu_write8\(cpu, cpu->DB, \(uint16\)\(0x2129\), _v\d+\);")
+    matches = write.findall(block)
+    if len(matches) != 1:
+        raise ValueError(
+            "expected one W2R ($2129) write in $B3:C1B1; "
+            f"found {len(matches)}")
+    block = block.replace(matches[0], matches[0] + "\n    " + hook, 1)
+    sources[path] = text[:start] + block + text[end:]
+
+
 def apply_overrides(generated_dir: Path) -> list[Path]:
     """Widen DKC3's object activation and sprite culls to the presented view.
 
@@ -399,6 +439,7 @@ def apply_overrides(generated_dir: Path) -> list[Path]:
     sources[scan_path] = scan
     adapt_music_transition(sources, generated_dir)
     adapt_palette_overflow(sources, generated_dir)
+    adapt_trunk_windows(sources, generated_dir)
 
     found: set[str] = set()
     for path in sorted(generated_dir.glob("*.c")):

@@ -789,6 +789,7 @@ static void Dkc3LoadExtra(SaveLoadInfo *sli, uint32_t version) {
 }
 
 static void Dkc3ResetSpritePaletteOverflow(void);
+static void Dkc3ResetTrunkWindows(void);
 
 static void Dkc3OnStateLoaded(uint32_t version) {
   (void)version;
@@ -817,6 +818,7 @@ static void Dkc3OnStateLoaded(uint32_t version) {
   Dkc3KongTrackerForgetSram(&s_kong_tracker);
   Dkc3VideoSetTerrainReady(false);
   Dkc3ResetSpritePaletteOverflow();
+  Dkc3ResetTrunkWindows();
 }
 
 static const RtlGameInfo kDkc3GameInfo = {
@@ -889,6 +891,66 @@ void Dkc3RecordSpritePaletteOverflow(uint16_t direct_page) {
   if (slot >= kDkc3SpriteSlotCount)
     return;
   s_sprite_overflow_pal[slot] = palette_id;
+}
+
+/* $B3:C0F4's trunk windows, recorded when the routine writes them and
+ * applied to every frame the PPU draws while the level and the window
+ * registers are still the ones recorded. The routine does not run while the
+ * game is paused; the registers stay put then, so the masks stay too. It
+ * runs before the frame's camera update, so its edges trail the camera by
+ * one frame exactly as the registers it writes do. A level change, a state
+ * load, or any other window write withdraws them. */
+static struct {
+  int16_t edges[4];
+  uint8_t regs[4];
+  uint16_t level;
+  unsigned mask;
+} s_trunk_windows;
+
+static void Dkc3ResetTrunkWindows(void) {
+  s_trunk_windows.mask = 0;
+  for (int window = 0; window < 2; window++)
+    Dkc3PpuSetWsWindowUnclamped(window, false, 0, 0, 0, 0);
+}
+
+void Dkc3RecordTrunkWindows(uint16_t direct_page) {
+  if (!Dkc3VideoIsWidescreen() || !g_ppu)
+    return;
+  uint16_t world[4];
+  for (int i = 0; i < 4; i++)
+    world[i] = Dkc3ReadWram16((uint16_t)(direct_page + 0x001Au + i * 2u));
+  const uint8_t regs[4] = {g_ppu->window1left, g_ppu->window1right,
+                           g_ppu->window2left, g_ppu->window2right};
+  const uint16_t camera = Dkc3ReadWram16(kDkc3WramCameraX);
+  s_trunk_windows.mask = Dkc3VideoUnclampedTrunkWindows(
+      world, camera, regs, s_trunk_windows.edges);
+  memcpy(s_trunk_windows.regs, regs, sizeof regs);
+  s_trunk_windows.level = Dkc3ReadWram16(kDkc3WramLevelNumber);
+  if (getenv("DKC3_TRUNK_WINDOW_TRACE"))
+    fprintf(stderr,
+            "trunk_windows world=[%04x,%04x,%04x,%04x] camera=%04x "
+            "regs=[%u,%u,%u,%u] edges=[%d,%d,%d,%d] mask=%u\n",
+            world[0], world[1], world[2], world[3], camera, regs[0],
+            regs[1], regs[2], regs[3], s_trunk_windows.edges[0],
+            s_trunk_windows.edges[1], s_trunk_windows.edges[2],
+            s_trunk_windows.edges[3], s_trunk_windows.mask);
+}
+
+/* Hand the recorded windows to the PPU for this frame, or withdraw them.
+ * `active` is false whenever the terrain path is not presenting margins.
+ * The PPU also drops a window whose registers change mid-frame. */
+static void Dkc3ApplyTrunkWindows(bool active) {
+  const bool live =
+      active && Dkc3VideoCullWidenEnabled() && s_trunk_windows.mask != 0 &&
+      s_trunk_windows.level == Dkc3ReadWram16(kDkc3WramLevelNumber);
+  for (int window = 0; window < 2; window++) {
+    const bool on = live && (s_trunk_windows.mask & (1u << window)) != 0;
+    Dkc3PpuSetWsWindowUnclamped(
+        window, on, s_trunk_windows.edges[window * 2],
+        s_trunk_windows.edges[window * 2 + 1],
+        s_trunk_windows.regs[window * 2],
+        s_trunk_windows.regs[window * 2 + 1]);
+  }
 }
 
 static bool Dkc3LoadSpritePaletteColors(uint16_t palette_id,
@@ -2746,6 +2808,7 @@ void Dkc3DrawPpuFrame(void) {
   if (!overworld)
     Dkc3ResetOverworldState();
   int presentation_bias = 0;
+  bool trunk_windows_active = false;
   bool band_policies_active = false;
   bool blank_margins = false;
   /* Reset host presentation latches before deriving the current frame. A
@@ -2858,6 +2921,7 @@ void Dkc3DrawPpuFrame(void) {
     const bool terrain_ready = Dkc3PrepareWidescreenShadow(
         wide_layer_mask, terrain_layer, layout, bias, alias_layer);
     presentation_bias = terrain_ready ? bias : 0;
+    trunk_windows_active = terrain_ready;
     /* Nothing authored reaches the margins while the world is unproven (a
      * level intro's static picture, the first frames of a stream), and the
      * PPU would otherwise fill them with the backdrop color, which Barrel
@@ -2976,6 +3040,7 @@ void Dkc3DrawPpuFrame(void) {
     PpuSetExtraSpace(g_ppu, 0);
   }
   Dkc3PatchInterpreterCull();
+  Dkc3ApplyTrunkWindows(trunk_windows_active);
   Dkc3SyncWidescreenObjPalettes(Dkc3InLevel());
 
   dma_startDma(g_dma, g_snesrecomp_last_hdmaen, true);

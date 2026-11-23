@@ -193,6 +193,28 @@ void Dkc3VideoClearOutsideMargins(uint8_t *buffer, size_t pitch, int width,
   }
 }
 
+unsigned Dkc3VideoUnclampedTrunkWindows(const uint16_t world[4],
+                                        uint16_t camera,
+                                        const uint8_t regs[4],
+                                        int16_t edges[4]) {
+  if (!world || !regs || !edges)
+    return 0;
+  unsigned mask = 0;
+  for (int window = 0; window < 2; window++) {
+    bool clamped = true;
+    for (int side = 0; side < 2; side++) {
+      const int index = window * 2 + side;
+      const int edge = (int16_t)(uint16_t)(world[index] - camera);
+      edges[index] = (int16_t)edge;
+      if (regs[index] != (uint8_t)Dkc3VideoClampInt(edge, 0, 255))
+        clamped = false;
+    }
+    if (clamped)
+      mask |= 1u << window;
+  }
+  return mask;
+}
+
 void Dkc3VideoMarginsForBias(uint16_t camera_x, uint16_t minimum_scroll_x,
                              uint16_t maximum_scroll_x, int bias,
                              int *left_margin, int *right_margin) {
@@ -483,7 +505,7 @@ int Dkc3VideoPresentationBias(void) {
  */
 /* DKC3_CULL_WIDEN=0 keeps every cull and activation window native while
  * the margins still present, for before/after comparisons. */
-static bool Dkc3VideoCullWidenEnabled(void) {
+bool Dkc3VideoCullWidenEnabled(void) {
   static int enabled = -1;
   if (enabled < 0) {
     const char *setting = getenv("DKC3_CULL_WIDEN");

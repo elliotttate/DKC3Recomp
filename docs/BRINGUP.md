@@ -3223,3 +3223,108 @@ equal to the monitor; the menu item and Escape restored the bar and
     all flags as they were.
 - **Unverified:** a quick load in the desktop app, and rewind, both of
   which reach the same `Dkc3OnStateLoaded` hook.
+
+## 2026-11-23 - Ripsaw Rage: forest through a trunk in the right margin (clamped BG3 windows)
+
+- **Symptom:** in the reported release quick save (SHA-256
+  `7ef87487...0de5`, level word `$00C0` = `$002E`, Ripsaw Rage, paused,
+  16:9 with `reflect` in the user's `launcher.cfg`), the right side of the
+  wide view looked wrong: the far forest (BG3) showed through the next
+  tree trunk's hollow, and the trunk was split by a column of forest.
+- **Measurement:** the margin terrain was correct. BG1 margin cells
+  matched the decode (434 of 434), and a pixel oracle against the native
+  view of the same world columns (4:3, camera `$0211`) agreed on BG1.
+  BG2 and BG3 are static 32-column maps; neither tilemap changed over a
+  200-frame walk. The difference was the hardware windows. `windowsel`
+  `$00a00aa0` with `main_window=$04` masks BG3 inside W1 or W2. Along a walk
+  right, W2's left edge tracked world `$02D8` exactly (`[249,255]` at
+  camera `$01DF`, `[226,255]` at `$01F6`, `[199,255]` at `$0211`), and W1's
+  right edge tracked `$0227`. The writer is `$B3:C0F4` (the only caller of
+  `$B3:9741` is `$B3:9637`, Barrel Shield Bust-Up's fixed trunks). It loads
+  W1 = [`$0158`, `$0227`] and W2 = [`$02D8`, `$03A7`] into DP `$1A`-`$20`
+  (another pair of spans for other levels), subtracts `$196D`, and clamps
+  each edge to 0..255 (W1L only for negatives). At the save's camera
+  `$01C7`, W2 is unclamped `[273, 480]` and written `[255, 255]`. The
+  parked-window rule (Barrel Shield Bust-Up) correctly treats that as
+  empty, so nothing masked BG3 in the right margin from world `$02D8`.
+- **Fix:**
+  - `scripts/apply_dkc3_widescreen_overrides.py` (`adapt_trunk_windows`):
+    calls `Dkc3RecordTrunkWindows(cpu->D)` right after the `$2129` write
+    in block `$B3:C1B1`. Fails closed if the block or the write moves.
+  - `Dkc3VideoUnclampedTrunkWindows` (`runner/dkc3_video.c`) returns each
+    window's unclamped screen edges and accepts a window only when the
+    registers equal the clamp of those edges.
+  - `runner/dkc3_game.c` keeps the record while the level word is
+    unchanged and hands it to the PPU on terrain-ready wide frames
+    (`Dkc3ApplyTrunkWindows`); a state load clears it, and
+    `DKC3_CULL_WIDEN=0` disables it. `DKC3_TRUNK_WINDOW_TRACE=1` prints
+    every record.
+  - `cmake/runtime-patches/ppu.hunks`: `Dkc3PpuSetWsWindowUnclamped` plus a
+    step at the end of `@@ window-presentation-bias` that replaces a
+    window's edges with the unclamped ones (minus the presentation bias,
+    clamped to the layer's span) while margins are active and that
+    window's registers still hold the recorded values.
+  - The routine runs before the camera update, so a record trails the
+    camera by one frame, exactly as the registers it writes do. A first
+    version also required the camera to equal the recorded one. That
+    dropped the masks when the game was paused one frame after the camera
+    settled, so the check was removed.
+- **Verified (Windows x64 Release, private ROM, previous build as reference):**
+  - 4:3: every sampled frame of a 200-frame replay (unpause, walk right)
+    and the final frame, WRAM, VRAM, CGRAM, and OAM hashes are identical
+    to the previous build. An 1,800-frame boot is identical too. At 16:9
+    and 21:9 the memory hashes are identical (no guest change).
+  - Only margin pixels change: from the trunk's edge (x 304-309 at 16:9,
+    356-361 at 21:9) to the right edge while the trunk is off the native
+    screen (frames 8-40), and the left margin at frame 180, after the first
+    trunk leaves to the west.
+  - Pixel oracle: each changed pixel mapped through camera plus
+    `extra - bias` to the 4:3 frame that shows the same world spot. With
+    the known 3-pixel camera-word registration (the same best shift on
+    unchanged columns), 470 of 470 covered pixels at frame 8 match the
+    native view. The previous build matched 0 of them. Without the shift,
+    16:9 frames 8-180 match on 1,828 of 4,647 covered pixels and 21:9 on
+    4,077 of 7,884, against 0 for the previous build.
+  - Unpause, then pause again: the mask stays on every paused frame.
+  - With `DKC3_CULL_WIDEN=0`, every 16:9 frame equals the previous build.
+  - Python unit tests 29/29; full Release CTest 31/31. New cases: the
+    decoder (save, on-screen trunk, foreign register, W1L low byte,
+    null), the override placement and two fail-closed anchors, and the
+    runtime hunk.
+- **Open:** a freshly restored save taken while paused (the reported one)
+  still shows the old margin until the first unpaused frame. The routine
+  does not run during a pause and its spans are not in WRAM, so there is
+  no proven source until it runs. The `$B3:9741` trunks (Barrel Shield
+  Bust-Up) get no window at all when off screen; they are untouched.
+- **Unverified:** the live desktop app (the SDL host's hidden screenshot
+  can only show the paused save, which is unchanged), the other span set
+  and the levels that use it, the rest of Ripsaw Rage, 16:10, and macOS.
+
+## 2026-11-23 - Ripsaw Rage: bark blocks under a hollow's platform (kept, faithful)
+
+- **Report:** a later release quick save (SHA-256 `51d1be9a...395a3d`, level
+  `$002E`, camera `$026F`,`$107E`, 16:9) showed stair-stepped 8-pixel blocks
+  of bark under the tree platform in the right margin. The previous build
+  draws the same picture, so the trunk-window change did not cause it.
+- **Measurement:**
+  - Removing BG2 (`SNESRECOMP_LAYER_MASK=29`) removes the blocks. The bark
+    is BG2's main band, the static 32x32 map at `$7800` (HDMA band lines
+    1-206, separate from the saw band's `$7400`). Its VRAM did not change
+    over a 190-frame walk.
+  - BG1 there holds tile entry `$0000` at world tiles (109..111, 575) and
+    (111, 576). Character 0 at `$2000` is all zero, so the entry is
+    transparent. The cartridge's own ring holds the same `$0000` when those
+    cells are native (camera `$02C0`), and the decode matches it cell for
+    cell.
+  - Natively, BG2 never shows through those cells. Over a walk from camera
+    `$026F` to its stop at `$02C0` (the region wall), a render without BG2
+    differs from the full render by 0 pixels there, and the area is black
+    (BG3 masked by the trunk window, BG2 empty).
+  - In the margin, BG2 wraps at 256 pixels as hardware does. The bark in
+    the holes equals, pixel for pixel, the BG2 trunk at the native left
+    edge (columns 0-25) on the same lines.
+- **Decision (owner):** keep it. A wider console would draw exactly this:
+  the holes are authored, and only the native camera range keeps them away
+  from BG2's trunk. Blacking out transparent BG1 cells inside a trunk
+  window was offered and declined, because it would invent content the
+  hardware does not draw.

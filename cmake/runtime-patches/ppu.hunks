@@ -65,6 +65,10 @@ file: runner/src/snes/ppu.c
         w2r = IntMin(w2r - ppu->wsPresentationXBias, window_right - 1);
     }
   }
+  if (win->edges[0] < 0 || window_right > kPpuXPixels) {
+    PpuWsWindowUnclamped(ppu, 0, win->edges[0], window_right, &w1l, &w1r);
+    PpuWsWindowUnclamped(ppu, 1, win->edges[0], window_right, &w2l, &w2r);
+  }
   if (ppu->wsWindowExpandLayers & (1u << layer)) {
 >>>>
 
@@ -184,6 +188,51 @@ static inline uint32 PpuLookupPixelColor(const Ppu *ppu, uint16 pixel, uint32 i)
     }
   }
   return ppu->cgram[pixel & 0xff];
+}
+
+/* Host-only unclamped hardware-window edges. A cartridge routine that clamps
+ * a world-space mask to the 256-pixel screen ($B3:C0F4, the tree-trunk BG3
+ * masks of Ripsaw Rage) loses the part that lies in a widescreen margin: a
+ * trunk just past the native right edge is written as [255, 255]. The host
+ * records the unclamped edges (native screen x, inclusive) together with the
+ * register values the routine wrote; a window uses them only while its
+ * registers still hold exactly those values. Inactive at native 4:3. */
+static bool s_ws_window_unclamped[2];
+static int16 s_ws_window_unclamped_edges[2][2];
+static uint8 s_ws_window_unclamped_regs[2][2];
+
+void Dkc3PpuSetWsWindowUnclamped(int window, bool active, int left,
+                                 int right, uint8 reg_left, uint8 reg_right) {
+  if (window < 0 || window > 1)
+    return;
+  s_ws_window_unclamped[window] = active;
+  s_ws_window_unclamped_edges[window][0] = (int16)left;
+  s_ws_window_unclamped_edges[window][1] = (int16)right;
+  s_ws_window_unclamped_regs[window][0] = reg_left;
+  s_ws_window_unclamped_regs[window][1] = reg_right;
+}
+
+static inline bool PpuWsWindowUnclamped(const Ppu *ppu, int window,
+                                        int screen_left, int window_right,
+                                        int *wl, int *wr) {
+  if (!s_ws_window_unclamped[window])
+    return false;
+  const uint8 reg_left = window ? ppu->window2left : ppu->window1left;
+  const uint8 reg_right = window ? ppu->window2right : ppu->window1right;
+  if (reg_left != s_ws_window_unclamped_regs[window][0] ||
+      reg_right != s_ws_window_unclamped_regs[window][1])
+    return false;
+  int l = s_ws_window_unclamped_edges[window][0] - ppu->wsPresentationXBias;
+  int r = s_ws_window_unclamped_edges[window][1] - ppu->wsPresentationXBias;
+  if (l < screen_left) l = screen_left;
+  if (r > window_right - 1) r = window_right - 1;
+  if (l > r) {
+    l = 1;
+    r = 0;
+  }
+  *wl = l;
+  *wr = r;
+  return true;
 }
 >>>>
 

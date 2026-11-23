@@ -256,6 +256,25 @@ void Dkc3VideoMarginsForBias(uint16_t camera_x, uint16_t minimum_scroll_x,
                              int *left_margin, int *right_margin);
 
 
+/* `$B3:C0F4` (Ripsaw Rage's tree-trunk BG3 masks) writes W1 = [`$1A`,
+ * `$1C`] and W2 = [`$1E`, `$20`] (world X in its direct page) minus the
+ * camera, each edge clamped to the 256-pixel screen, so a trunk inside a
+ * wide margin reaches the PPU as [255, 255] or [0, 0]. Given those four
+ * world edges, the camera the routine read, and the four registers it
+ * wrote (W1L, W1R, W2L, W2R), stores each window's unclamped screen edges
+ * in `edges` (left, right per window) and returns a mask of the windows
+ * whose registers equal the clamp of those edges (bit 0 W1, bit 1 W2). A
+ * window that fails the check was not written by that clamp; leave it to
+ * the hardware registers. */
+unsigned Dkc3VideoUnclampedTrunkWindows(const uint16_t world[4],
+                                        uint16_t camera,
+                                        const uint8_t regs[4],
+                                        int16_t edges[4]);
+
+/* False when DKC3_CULL_WIDEN=0 asks for native object and window behavior
+ * beside the presented margins (the before/after switch). */
+bool Dkc3VideoCullWidenEnabled(void);
+
 /* Black the host columns outside the live span of a wide frame: the first
  * `extra - left_margin` and the last `extra - right_margin` of each row of
  * `width` pixels (kDkc3VideoBytesPerPixel each). The PPU writes only the

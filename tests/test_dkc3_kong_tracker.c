@@ -293,6 +293,43 @@ static void TestSramSync(void) {
   CHECK(Dkc3KongTrackerHasLevel(&tracker, 2, 0x25));
   CHECK(!Dkc3KongTrackerHasLevel(&tracker, 2, 0x28));
   CHECK(Dkc3KongTrackerHasLevel(&tracker, 0, 0x28));
+
+  /* One slot copied onto both others within one sync: each copy takes the
+   * unchanged source's flags, not the intersection with the other
+   * destination's old flags. */
+  Dkc3KongTrackerInit(&tracker);
+  memset(s_sram, 0, sizeof s_sram);
+  SetSlotData(0, 3);
+  SetSlotData(1, 5);
+  CHECK(Dkc3KongTrackerSetLevel(&tracker, 0, 0x25));
+  CHECK(Dkc3KongTrackerSetLevel(&tracker, 0, 0x28));
+  CHECK(Dkc3KongTrackerSetLevel(&tracker, 1, 0x30));
+  (void)Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram);
+  memcpy(s_sram + kDkc3KongSramSlotOffsets[1],
+         s_sram + kDkc3KongSramSlotOffsets[0], kDkc3KongSramSlotSize);
+  memcpy(s_sram + kDkc3KongSramSlotOffsets[2],
+         s_sram + kDkc3KongSramSlotOffsets[0], kDkc3KongSramSlotSize);
+  CHECK(Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram));
+  for (unsigned slot = 1; slot < 3; slot++) {
+    CHECK(Dkc3KongTrackerHasLevel(&tracker, slot, 0x25));
+    CHECK(Dkc3KongTrackerHasLevel(&tracker, slot, 0x28));
+    CHECK(!Dkc3KongTrackerHasLevel(&tracker, slot, 0x30));
+  }
+
+  /* A slot saved and copied within one sync is still the source: no
+   * unchanged slot holds the image, so the changed one is used. */
+  Dkc3KongTrackerInit(&tracker);
+  memset(s_sram, 0, sizeof s_sram);
+  SetSlotData(0, 3);
+  CHECK(Dkc3KongTrackerSetLevel(&tracker, 0, 0x25));
+  (void)Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram);
+  s_sram[kDkc3KongSramSlotOffsets[0] + 40] ^= 0x55;
+  SealSlot(s_sram + kDkc3KongSramSlotOffsets[0], 0x0152);
+  memcpy(s_sram + kDkc3KongSramSlotOffsets[1],
+         s_sram + kDkc3KongSramSlotOffsets[0], kDkc3KongSramSlotSize);
+  CHECK(Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram));
+  CHECK(Dkc3KongTrackerHasLevel(&tracker, 1, 0x25));
+  CHECK(Dkc3KongTrackerHasLevel(&tracker, 0, 0x25));
 }
 
 static void TestWorldsAndMapBadge(void) {

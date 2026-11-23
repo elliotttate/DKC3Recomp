@@ -3162,6 +3162,16 @@ equal to the monitor; the menu item and Escape restored the bar and
       just copied to, the source is ambiguous (for example, a slot copied
       earlier and then played without saving). The copy now takes only the
       levels every candidate has, instead of the first candidate's flags.
+      Slots whose image did not change in the same sync are preferred as
+      sources, so copying one slot onto both others at once gives each the
+      source's flags rather than the intersection with the other
+      destination's old flags; changed slots are used only when no
+      unchanged one holds the image (a slot saved and copied in one sync),
+      and then only if they held a file before the sync: a slot that was
+      blank cannot be the source, so the saved source keeps its flags
+      instead of taking the new copy's empty ones. Two slots that both held
+      files, both changed, and now match remain ambiguous and are
+      intersected.
       The file select's chosen source is not read, so this stays a
       conservative guess, not exact.
   - `runner/desktop_overlay.cpp`: "Restore All Settings to Defaults" turns

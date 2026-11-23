@@ -235,19 +235,31 @@ bool Dkc3KongTrackerSyncSram(Dkc3KongTracker *tracker, const uint8_t *sram,
        * hold the same image (a slot copied twice, or played without saving
        * after a copy), the source is ambiguous: keep only the levels every
        * candidate agrees on, so no candidate's extra badges are carried
-       * onto the wrong file. */
+       * onto the wrong file. A candidate that also changed this sync is
+       * usually another destination of the same copy, and its pre-sync
+       * flags belong to the file it replaced, so unchanged candidates are
+       * preferred; changed ones are used only when no unchanged slot holds
+       * the image (a slot saved and copied within one sync), and then only
+       * if they held a file before this sync. */
       uint8_t copied[kDkc3KongLevelBitmapBytes];
       bool any_source = false;
-      for (unsigned i = 0; i < kDkc3KongSlotCount; i++) {
-        if (i == j || SlotBlank(slots[i]) ||
-            memcmp(slots[i], slots[j], kDkc3KongSramSlotSize) != 0)
-          continue;
-        if (!any_source) {
-          memcpy(copied, before[i], sizeof copied);
-          any_source = true;
-        } else {
-          for (unsigned b = 0; b < kDkc3KongLevelBitmapBytes; b++)
-            copied[b] &= before[i][b];
+      for (int pass = 0; pass < 2 && !any_source; pass++) {
+        for (unsigned i = 0; i < kDkc3KongSlotCount; i++) {
+          if (i == j || SlotBlank(slots[i]) ||
+              memcmp(slots[i], slots[j], kDkc3KongSramSlotSize) != 0)
+            continue;
+          const bool changed = memcmp(slots[i], tracker->sram_shadow[i],
+                                      kDkc3KongSramSlotSize) != 0;
+          if (changed != (pass == 1)) continue;
+          /* A slot that was blank before this sync cannot be the source. */
+          if (changed && SlotBlank(tracker->sram_shadow[i])) continue;
+          if (!any_source) {
+            memcpy(copied, before[i], sizeof copied);
+            any_source = true;
+          } else {
+            for (unsigned b = 0; b < kDkc3KongLevelBitmapBytes; b++)
+              copied[b] &= before[i][b];
+          }
         }
       }
       if (any_source &&

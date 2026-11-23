@@ -3328,3 +3328,27 @@ equal to the monitor; the menu item and Escape restored the bar and
   from BG2's trunk. Blacking out transparent BG1 cells inside a trunk
   window was offered and declined, because it would invent content the
   hardware does not draw.
+
+## 2026-11-23 - review follow-ups: KONG baseline at quick load, trunk-window notes
+
+- **Changes:**
+  - `runner/dkc3_game.c` (`Dkc3OnStateLoaded`): the KONG tracker adopts the
+    restored SRAM as its baseline inside the load hook (the runtime's
+    `snes_saveload` has already restored it), instead of invalidating the
+    baseline for the next frame to adopt. Before, a copy or erase made in
+    the first file-select frame after a quick load was adopted unseen and
+    its letters never followed. With tracking off it still only forgets.
+  - `runner/dkc3_game.h`: `Dkc3RecordTrunkWindows`'s comment lists what it
+    actually reads (the DP edges, camera X and level number from WRAM, and
+    the PPU window registers).
+  - `README.md`: a `kong_letters.dat` that fails its checks at launch is
+    treated as empty, which drops every file's letters.
+- **Not changed:** cubic reported that `@@ window-presentation-bias` calls
+  `PpuWsWindowUnclamped` before it is declared. In the patched `ppu.c`
+  (regenerated from the current hunks) the helper is defined at line 543,
+  before both calls at 703-704; the hunk file's order is not the order in
+  `ppu.c`.
+- **Verified:** Python unit tests 29/29 and the Windows Release CTest
+  suite 31/31 with every target rebuilt.
+- **Unverified:** a quick load followed by a copy or erase on its first
+  file-select frame in the app.

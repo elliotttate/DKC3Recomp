@@ -813,9 +813,15 @@ static void Dkc3OnStateLoaded(uint32_t version) {
   s_state_loaded_recently = !getenv("DKC3_LOAD_AS_LEVEL_START");
   s_kong_map_settled = false;
   memset(&s_kong_map_settle, 0, sizeof s_kong_map_settle);
-  /* A quick save carries the cartridge SRAM; adopt what it restored rather
-   * than reading the difference as a copy or erase. */
-  Dkc3KongTrackerForgetSram(&s_kong_tracker);
+  /* A quick save carries the cartridge SRAM, already restored when this
+   * hook runs; adopt it now as the baseline rather than reading the
+   * difference as a copy or erase. Adopting here instead of on the next
+   * frame keeps a copy or erase made in that first file-select frame. */
+  if (s_kong_tracking && g_sram && g_sram_size > 0)
+    (void)Dkc3KongTrackerSyncSram(&s_kong_tracker, g_sram,
+                                  (size_t)g_sram_size, false);
+  else
+    Dkc3KongTrackerForgetSram(&s_kong_tracker);
   Dkc3VideoSetTerrainReady(false);
   Dkc3ResetSpritePaletteOverflow();
   Dkc3ResetTrunkWindows();

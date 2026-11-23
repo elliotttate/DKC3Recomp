@@ -95,8 +95,9 @@ void Dkc3RecordSpritePaletteOverflow(uint16_t direct_page);
 
 /* The generated $B3:C0F4 block that writes W2R records the tree-trunk
  * windows' world edges (DP $1A-$20) so a wide aspect can mask a trunk that
- * lies in a margin. No guest state is read beyond them; 4:3 returns at
- * once. */
+ * lies in a margin. Besides those edges it reads only the camera X and
+ * level number from WRAM and the PPU window registers, and writes no guest
+ * state; 4:3 returns at once. */
 void Dkc3RecordTrunkWindows(uint16_t direct_page);
 
 /* Host-only unclamped window edges in patched ppu.c (window 0 = W1). */

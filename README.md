@@ -27,26 +27,33 @@ runtime's safe sprite coordinate range: 446x224, or approximately 20.91:9.
 Screens the map does not cover center the native frame between black margins.
 The Northern Kremisphere overworld now fills the wide view from its fully
 resident 512-pixel map. The view stays locked to the camera, and a margin
-past the map's east or west end is black. Verified at one overworld quick
+past the map's east or west end is black; the east end was measured, the
+west end is assumed to be the map's first column. Verified at one overworld quick
 save in 16:10, 16:9, and 21:9 with the native 256 columns and guest memory
 unchanged. The overworld's own sprite window extends only about 45 pixels
 past each native edge, so a sprite can vanish in the outermost pixels of a
 16:9 margin and well inside a 21:9 margin. Once the hovercraft opens
 the north, the game streams map rows as the camera climbs; the margins now
-stay filled through that (verified headless at a hovercraft save).
+stay filled through that (verified headless at a hovercraft save, and by
+the user in the desktop app). The headless replay of that save also shows
+garbled tiles in the streamed rows at native 4:3, with or without the
+widening; it was not seen in the desktop app and is not investigated.
 Other overworld screens are
 unverified and keep black margins unless they pass the same checks.
-Short rooms (the bonus games) no longer slide the view after the player
-stops: the inward shift at each wall shrinks to fit the room and changes at
-most one pixel per eight of camera travel, or is zero when the room is
-narrower than the wide view, so the HUD stays put and black shows only
-beyond a wall.
+Short rooms such as the bonus games no longer slide the view after the
+player stops: the inward shift at each wall shrinks to fit the room and
+changes at most one pixel per eight of camera travel, or is zero when the
+room is narrower than the wide view, so the HUD stays put and black shows
+only beyond a wall. Verified headless in the first level's two bonus rooms
+only; the bonus rooms of later levels and the live app are unverified.
 Walls now follow the game's own camera regions. A room the camera cannot
 leave sideways no longer widens into other rooms' map columns, which showed
 as a mismatched, cut-off strip at one edge. The elevator shaft in the
 reported save is exactly one screen wide, so it rides between black margins,
 and the right margin opens once the camera reaches the room at the top. A
-region's linked neighbours extend its walls, so a run of rooms is one span.
+region's linked neighbours extend its walls, so a run of linked rooms is
+one span, up to a missing link or a neighbour flagged `$20`, which never
+joins.
 Verified headless at that save in 16:10, 16:9, and 21:9.
 The placed-object spatial scan and final activation checks, the sprite renderer
 culls, and the static banana/star grids are widened to the presented view by

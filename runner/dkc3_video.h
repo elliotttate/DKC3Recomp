@@ -105,10 +105,15 @@ bool Dkc3VideoUsesSnowArenaPlanes(bool in_level, uint16_t level,
  * (docs/BRINGUP.md, 2026-11-22). The scene qualifies only
  * in Mode 1 with BG1 a 64-column, 32-row map whose rendered world x ($100 +
  * the nine-bit BG1HOFS) lies in [$100, $200] and within the camera lead of
- * $196D (the camera word runs up to two pixels ahead of the latched scroll
- * while the boat moves), every other enabled 64-column BG layer at BG1's
- * phase, and every enabled layer 32 rows tall. The host still has to prove
- * every map write lands in a row the frame hides.
+ * $196D, every other enabled 64-column BG layer at BG1's phase, and every
+ * enabled layer 32 rows tall. The measured camera word runs up to two
+ * pixels ahead of the latched scroll while the boat moves.
+ * kDkc3OverworldCameraLead accepts up to eight pixels either way: a margin
+ * over that measurement, not a measured bound. Only the two-pixel forward
+ * lead has been observed; the negative side (camera behind the scroll) is
+ * unmeasured tolerance. The host still has to prove every map write lands in
+ * a row the frame hides, or in at most kDkc3OverworldShownRowWrites shown
+ * rows per frame (see Dkc3VideoOverworldWritesAreRows).
  */
 enum {
   kDkc3OverworldMainLoop = 0xb4b179,

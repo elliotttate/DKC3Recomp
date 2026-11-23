@@ -2981,3 +2981,35 @@ equal to the monitor; the menu item and Escape restored the bar and
   previous build (the new path runs only when widescreen is on). The user
   verified the margins in the desktop app at this save. Unverified: other
   overworld maps and macOS.
+
+## 2026-11-23 - PR 17 review follow-ups (bias policy switch, overworld notes)
+
+- **Changes:**
+  - `runner/dkc3_game.c`: the presented bias re-snaps when the widescreen
+    edge policy changes (for example `shift` to `glide` from the menu).
+    Before, it eased one pixel per frame from the old policy's bias, so the
+    background and HUD slid for up to a margin's worth of frames.
+  - `runner/dkc3_video.h`: the overworld comment now separates the
+    measured two-pixel forward camera lead from the accepted
+    `kDkc3OverworldCameraLead` of eight pixels either way, which is
+    tolerance, not measurement; and it states the write contract as
+    `Dkc3VideoOverworldWritesAreRows` implements it (hidden rows, or at most
+    `kDkc3OverworldShownRowWrites` shown rows per frame).
+  - `tests/test_dkc3_video.c`: the right-margin clear case checks all four
+    bytes of each pixel.
+  - `docs/WIDESCREEN_GUIDE.md` 6.5 and `README.md`: the one-pixel limit is
+    stated as a per-frame bound; README claims are narrowed to what this log
+    records (bonus rooms verified only in the first level, the overworld
+    west bound assumed, the headless-only garbling at the hovercraft save,
+    linked regions stopping at a missing link or a `$20` neighbour).
+- **Not changed:** the overworld gate counts changed rows rather than
+  validating each row's write shape. The host sees only the word-level diff
+  against the previous frame, so a streamed row whose new words partly
+  equal the old ones shows as a partial row; a shape check on the diff
+  would reject real streaming. A sound check needs VRAM write spans from
+  the runtime, which this host does not record. The map is fully resident,
+  so a shown-row write outside the native columns is still map content the
+  camera would show on arrival; the risk is a game using margin cells as
+  scratch, which has not been observed. Open.
+- **Verified:** Python unit tests and the full Release CTest suite (see
+  the commit). The policy-switch re-snap was not exercised in the app.

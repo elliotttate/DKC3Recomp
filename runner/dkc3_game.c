@@ -109,6 +109,11 @@ static int s_bias_presented;
  * does. */
 enum { kDkc3BiasSettleFrames = 4 };
 static uint32_t s_bias_frames;
+/* The edge policy the presented bias was computed under. Changing it from
+ * the menu re-snaps the bias: easing from the old policy's bias would slide
+ * the background and the screen-fixed HUD for up to a margin's worth of
+ * frames. */
+static Dkc3VideoEdgePolicy s_bias_policy;
 /* The overworld's resident maps (Dkc3VideoIsResidentOverworld). Each drawn
  * frame compares the enabled layers' tilemap words with the previous drawn
  * frame's copy. Once the hovercraft opens the north, the game streams rows
@@ -2716,6 +2721,10 @@ void Dkc3DrawPpuFrame(void) {
     Dkc3VideoPresentationMarginsBounded(camera_x, minimum_scroll_x,
                                         maximum_scroll_x, &wanted_bias,
                                         &left_margin, &right_margin);
+    if (s_bias_policy != Dkc3VideoGetEdgePolicy()) {
+      s_bias_policy = Dkc3VideoGetEdgePolicy();
+      s_bias_valid = false;
+    }
     if (!s_bias_valid) {
       s_bias_presented = wanted_bias;
       s_bias_frames = 0;

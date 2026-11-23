@@ -685,8 +685,11 @@ int main(void) {
     Dkc3VideoClearOutsideMargins(buffer, kPitch, 308, kRows, 26, 26, 3);
     for (int y = 0; y < kRows && ok; y++) {
       const uint8_t *row = buffer + (size_t)y * kPitch;
-      for (int x = 0; x < 308; x++)
-        ok = ok && row[x * 4] == (x >= 308 - 23 ? 0 : 0xab);
+      for (int x = 0; x < 308; x++) {
+        const uint8_t expected = x >= 308 - 23 ? 0 : 0xab;
+        for (int b = 0; b < 4; b++)
+          ok = ok && row[x * 4 + b] == expected;
+      }
     }
     memset(buffer, 0xab, sizeof buffer);
     Dkc3VideoClearOutsideMargins(buffer, kPitch, 308, kRows, 26, 26, 26);

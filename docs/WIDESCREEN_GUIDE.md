@@ -261,9 +261,10 @@ A west hold needs both the void and a pinned player (within forty pixels
 of the frame's west edge with the camera unmoved, or the first eight
 frames after a level change; a state restore is not a level start). The
 presented bias moves at most one pixel per frame toward its target. That
-limit is only safe while the target moves slower than the camera, which is
-why a room shorter than the two releases takes a reduced, unpinned shift:
-a pinned target there tracks the camera nearly pixel for pixel.
+limit is only safe while the target changes by at most one pixel per frame,
+which is why a room shorter than the two releases takes a reduced, unpinned
+shift: a pinned target there tracks the camera nearly pixel for pixel, so
+it can move several pixels a frame and the presented bias falls behind.
 
 ### 6.6 Special streamed layers
 

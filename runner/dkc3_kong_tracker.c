@@ -4,6 +4,23 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
+/* Replace `path` with `temporary` in one step, so a failure leaves the old
+ * file in place. POSIX rename() already replaces atomically; Windows
+ * rename() refuses an existing target. */
+static bool KongReplaceFile(const char *temporary, const char *path) {
+#ifdef _WIN32
+  return MoveFileExA(temporary, path,
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+  return rename(temporary, path) == 0;
+#endif
+}
+
 const uint16_t kDkc3KongSramSlotOffsets[kDkc3KongSlotCount] = {
     0x062, 0x2ec, 0x576};
 
@@ -121,11 +138,7 @@ bool Dkc3KongTrackerSaveFile(const Dkc3KongTracker *tracker,
   bool ok = stream != NULL;
   if (ok) ok = fwrite(data, 1, sizeof data, stream) == sizeof data;
   if (stream && fclose(stream) != 0) ok = false;
-  if (ok) {
-    /* rename() does not replace an existing file on Windows. */
-    remove(path);
-    ok = rename(temporary, path) == 0;
-  }
+  if (ok) ok = KongReplaceFile(temporary, path);
   if (!ok) remove(temporary);
   free(temporary);
   return ok;
@@ -216,17 +229,31 @@ bool Dkc3KongTrackerSyncSram(Dkc3KongTracker *tracker, const uint8_t *sram,
         Dkc3KongTrackerClearSlot(tracker, j);
         continue;
       }
+      /* A slot that now matches another slot's image was copied from it.
+       * Copy from the flags as they were before this sync, so a copy onto a
+       * slot that also changed this frame cannot chain. When several slots
+       * hold the same image (a slot copied twice, or played without saving
+       * after a copy), the source is ambiguous: keep only the levels every
+       * candidate agrees on, so no candidate's extra badges are carried
+       * onto the wrong file. */
+      uint8_t copied[kDkc3KongLevelBitmapBytes];
+      bool any_source = false;
       for (unsigned i = 0; i < kDkc3KongSlotCount; i++) {
         if (i == j || SlotBlank(slots[i]) ||
             memcmp(slots[i], slots[j], kDkc3KongSramSlotSize) != 0)
           continue;
-        /* Copy from the flags as they were before this sync, so a copy
-         * onto a slot that also changed this frame cannot chain. */
-        if (memcmp(tracker->levels[j], before[i], sizeof before[i]) != 0) {
-          memcpy(tracker->levels[j], before[i], sizeof before[i]);
-          tracker->dirty = true;
+        if (!any_source) {
+          memcpy(copied, before[i], sizeof copied);
+          any_source = true;
+        } else {
+          for (unsigned b = 0; b < kDkc3KongLevelBitmapBytes; b++)
+            copied[b] &= before[i][b];
         }
-        break;
+      }
+      if (any_source &&
+          memcmp(tracker->levels[j], copied, sizeof copied) != 0) {
+        memcpy(tracker->levels[j], copied, sizeof copied);
+        tracker->dirty = true;
       }
     }
   }
@@ -290,6 +317,9 @@ size_t Dkc3KongWorldLevels(const uint8_t *rom, size_t rom_size,
   if (world == 0 || world > kDkc3KongWorldCount) return 0;
   uint16_t table;
   if (!NodeTable(rom, rom_size, world, &table)) return 0;
+  /* Uniqueness is tracked here, not in `out`, which may be shorter than the
+   * list or absent. At most one entry per node. */
+  uint8_t found[kDkc3KongMaxNodes];
   size_t count = 0;
   for (unsigned node = 0; node < kDkc3KongMaxNodes; node++) {
     uint8_t kind, destination;
@@ -298,8 +328,9 @@ size_t Dkc3KongWorldLevels(const uint8_t *rom, size_t rom_size,
     if (kind == 0xffu && destination == 0xffu) break;
     if (!IsKongLevel(destination)) continue;
     bool seen = false;
-    for (size_t i = 0; i < count; i++) seen = seen || out[i] == destination;
+    for (size_t i = 0; i < count; i++) seen = seen || found[i] == destination;
     if (seen) continue;
+    found[count] = destination;
     if (count < capacity && out) out[count] = destination;
     count++;
   }

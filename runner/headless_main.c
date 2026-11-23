@@ -180,10 +180,15 @@ int main(int argc, char **argv) {
       return 13;
     }
   }
+  /* Unlike the interactive hosts, which carry on with empty flags, a
+   * headless run fails closed: a validation run given a KONG letter file
+   * must not silently measure something else. Dkc3KongTrackingEnable has
+   * already said why the file was not usable. */
   const char *kong_tracker = getenv("DKC3_KONG_TRACKER");
   if (kong_tracker && *kong_tracker &&
       !Dkc3KongTrackingEnable(kong_tracker)) {
-    fprintf(stderr, "unreadable KONG letter file: %s\n", kong_tracker);
+    fprintf(stderr,
+            "headless runs stop on an unusable DKC3_KONG_TRACKER file\n");
     free(rom);
     return 21;
   }

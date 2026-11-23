@@ -776,6 +776,7 @@ static void DrawSettingsPage(Dkc3DesktopOverlay *overlay) {
   if (ImGui::Button("Restore All Settings to Defaults")) {
     Dkc3LauncherSettingsDefault(&overlay->settings);
     Dkc3LauncherSetHaptics(1);
+    Dkc3LauncherSetKongBadges(1);
     Dkc3DesktopOverlayModelSetAssistTools(
         &overlay->model, overlay->settings.assist_tools != 0);
   }

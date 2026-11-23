@@ -28,6 +28,19 @@ static void Write16(uint8_t *memory, size_t address, uint16_t value) {
   memory[address + 1u] = (uint8_t)(value >> 8);
 }
 
+/* Recomputes the sidecar's FNV-1a checksum over its first 108 bytes. */
+static void Reseal(uint8_t *data) {
+  uint32_t hash = 2166136261u;
+  for (size_t i = 0; i < 108; i++) {
+    hash ^= data[i];
+    hash *= 16777619u;
+  }
+  data[108] = (uint8_t)hash;
+  data[109] = (uint8_t)(hash >> 8);
+  data[110] = (uint8_t)(hash >> 16);
+  data[111] = (uint8_t)(hash >> 24);
+}
+
 static void SetMainLoop(uint32_t pc24) {
   Write16(s_wram, kDkc3KongWramMainLoopVector, (uint16_t)pc24);
   s_wram[kDkc3KongWramMainLoopVector + 2u] = (uint8_t)(pc24 >> 16);
@@ -138,8 +151,14 @@ static void TestFlagsAndFormat(void) {
   data[20] ^= 1u;
   CHECK(!Dkc3KongTrackerDeserialize(&copy, data, sizeof data));
   data[20] ^= 1u;
-  data[8] = 2; /* future version */
+  /* A future version with a valid checksum is rejected for its version. */
+  data[8] = 2;
+  Reseal(data);
   CHECK(!Dkc3KongTrackerDeserialize(&copy, data, sizeof data));
+  /* A valid image is rejected only for its size. */
+  data[8] = 1;
+  Reseal(data);
+  CHECK(Dkc3KongTrackerDeserialize(&copy, data, sizeof data));
   CHECK(!Dkc3KongTrackerDeserialize(&copy, data, sizeof data - 1));
 }
 
@@ -255,6 +274,25 @@ static void TestSramSync(void) {
   CHECK(!Dkc3KongTrackerHasLevel(&tracker, 1, 0x25));
 
   CHECK(!Dkc3KongTrackerSyncSram(&tracker, s_sram, 0x700));
+
+  /* Two slots hold the same image with different flags (played without
+   * saving after a copy); a copy onto the third keeps only the levels both
+   * agree on. */
+  Dkc3KongTrackerInit(&tracker);
+  memset(s_sram, 0, sizeof s_sram);
+  SetSlotData(0, 3);
+  memcpy(s_sram + kDkc3KongSramSlotOffsets[1],
+         s_sram + kDkc3KongSramSlotOffsets[0], kDkc3KongSramSlotSize);
+  CHECK(Dkc3KongTrackerSetLevel(&tracker, 0, 0x25));
+  CHECK(Dkc3KongTrackerSetLevel(&tracker, 0, 0x28));
+  CHECK(Dkc3KongTrackerSetLevel(&tracker, 1, 0x25));
+  (void)Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram);
+  memcpy(s_sram + kDkc3KongSramSlotOffsets[2],
+         s_sram + kDkc3KongSramSlotOffsets[0], kDkc3KongSramSlotSize);
+  CHECK(Dkc3KongTrackerSyncSram(&tracker, s_sram, sizeof s_sram));
+  CHECK(Dkc3KongTrackerHasLevel(&tracker, 2, 0x25));
+  CHECK(!Dkc3KongTrackerHasLevel(&tracker, 2, 0x28));
+  CHECK(Dkc3KongTrackerHasLevel(&tracker, 0, 0x28));
 }
 
 static void TestWorldsAndMapBadge(void) {
@@ -266,6 +304,12 @@ static void TestWorldsAndMapBadge(void) {
   CHECK(Dkc3KongWorldLevels(s_rom, kRomSize, 2, levels, 8) == 2);
   CHECK(levels[0] == 0x30 && levels[1] == 0x32);
   CHECK(Dkc3KongWorldLevels(s_rom, 0x1000, 1, levels, 8) == 0);
+  /* A short or absent output still counts every level, writing only what
+   * fits. */
+  memset(levels, 0xee, sizeof levels);
+  CHECK(Dkc3KongWorldLevels(s_rom, kRomSize, 1, levels, 1) == 2);
+  CHECK(levels[0] == 0x25 && levels[1] == 0xee);
+  CHECK(Dkc3KongWorldLevels(s_rom, kRomSize, 1, NULL, 0) == 2);
 
   Dkc3KongTracker tracker;
   Dkc3KongTrackerInit(&tracker);

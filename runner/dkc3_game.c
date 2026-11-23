@@ -654,12 +654,16 @@ bool Dkc3KongTrackingEnable(const char *path) {
   s_kong_tracking = false;
   s_kong_map_settled = false;
   memset(&s_kong_map_settle, 0, sizeof s_kong_map_settle);
-  if (!path || !*path || strlen(path) >= sizeof s_kong_path) return false;
+  if (!path || !*path) return false;
+  if (strlen(path) >= sizeof s_kong_path) {
+    fprintf(stderr, "warning: KONG letter path is too long: %.80s...\n", path);
+    return false;
+  }
   snprintf(s_kong_path, sizeof s_kong_path, "%s", path);
   const Dkc3KongLoadResult loaded =
       Dkc3KongTrackerLoadFile(&s_kong_tracker, s_kong_path);
   if (loaded == kDkc3KongLoadInvalid) {
-    fprintf(stderr, "warning: ignoring unreadable KONG letter file %s\n",
+    fprintf(stderr, "warning: unreadable KONG letter file %s\n",
             s_kong_path);
     Dkc3KongTrackerInit(&s_kong_tracker);
   }

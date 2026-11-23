@@ -3011,8 +3011,9 @@ equal to the monitor; the menu item and Escape restored the bar and
   so a shown-row write outside the native columns is still map content the
   camera would show on arrival; the risk is a game using margin cells as
   scratch, which has not been observed. Open.
-- **Verified:** Python unit tests and the full Release CTest suite (see
-  the commit). The policy-switch re-snap was not exercised in the app.
+- **Verified:** Python unit tests 27/27 and the full Windows Release CTest
+  suite 30/30, with every target (including `DKC3RecompSDL.exe`) rebuilt.
+  The policy-switch re-snap was not exercised in the app.
 
 ## 2026-11-22 - KONG letter tracker and map badges
 
@@ -3145,3 +3146,32 @@ equal to the monitor; the menu item and Escape restored the bar and
   smoke tests; `DKC3Recomp.exe` and the headless host rebuilt.
   `DKC3RecompSDL.exe` was relinked once the running app was closed. The live app had shown the badges working before the
   checkbox was added; the checkbox itself has not been clicked in the app.
+
+## 2026-11-23 - KONG letter tracker review follow-ups (PR 17)
+
+- **Changes:**
+  - `runner/dkc3_kong_tracker.c`:
+    - `Dkc3KongTrackerSaveFile` replaces the sidecar in one step
+      (`MoveFileExA` with `MOVEFILE_REPLACE_EXISTING` on Windows, `rename`
+      elsewhere) instead of deleting it first, so a failed replace keeps
+      the recorded flags.
+    - `Dkc3KongWorldLevels` tracks uniqueness in a local array, so a
+      `capacity` smaller than the level count, or `NULL, 0`, no longer reads
+      past the caller's buffer.
+    - SRAM copy detection: when several slots hold the image a slot was
+      just copied to, the source is ambiguous (for example, a slot copied
+      earlier and then played without saving). The copy now takes only the
+      levels every candidate has, instead of the first candidate's flags.
+      The file select's chosen source is not read, so this stays a
+      conservative guess, not exact.
+  - `runner/desktop_overlay.cpp`: "Restore All Settings to Defaults" turns
+    the KONG badges back on.
+  - `runner/dkc3_game.c`: an over-long sidecar path is reported as such,
+    and the unreadable-file warning no longer says "ignoring", since the
+    headless host stops on it.
+  - `runner/headless_main.c`: the headless host keeps failing closed (exit
+    21) on an unusable `DKC3_KONG_TRACKER` file, now stated in a comment
+    and message; the desktop and SDL hosts carry on with empty flags.
+  - `tests/test_dkc3_kong_tracker.c`: version and size rejection are
+    tested independently with a recomputed checksum; ambiguous copies and
+    a short or absent output buffer are covered.

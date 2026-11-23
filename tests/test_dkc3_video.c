@@ -374,6 +374,106 @@ int main(void) {
               right);
       return 1;
     }
+    /* Camera regions shaped like the reported elevator level: a floor room
+     * (1), a shaft exactly one screen wide above it (3), the room at the
+     * shaft's top (2), and the corridor east of that room (4, then 5). */
+    static uint8_t wram[0x10000];
+    memset(wram, 0, sizeof wram);
+    const struct {
+      unsigned index;
+      uint16_t left, right, top, bottom;
+      uint8_t flags, right_link, left_link0, left_link1;
+    } regions[] = {
+        {1, 0x0110, 0x0290, 0x0828, 0x0908, 0x00, 0, 0, 0},
+        {2, 0x0190, 0x0290, 0x0128, 0x0208, 0x05, 4, 0, 0},
+        {3, 0x0190, 0x0290, 0x0208, 0x0828, 0x01, 0, 0, 0},
+        {4, 0x0290, 0x0418, 0x0128, 0x0208, 0x04, 5, 2, 0},
+        {5, 0x0418, 0x0598, 0x0128, 0x0220, 0x04, 0, 4, 0},
+    };
+    for (size_t n = 0; n < sizeof regions / sizeof regions[0]; n++) {
+      const unsigned at = regions[n].index * 2u;
+      const uint16_t words[4] = {regions[n].left, regions[n].right,
+                                 regions[n].top, regions[n].bottom};
+      for (unsigned k = 0; k < 4; k++) {
+        wram[0x995a + k * 0x100 + at] = (uint8_t)words[k];
+        wram[0x995a + k * 0x100 + at + 1] = (uint8_t)(words[k] >> 8);
+      }
+      wram[0x9d5a + at] = regions[n].flags;
+      wram[0x9d5b + at] = regions[n].right_link;
+      wram[0x9e5a + at] = regions[n].left_link0;
+      wram[0x9e5b + at] = regions[n].left_link1;
+    }
+    uint16_t span_left = 0, span_right = 0;
+    /* The shaft has no side links: its span is its own screen. */
+    if (!Dkc3VideoCameraRegionSpan(wram, 6, &span_left, &span_right) ||
+        span_left != 0x0190 || span_right != 0x0290) {
+      fprintf(stderr, "FAIL: shaft region span (%04x %04x)\n", span_left,
+              span_right);
+      return 1;
+    }
+    /* The top room chains east through 4 and 5; from the corridor, the
+     * west link reaches back to the top room. */
+    if (!Dkc3VideoCameraRegionSpan(wram, 4, &span_left, &span_right) ||
+        span_left != 0x0190 || span_right != 0x0598) {
+      fprintf(stderr, "FAIL: top room region span (%04x %04x)\n", span_left,
+              span_right);
+      return 1;
+    }
+    if (!Dkc3VideoCameraRegionSpan(wram, 8, &span_left, &span_right) ||
+        span_left != 0x0190 || span_right != 0x0598) {
+      fprintf(stderr, "FAIL: corridor region span (%04x %04x)\n", span_left,
+              span_right);
+      return 1;
+    }
+    /* A closed ($20) neighbour ends the span; a player-gated ($80) one
+     * does not, so the bound never moves with the player. */
+    wram[0x9d5a + 8] = 0x24;
+    Dkc3VideoCameraRegionSpan(wram, 4, &span_left, &span_right);
+    const uint16_t closed_right = span_right;
+    wram[0x9d5a + 8] = 0x84;
+    Dkc3VideoCameraRegionSpan(wram, 4, &span_left, &span_right);
+    if (closed_right != 0x0290 || span_right != 0x0598) {
+      fprintf(stderr, "FAIL: region flags (%04x %04x)\n", closed_right,
+              span_right);
+      return 1;
+    }
+    wram[0x9d5a + 8] = 0x04;
+    /* The second east candidate: the region after the link, when it names
+     * this region as a left neighbour ($B7:E0ED). The shaft linked here
+     * does not widen the top room. */
+    wram[0x9d5b + 4] = 3;
+    Dkc3VideoCameraRegionSpan(wram, 4, &span_left, &span_right);
+    if (span_right != 0x0598) {
+      fprintf(stderr, "FAIL: second east candidate (%04x)\n", span_right);
+      return 1;
+    }
+    wram[0x9e5a + 8] = 0;
+    Dkc3VideoCameraRegionSpan(wram, 4, &span_left, &span_right);
+    if (span_right != 0x0290) {
+      fprintf(stderr, "FAIL: unnamed second candidate (%04x)\n", span_right);
+      return 1;
+    }
+    /* No current region (entry 0), an odd or out-of-range offset, or a
+     * region narrower than a screen keeps the level-wide bounds. */
+    wram[0x9a5a + 2] = 0x00;
+    wram[0x9a5b + 2] = 0x02;
+    if (Dkc3VideoCameraRegionSpan(wram, 0, NULL, NULL) ||
+        Dkc3VideoCameraRegionSpan(wram, 5, NULL, NULL) ||
+        Dkc3VideoCameraRegionSpan(wram, 0x100, NULL, NULL) ||
+        Dkc3VideoCameraRegionSpan(wram, 2, NULL, NULL) ||
+        Dkc3VideoCameraRegionSpan(NULL, 6, NULL, NULL)) {
+      fprintf(stderr, "FAIL: region span without a usable region\n");
+      return 1;
+    }
+    /* The shaft's one-screen span is a room narrower than two margins:
+     * no glide, both margins black. */
+    Dkc3VideoPresentationMarginsBounded(0x0190, 0x0190, 0x0190, &bias, &left,
+                                        &right);
+    if (bias != 0 || left != 0 || right != 0) {
+      fprintf(stderr, "FAIL: one-screen region margins (%d %d %d)\n", bias,
+              left, right);
+      return 1;
+    }
     /* The hold itself over a synthetic map: two empty columns beside the
      * window's first column hold; one row with a cell in them does not. */
     static const char *const held[4] = {
@@ -1721,6 +1821,67 @@ int main(void) {
       }
     }
     Dkc3VideoSetEdgePolicy(kDkc3VideoEdgeGlide);
+
+    /* Rows the overworld streams into: at vscroll $11F the 224 shown lines
+     * start at row 3's last line (its first sits 249 lines down and only
+     * line 7 wraps to the top) and end in row 31; rows 0-2 hide. */
+    for (unsigned row = 0; row < 32; row++) {
+      const bool hidden = row <= 2;
+      if (Dkc3VideoTilemapRowVisible(0x011f, row) == hidden) {
+        fprintf(stderr, "FAIL: overworld row %u visibility at $11F\n", row);
+        return 1;
+      }
+    }
+    for (unsigned row = 0; row < 32; row++) {
+      const bool hidden = row >= 28;
+      if (Dkc3VideoTilemapRowVisible(0x0000, row) == hidden ||
+          Dkc3VideoTilemapRowVisible(0x0100, row) == hidden) {
+        fprintf(stderr, "FAIL: overworld row %u visibility at 0\n", row);
+        return 1;
+      }
+    }
+    /* Scrolled one line: row 0's last seven lines remain at the top, and
+     * row 28 enters at the bottom. */
+    if (!Dkc3VideoTilemapRowVisible(0x0001, 0) ||
+        !Dkc3VideoTilemapRowVisible(0x0001, 28) ||
+        Dkc3VideoTilemapRowVisible(0x0001, 29) ||
+        Dkc3VideoTilemapRowVisible(0x0008, 0))
+      return fprintf(stderr, "FAIL: overworld row visibility edges\n"), 1;
+
+    /* Row streaming as measured in the hovercraft run: at $11E rows 2
+     * (hidden) and 3 (its one-word tail, shown); at $11F rows 3 and 4,
+     * both shown. A column stripe touches every shown row. */
+    if (!Dkc3VideoOverworldWritesAreRows(0, 0x011f, false) ||
+        !Dkc3VideoOverworldWritesAreRows(0x0000000cu, 0x011e, false) ||
+        !Dkc3VideoOverworldWritesAreRows(0x00000018u, 0x011f, false) ||
+        !Dkc3VideoOverworldWritesAreRows(0x00000007u, 0x011f, false))
+      return fprintf(stderr, "FAIL: overworld row streaming refused\n"), 1;
+    if (Dkc3VideoOverworldWritesAreRows(0x00000038u, 0x011f, false) ||
+        Dkc3VideoOverworldWritesAreRows(0xfffffff8u, 0x011f, false) ||
+        Dkc3VideoOverworldWritesAreRows(0x00000007u, 0x011f, true))
+      return fprintf(stderr, "FAIL: overworld column writes accepted\n"), 1;
+
+    /* HDMA that writes a vertical scroll register ($0E BG1VOFS, $10
+     * BG2VOFS, $12 BG3VOFS) makes that layer's rows vary per line. The
+     * overworld's BG2HOFS channel (mode 2, $0F twice) does not; mode 1 at
+     * $0F reaches BG2VOFS, and mode 4 at $0D spans $0D-$10. */
+    {
+      uint8_t b_address[8] = {0x0f, 0x21, 0x21, 0x0f, 0x0d, 0x11, 0x12, 0x0e};
+      uint8_t mode[8] = {2, 3, 3, 1, 4, 0, 2, 0};
+      if (Dkc3VideoHdmaVerticalScrollLayers(0x07, b_address, mode) != 0)
+        return fprintf(stderr, "FAIL: overworld HDMA has no VOFS\n"), 1;
+      if (Dkc3VideoHdmaVerticalScrollLayers(0x08, b_address, mode) != 0x02)
+        return fprintf(stderr, "FAIL: HDMA mode 1 at $0F reaches $10\n"), 1;
+      if (Dkc3VideoHdmaVerticalScrollLayers(0x10, b_address, mode) != 0x03)
+        return fprintf(stderr, "FAIL: HDMA mode 4 at $0D spans $0D-$10\n"),
+               1;
+      if (Dkc3VideoHdmaVerticalScrollLayers(0x20, b_address, mode) != 0 ||
+          Dkc3VideoHdmaVerticalScrollLayers(0x40, b_address, mode) != 0x04 ||
+          Dkc3VideoHdmaVerticalScrollLayers(0x80, b_address, mode) != 0x01)
+        return fprintf(stderr, "FAIL: HDMA single-register VOFS\n"), 1;
+      if (Dkc3VideoHdmaVerticalScrollLayers(0xff, NULL, mode) != 0)
+        return fprintf(stderr, "FAIL: HDMA without addresses\n"), 1;
+    }
   }
 
   Dkc3VideoSetWidescreen(false);

@@ -23,6 +23,9 @@ enum {
    * less one screen ($B7:D71E). Zero outside a level. */
   kDkc3WramScrollLimitX = 0x04bc,
   kDkc3WramScrollLimitY = 0x04be,
+  /* The current camera region * 2, which the clamp at $B7:DB90..DCAD keeps;
+   * the region table itself is read by Dkc3VideoCameraRegionSpan. */
+  kDkc3WramCameraRegion = 0x0478,
   /* The decompressed level map at $7F:0000 (the long pointer at $8C is set
    * to $7F0000 by $B3:D917). This is the raw address of the map's first
    * column, the one at world x $100: the presentation subtracts the

@@ -2859,3 +2859,72 @@ equal to the monitor; the menu item and Escape restored the bar and
   per-world maps (they keep black margins unless they pass the gate and
   the static-map proof), the real west bound, transitions into and out of
   the overworld in a live session, and macOS.
+
+## 2026-11-22 - right margin cut off around a mill elevator (camera regions)
+
+- **Symptom:** in the reported release quick save (SHA-256
+  `30a0ee89...bd00`, level word `$00C0` = `$002A`, 16:9 with `glide`), the
+  Kongs stand by an elevator at the foot of a shaft. Riding it up to the
+  platform that leads right, the right margin showed misaligned blocks of
+  other rooms, with a hard seam at world `$02A0`/`$02C0` and a dark brick
+  patch on the plaster wall. The left margin showed only 17 columns.
+- **Measurement:** the camera stays at x `$0190` through the shaft while
+  the glide held bias `+25`. Its walls were `$0100` and `$04BC` = `$0A00`,
+  so it slid toward a west wall 144 pixels away and gave the right margin
+  all 43 columns plus the bias. Those columns decode correctly from the
+  level map (every margin cell matched), but no camera position shows them.
+  The cartridge confines the camera with a table of camera regions that
+  `$B7:D4B1` builds in WRAM from `$FD:C25B`. Edges are at `$995A`
+  (left), `$9A5A` (right edge of the last screen), `$9B5A` (top), and
+  `$9C5A` (bottom), indexed by region x 2. Entry 0 is the whole level.
+  `$9D5A` holds flags (low byte) and the right neighbour (high byte);
+  `$9E5A` holds two left neighbours. `$0478` is the current region x 2: 2 in
+  the floor room, 6 in the shaft, and 4 at the top in this replay. Here the
+  floor room is x `$0110..$0290`, the shaft `$0190..$0290` (exactly one
+  screen, no side links), the top room `$0190..$0290` linked right to
+  `$0290..$0418` and on east. The clamp at `$B7:DB90..DCAD` widens the span
+  into a linked neighbour only while it overlaps the target rows (`$049F`)
+  by `$38`, or while the player (`$047B`) is near a neighbour flagged `$80`;
+  `$20` never joins, and `$B7:E0ED` also tries the region after the link
+  when that region names the current one as a left neighbour. The joined
+  bounds live in `$0466..$046C` only inside the clamp; the same words hold
+  camera velocities at the end of a frame.
+- **Fix:** `Dkc3VideoCameraRegionSpan` returns the current region's span
+  continued through its left and right links (stopping at a missing link or
+  a `$20` neighbour), and the adapter uses it as the glide's walls and the
+  margin clamp, the native window always inside. Entry 0, a malformed
+  offset, or a region narrower than one screen keeps the old bounds. The map
+  hold still overrides the west wall. `reflect` keeps the level-wide wall.
+  A first version also applied the cartridge's `$38` row-overlap and `$80`
+  player gates. On the Squeals on Wheels save (`7542f1de...`) a left
+  neighbour dropped out during a descent and the 16:9 bias swung from -38
+  to -20 and back over 30 frames. Those gates change with vertical travel,
+  so the span ignores them and moves only when `$0478` does.
+- **Verified (headless, private ROM, previous build as reference):**
+  - 4:3 frame, WRAM, VRAM, CGRAM, and OAM hashes are identical to the
+    previous build on a 480-frame elevator replay (unpause, jump onto the
+    lift, ride to the top), a 500-frame Squeals on Wheels walk, and an
+    1,800-frame boot. The 16:9 boot is identical too.
+  - Elevator replay: the bias is 0 through the shaft at 16:10, 16:9, and
+    21:9, and both margins are black. At the foot of the shaft it is -8 at
+    16:9, and the right margin shows the floor room up to `$0290`. Once
+    `$0478` becomes the top room, the right margin opens onto the platform
+    and the bias ramps one pixel a frame to 36 at 16:9 (21 at 16:10, 84 at
+    21:9). There are no direction reversals. One step of more than one pixel
+    at 16:10 and 16:9 is the settle on the first frames after the restore.
+  - The native 256 columns equal the 4:3 frame at the biased offset on 45 of
+    59 sampled frames in each aspect. The other 14 differ only in the top
+    room's DK barrel, which swings with a different phase because widened
+    activation starts it earlier. The previous build has the same 14 frames.
+  - With `DKC3_CULL_WIDEN=0`, the WRAM and OAM hashes at 16:9 and 21:9
+    equal 4:3.
+  - Squeals on Wheels: the bias differs by a steady 3 pixels or less near
+    the east end, where the camera parks at the region wall `$09C0`
+    (`$04BC` is `$09D8`). The swing is gone. WRAM differs at 16:9 because
+    the widened cull windows follow the bias.
+  - Unit tests cover the shaft, an eastward chain, a westward link, the
+    `$20` and `$80` flags, the second east candidate, and invalid input.
+    All 30 CTest checks pass; the desktop and SDL apps build.
+- **Unverified:** the live desktop app, other levels' region tables
+  (bonus rooms, vertical levels, boss arenas), any level where `$0478`
+  points at a region whose links the cartridge never uses, and macOS.

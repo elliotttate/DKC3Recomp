@@ -38,6 +38,13 @@ stops: the inward shift at each wall shrinks to fit the room and changes at
 most one pixel per eight of camera travel, or is zero when the room is
 narrower than the wide view, so the HUD stays put and black shows only
 beyond a wall.
+Walls now follow the game's own camera regions. A room the camera cannot
+leave sideways no longer widens into other rooms' map columns, which showed
+as a mismatched, cut-off strip at one edge. The elevator shaft in the
+reported save is exactly one screen wide, so it rides between black margins,
+and the right margin opens once the camera reaches the room at the top. A
+region's linked neighbours extend its walls, so a run of rooms is one span.
+Verified headless at that save in 16:10, 16:9, and 21:9.
 The placed-object spatial scan and final activation checks, the sprite renderer
 culls, and the static banana/star grids are widened to the presented view by
 `scripts/apply_dkc3_widescreen_overrides.py`. Where the aspect permits, the

@@ -99,14 +99,16 @@ bool Dkc3VideoUsesSnowArenaPlanes(bool in_level, uint16_t level,
 /*
  * The Northern Kremisphere overworld (main-loop vector $B4:B179) keeps its
  * whole picture resident: a 64x32 BG1 map spans world x [$100, $300), the
- * camera word $196D sits $100 ahead of BG1HOFS, and no map word changes as
- * the camera travels (docs/BRINGUP.md, 2026-11-22). The scene qualifies only
+ * camera word $196D sits $100 ahead of BG1HOFS, and the game writes map
+ * words only into rows the frame does not show: once the hovercraft opens
+ * the north, it streams whole 64-column rows as the camera climbs
+ * (docs/BRINGUP.md, 2026-11-22). The scene qualifies only
  * in Mode 1 with BG1 a 64-column, 32-row map whose rendered world x ($100 +
  * the nine-bit BG1HOFS) lies in [$100, $200] and within the camera lead of
  * $196D (the camera word runs up to two pixels ahead of the latched scroll
  * while the boat moves), every other enabled 64-column BG layer at BG1's
  * phase, and every enabled layer 32 rows tall. The host still has to prove
- * the maps stay unwritten while displayed.
+ * every map write lands in a row the frame hides.
  */
 enum {
   kDkc3OverworldMainLoop = 0xb4b179,
@@ -129,6 +131,32 @@ uint16_t Dkc3VideoOverworldRenderedX(uint16_t bg1_h_scroll);
  * a presentation bias, so the view stays locked to the camera. */
 void Dkc3VideoOverworldMargins(uint16_t rendered_x, int *left_margin,
                                int *right_margin);
+
+/* Whether any of the 224 displayed lines falls in tilemap row `row` of a
+ * 32-row (256-line) map at vertical scroll `v_scroll`. */
+bool Dkc3VideoTilemapRowVisible(uint16_t v_scroll, unsigned row);
+
+/*
+ * Whether one frame's tilemap writes to an overworld layer are row
+ * streaming, which leaves the resident map whole across the margins.
+ * `changed_rows` has bit n set when any word of row n changed since the
+ * previous drawn frame. The game writes each streamed row as a 32-word run
+ * into both 256-pixel pages, one word into the next row: up to
+ * kDkc3OverworldShownRowWrites shown rows per frame, the rest hidden. A
+ * game streaming columns instead would touch every shown row, and the
+ * margins would show columns it never wrote. With `vertical_hdma` the
+ * layer's shown rows vary per line, so every changed row counts as shown.
+ */
+enum { kDkc3OverworldShownRowWrites = 2 };
+bool Dkc3VideoOverworldWritesAreRows(uint32_t changed_rows, uint16_t v_scroll,
+                                     bool vertical_hdma);
+
+/* The BG1-BG3 layers (bit n = BG n+1) whose vertical scroll register an
+ * active HDMA channel writes, given each channel's B-bus address and
+ * transfer mode. Such a layer's visible rows vary per line. */
+uint8_t Dkc3VideoHdmaVerticalScrollLayers(uint8_t active_channels,
+                                          const uint8_t b_address[8],
+                                          const uint8_t mode[8]);
 
 /*
  * What a host margin shows where the level authors nothing: within one
@@ -251,6 +279,22 @@ int Dkc3VideoResolveEdgeTile(uint32_t world_tile_x,
                              uint16_t maximum_scroll_x,
                              uint32_t *source_tile_x,
                              bool *mirror_horizontally);
+
+/* The world span [left_edge, right_edge) the cartridge camera may show from
+ * its current camera region (`region_offset`, the region index * 2 kept at
+ * $0478) in the 64 KiB WRAM bank `wram`: the region's own span, continued
+ * through the left and right neighbours it links (the right link, or the
+ * region after it when that one names this region as a left neighbour, as
+ * $B7:E0ED tests) until a region has no further link or the neighbour is
+ * closed (flag $20). The clamp at $B7:DBCC..DC37 also admits a neighbour
+ * only while it overlaps the target's rows by $38 or, flagged $80, the
+ * player is near it; those gates change with every step of vertical
+ * travel, and a bound that comes and goes beside the camera would slide
+ * the glide back and forth, so the span ignores them and moves only when
+ * the cartridge changes region. False for no current region (entry 0, the
+ * whole level) or a region narrower than one screen. */
+bool Dkc3VideoCameraRegionSpan(const uint8_t *wram, uint16_t region_offset,
+                               uint16_t *left_edge, uint16_t *right_edge);
 
 /* True when a host margin would extend past the authored extent on either
  * side under the active edge policy without being clamped, which is where a

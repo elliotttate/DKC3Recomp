@@ -310,6 +310,101 @@ void Dkc3VideoPresentationMarginsBounded(uint16_t camera_x,
     *right_margin = result_right;
 }
 
+/* The camera regions in WRAM bank $7E ($B7:D4B1 builds them from the
+ * level's table at $FD:C25B): parallel word arrays indexed by region * 2,
+ * entry 0 the whole level. Left and right edges bound the world columns the
+ * camera may show (the last screen's left edge plus $100), top and bottom
+ * the rows. The link word holds the region's flags (low byte) and its right
+ * neighbour (high byte); the left-link word holds two left neighbours. */
+enum {
+  kDkc3RegionLeft = 0x995a,
+  kDkc3RegionRight = 0x9a5a,
+  kDkc3RegionTop = 0x9b5a,
+  kDkc3RegionBottom = 0x9c5a,
+  kDkc3RegionFlagsRightLink = 0x9d5a,
+  kDkc3RegionLeftLinks = 0x9e5a,
+  kDkc3RegionCount = 0x80,
+  /* $B7:DD16: a neighbour with this flag never widens the camera. */
+  kDkc3RegionClosed = 0x20,
+};
+
+static uint16_t Dkc3RegionWord(const uint8_t *wram, unsigned base,
+                               unsigned region) {
+  const unsigned address = base + region * 2u;
+  return (uint16_t)(wram[address] | (wram[address + 1u] << 8));
+}
+
+/* A linked neighbour continues the span when it is a real region, is not
+ * closed, and abuts or overlaps the span on its side. */
+static bool Dkc3RegionContinues(const uint8_t *wram, unsigned region,
+                                bool east, int span_left, int span_right) {
+  if (region == 0 || region >= kDkc3RegionCount)
+    return false;
+  const int left = Dkc3RegionWord(wram, kDkc3RegionLeft, region);
+  const int right = Dkc3RegionWord(wram, kDkc3RegionRight, region);
+  if (right <= left ||
+      Dkc3RegionWord(wram, kDkc3RegionBottom, region) <=
+          Dkc3RegionWord(wram, kDkc3RegionTop, region))
+    return false;
+  if (wram[kDkc3RegionFlagsRightLink + region * 2u] & kDkc3RegionClosed)
+    return false;
+  return east ? left <= span_right && right > span_right
+              : right >= span_left && left < span_left;
+}
+
+bool Dkc3VideoCameraRegionSpan(const uint8_t *wram, uint16_t region_offset,
+                               uint16_t *left_edge, uint16_t *right_edge) {
+  if (!wram || region_offset == 0 || (region_offset & 1u) ||
+      region_offset >= kDkc3RegionCount * 2u)
+    return false;
+  const unsigned current = region_offset >> 1;
+  int span_left = Dkc3RegionWord(wram, kDkc3RegionLeft, current);
+  int span_right = Dkc3RegionWord(wram, kDkc3RegionRight, current);
+  if (span_right - span_left < kDkc3VideoNativeWidth)
+    return false;
+  /* Each step strictly widens the span, so the chains end. East: the
+   * linked neighbour, else the region after it when that one names the
+   * region it leaves as a left neighbour ($B7:E0ED). */
+  unsigned from = current;
+  for (;;) {
+    const unsigned link = wram[kDkc3RegionFlagsRightLink + from * 2u + 1u];
+    unsigned next = 0;
+    if (Dkc3RegionContinues(wram, link, true, span_left, span_right)) {
+      next = link;
+    } else if (link != 0 && link + 1u < kDkc3RegionCount &&
+               (wram[kDkc3RegionLeftLinks + (link + 1u) * 2u] == from ||
+                wram[kDkc3RegionLeftLinks + (link + 1u) * 2u + 1u] ==
+                    from) &&
+               Dkc3RegionContinues(wram, link + 1u, true, span_left,
+                                   span_right)) {
+      next = link + 1u;
+    }
+    if (next == 0)
+      break;
+    span_right = Dkc3RegionWord(wram, kDkc3RegionRight, next);
+    from = next;
+  }
+  /* West: the first of the two linked neighbours that continues it. */
+  from = current;
+  for (;;) {
+    unsigned next = 0;
+    for (unsigned slot = 0; slot < 2u && next == 0; slot++) {
+      const unsigned link = wram[kDkc3RegionLeftLinks + from * 2u + slot];
+      if (Dkc3RegionContinues(wram, link, false, span_left, span_right))
+        next = link;
+    }
+    if (next == 0)
+      break;
+    span_left = Dkc3RegionWord(wram, kDkc3RegionLeft, next);
+    from = next;
+  }
+  if (left_edge)
+    *left_edge = (uint16_t)span_left;
+  if (right_edge)
+    *right_edge = (uint16_t)span_right;
+  return true;
+}
+
 bool Dkc3VideoMarginLeavesAuthoredExtent(uint16_t camera_x,
                                          uint16_t maximum_scroll_x) {
   const int extra = Dkc3VideoExtra();
@@ -862,6 +957,46 @@ void Dkc3VideoOverworldMargins(uint16_t rendered_x, int *left_margin,
   if (right_margin)
     *right_margin = Dkc3VideoClampInt(
         kDkc3OverworldMaximumCameraX - presented, 0, extra);
+}
+
+bool Dkc3VideoTilemapRowVisible(uint16_t v_scroll, unsigned row) {
+  /* The row's first line, in screen lines below the frame's top. */
+  const unsigned offset = (row * 8u - (unsigned)v_scroll) & 0xffu;
+  return offset < (unsigned)kDkc3VideoHeight || offset + 7u > 0xffu;
+}
+
+bool Dkc3VideoOverworldWritesAreRows(uint32_t changed_rows, uint16_t v_scroll,
+                                     bool vertical_hdma) {
+  unsigned shown = 0;
+  for (unsigned row = 0; row < 32; row++) {
+    if ((changed_rows & (1u << row)) &&
+        (vertical_hdma || Dkc3VideoTilemapRowVisible(v_scroll, row)))
+      shown++;
+  }
+  return shown <= kDkc3OverworldShownRowWrites;
+}
+
+uint8_t Dkc3VideoHdmaVerticalScrollLayers(uint8_t active_channels,
+                                          const uint8_t b_address[8],
+                                          const uint8_t mode[8]) {
+  /* B-bus offsets each HDMA transfer mode writes, from the base address. */
+  static const uint8_t kSpan[8] = {1, 2, 1, 2, 4, 2, 1, 2};
+  uint8_t layers = 0;
+  if (!b_address || !mode)
+    return 0;
+  for (unsigned channel = 0; channel < 8; channel++) {
+    if (!(active_channels & (1u << channel)))
+      continue;
+    const unsigned span = kSpan[mode[channel] & 7u];
+    for (unsigned offset = 0; offset < span; offset++) {
+      const unsigned target = (unsigned)b_address[channel] + offset;
+      for (unsigned layer = 0; layer < 3; layer++) {
+        if (target == 0x0eu + layer * 2u)
+          layers |= (uint8_t)(1u << layer);
+      }
+    }
+  }
+  return layers;
 }
 
 bool Dkc3VideoDecodeWaterfallColumn(const uint8_t *bank, size_t bank_size,

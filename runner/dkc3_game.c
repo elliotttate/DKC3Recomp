@@ -109,14 +109,18 @@ static int s_bias_presented;
  * does. */
 enum { kDkc3BiasSettleFrames = 4 };
 static uint32_t s_bias_frames;
-/* The overworld's resident maps (Dkc3VideoIsResidentOverworld). Margins
- * show them only while the enabled layers' tilemap words hash the same as
- * on the previous drawn frame. A change while the picture is displayed
- * means some map streams after all: margins stay black until the scene is
- * left. A change under forced blank or zero brightness is a load and only
- * restarts the proof. */
-static bool s_overworld_hash_valid;
-static uint64_t s_overworld_hash;
+/* The overworld's resident maps (Dkc3VideoIsResidentOverworld). Each drawn
+ * frame compares the enabled layers' tilemap words with the previous drawn
+ * frame's copy. Once the hovercraft opens the north, the game streams rows
+ * ahead of a climbing camera (Dkc3VideoOverworldWritesAreRows). Writes of
+ * any other shape while the picture is displayed mean the map is not
+ * resident after all: margins stay black until the scene is left. A change
+ * under forced blank or zero brightness, or a new layer layout, is a load
+ * and only restarts the proof. */
+static bool s_overworld_copy_valid;
+static uint8_t s_overworld_layers;
+static uint8_t s_overworld_sc[3];
+static uint16_t s_overworld_maps[3][0x800];
 static bool s_overworld_streams;
 /* The camera of the last prefill, for the hold's entry test: the player
  * stands within kDkc3HoldPlayerEdge pixels of the frame's west edge while
@@ -1086,27 +1090,62 @@ static void Dkc3ResetWidescreenShadow(void) {
 }
 
 static void Dkc3ResetOverworldState(void) {
-  s_overworld_hash_valid = false;
+  s_overworld_copy_valid = false;
   s_overworld_streams = false;
 }
 
-/* FNV-1a over every page of each enabled BG1-BG3 tilemap. */
-static uint64_t Dkc3OverworldMapHash(uint8_t enabled_layers) {
-  uint64_t hash = 0xcbf29ce484222325ull;
+/* The layers whose vertical scroll this frame's HDMA rewrites per line. */
+static uint8_t Dkc3OverworldVerticalHdmaLayers(void) {
+  uint8_t b_address[8];
+  uint8_t mode[8];
+  for (int index = 0; index < 8; index++) {
+    b_address[index] = g_dma->channel[index].bAdr;
+    mode[index] = g_dma->channel[index].mode;
+  }
+  return Dkc3VideoHdmaVerticalScrollLayers(g_snesrecomp_last_hdmaen,
+                                           b_address, mode);
+}
+
+/* Compare each enabled BG1-BG3 tilemap (32 rows, one or two pages) with the
+ * previous drawn frame's copy and refresh the copy. Returns false when the
+ * copy was not comparable (first frame, or a new layer layout) or a layer's
+ * writes are not row streaming; sets *foreign_writes in the latter case. */
+static bool Dkc3OverworldMapsResident(uint8_t enabled_layers,
+                                      bool *foreign_writes) {
+  const uint8_t layers = (uint8_t)(enabled_layers & 0x07u);
+  bool comparable = s_overworld_copy_valid && s_overworld_layers == layers;
   for (unsigned layer = 0; layer < 3; layer++) {
-    if (!(enabled_layers & (1u << layer)))
+    if ((layers & (1u << layer)) &&
+        s_overworld_sc[layer] != g_ppu->bgXsc[layer])
+      comparable = false;
+  }
+  const uint8_t vertical_hdma = Dkc3OverworldVerticalHdmaLayers();
+  *foreign_writes = false;
+  for (unsigned layer = 0; layer < 3; layer++) {
+    if (!(layers & (1u << layer)))
       continue;
+    uint32_t changed_rows = 0;
     uint8_t pages[4];
     const unsigned count = Dkc3VideoTilemapPages(g_ppu->bgXsc[layer], pages);
-    for (unsigned page = 0; page < count; page++) {
+    for (unsigned page = 0; page < count && page < 2; page++) {
       const uint16_t *words = g_ppu->vram + ((unsigned)pages[page] << 10);
+      uint16_t *copy = s_overworld_maps[layer] + page * 0x400u;
       for (unsigned word = 0; word < 0x400; word++) {
-        hash ^= words[word];
-        hash *= 0x100000001b3ull;
+        if (words[word] == copy[word])
+          continue;
+        changed_rows |= 1u << (word >> 5);
+        copy[word] = words[word];
       }
     }
+    if (comparable &&
+        !Dkc3VideoOverworldWritesAreRows(changed_rows, g_ppu->vScroll[layer],
+                                         (vertical_hdma >> layer) & 1u))
+      *foreign_writes = true;
+    s_overworld_sc[layer] = g_ppu->bgXsc[layer];
   }
-  return hash;
+  s_overworld_layers = layers;
+  s_overworld_copy_valid = true;
+  return comparable && !*foreign_writes;
 }
 
 /* Present the resident overworld widened: raw BG1-BG3 across the margins,
@@ -1114,16 +1153,15 @@ static uint64_t Dkc3OverworldMapHash(uint8_t enabled_layers) {
  * camera (no glide): a presentation bias shifts objects in the PPU, but on
  * this raw path nothing shifts the backgrounds with them, so a biased frame
  * would misplace every sprite against the map. Returns false (black
- * margins) until the maps are proven static. */
+ * margins) until the maps are proven resident. */
 static bool Dkc3PresentOverworld(uint8_t enabled_layers) {
-  const uint64_t hash = Dkc3OverworldMapHash(enabled_layers);
+  bool foreign_writes = false;
+  const bool stable =
+      Dkc3OverworldMapsResident(enabled_layers, &foreign_writes);
   const bool displayed =
       !PPU_forcedBlank(g_ppu) && PPU_brightness(g_ppu) != 0;
-  const bool stable = s_overworld_hash_valid && hash == s_overworld_hash;
-  if (s_overworld_hash_valid && hash != s_overworld_hash && displayed)
+  if (foreign_writes && displayed)
     s_overworld_streams = true;
-  s_overworld_hash = hash;
-  s_overworld_hash_valid = true;
   if (!stable || s_overworld_streams)
     return false;
 
@@ -2638,18 +2676,42 @@ void Dkc3DrawPpuFrame(void) {
     const int extra = Dkc3VideoExtra();
     PpuSetExtraSpace(g_ppu, (uint8_t)extra);
     const uint16_t camera_x = Dkc3ReadWram16(kDkc3WramCameraX);
-    const uint16_t maximum_scroll_x = Dkc3MaximumScrollX();
+    uint16_t region_minimum_x = 0x0100u;
+    uint16_t maximum_scroll_x = Dkc3MaximumScrollX();
+    /* The walls of the camera's current region and the neighbours it
+     * links: $04BC is the maximum over every region, so a region the
+     * camera cannot leave sideways (an elevator shaft exactly one screen
+     * wide) would otherwise widen into other rooms' map columns that the
+     * cartridge never shows beside it. The native window always stays
+     * inside the bounds. */
+    {
+      uint16_t region_left = 0, region_right = 0;
+      if (Dkc3VideoCameraRegionSpan(g_ram,
+                                    Dkc3ReadWram16(kDkc3WramCameraRegion),
+                                    &region_left, &region_right)) {
+        int lower = region_left < 0x0100u ? 0x0100 : (int)region_left;
+        int upper = (int)region_right - kDkc3VideoNativeWidth;
+        if (upper > (int)maximum_scroll_x)
+          upper = maximum_scroll_x;
+        if (lower > (int)camera_x)
+          lower = camera_x;
+        if (upper < (int)camera_x)
+          upper = camera_x;
+        region_minimum_x = (uint16_t)lower;
+        maximum_scroll_x = (uint16_t)upper;
+      }
+    }
     int bias = 0;
     int left_margin = extra;
     int right_margin = extra;
-    /* The level's west bound: the map's first page unless the last prefill
-     * found the player held at the authored world's edge with nothing
-     * beside it (Dkc3VideoHoldWest). The bias then moves at most one pixel
-     * a frame toward the glide's target. */
+    /* The level's west bound: the region's unless the last prefill found
+     * the player held at the authored world's edge with nothing beside it
+     * (Dkc3VideoHoldWest). The bias then moves at most one pixel a frame
+     * toward the glide's target. */
     const uint16_t minimum_scroll_x =
-        s_hold_west_valid && s_hold_west_x > 0x100u &&
+        s_hold_west_valid && s_hold_west_x > region_minimum_x &&
                 s_hold_west_x <= camera_x
-            ? (uint16_t)s_hold_west_x : 0x0100u;
+            ? (uint16_t)s_hold_west_x : region_minimum_x;
     int wanted_bias = 0;
     Dkc3VideoPresentationMarginsBounded(camera_x, minimum_scroll_x,
                                         maximum_scroll_x, &wanted_bias,
@@ -2731,8 +2793,9 @@ void Dkc3DrawPpuFrame(void) {
             : 0;
     /* A mirrored margin at a level wall has no authored BG3 ring columns to
      * expose. Within one margin of a wall, a physical 64-column BG3 repeats
-     * its rendered line like a bounded layer instead of reading the ring. */
-    if (Dkc3VideoMarginLeavesAuthoredExtent(camera_x, maximum_scroll_x))
+     * its rendered line like a bounded layer instead of reading the ring.
+     * `reflect` mirrors at the level's walls, not the camera region's. */
+    if (Dkc3VideoMarginLeavesAuthoredExtent(camera_x, Dkc3MaximumScrollX()))
       physical_wide_mask = (uint8_t)(physical_wide_mask & ~0x04u);
     /* A bounded layer with a hardware window cannot repeat an already
      * composited 256-pixel line: Murky Mill's per-scanline BG3 light window

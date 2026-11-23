@@ -2790,3 +2790,72 @@ equal to the monitor; the menu item and Escape restored the bar and
   jump) renders identically to the previous build at 16:9 and 21:9. All 30
   CTest checks pass.
 - **Unverified:** the live desktop app, other bonus rooms, macOS.
+
+## 2026-11-22 - the overworld fills the wide view
+
+- **Request:** the reported release quick save is on the Northern
+  Kremisphere overworld (boat by Funky's Rentals), where every wide aspect
+  showed the native frame between black margins.
+- **Why it was black:** every widened path keys on the level main-loop
+  vector (`$4E` = `$B3:8076`). The overworld runs `$B4:B179`, so it took the
+  bounded-screen branch.
+- **Measurements (headless, the reported save):** Mode 1; BG1 a 64x32 map at
+  `$7800`, BG2 a 32x32 water map at `$6C00` whose scroll HDMA varies per
+  line, BG3 a 64x32 map at `$7000` at BG1's scroll; vscroll `$11F` throughout.
+  The overworld camera is the level camera word `$196D`, `$100` ahead of
+  BG1HOFS. Holding each direction for 600 frames took the camera across
+  `$150..$200`, and not one word of the three tilemaps or of the BG1/BG3
+  character data changed: the whole 512-pixel map is resident, spanning
+  world `$100..$300`. `$200` is the east bound (the native right edge
+  reaches the map end); `$150` was the boat meeting land, so the west bound
+  is assumed to be the map's first column, `$100`. While the boat moves,
+  `$196D` leads the latched BG1HOFS by up to two pixels.
+- **Change:** `Dkc3VideoIsResidentOverworld` admits the scene (the vector,
+  Mode 1, BG1 64 columns by 32 rows rendered within eight pixels of the
+  camera less `$100` and not past `$200`, every other enabled 64-column
+  layer at BG1's phase, every enabled layer 32 rows, no shared tilemap
+  pages, and `DKC3_CULL_WIDEN` not `0`). The adapter
+  (`Dkc3PresentOverworld`) then hashes every page of the enabled tilemaps
+  and widens only on a frame whose hash equals the previous frame's. A
+  change while the picture is displayed latches black margins until the
+  scene is left (a streamed map would show stale ring columns), and a change
+  under forced blank or zero brightness only restarts the proof. Margins
+  render BG1-BG3 straight from VRAM: BG1 and BG3 are the resident picture,
+  and BG2's 32-column wrap at 256 pixels is the hardware's. Each margin is
+  clamped to the map at the rendered scroll (`Dkc3VideoOverworldMargins`),
+  under every edge policy, and the columns outside it are cleared.
+- **No glide here:** a first version reused the level glide. The PPU's
+  presentation bias moves sprites, but on this raw path nothing moves the
+  backgrounds with them (levels get that from the world store), so a
+  4-pixel bias put the boat and rocks 4 pixels off the map in the native
+  center. The overworld is camera-locked at bias 0; at the east bound the
+  right margin is black. A runtime hunk that excluded margin-only sprites
+  from the 32/34 line limits was tried while chasing that symptom and
+  removed: this frame shows 15 sprites, nowhere near either limit.
+- **Verified (headless):** at 4:3 the frame, WRAM, VRAM, CGRAM, and OAM
+  hashes of a 30-frame run and of 600-frame Left and Right holds are
+  identical to the build before the change. At 16:10, 16:9, and 21:9 the
+  native 256 columns equal the 4:3 frame on every frame 2..29, and the WRAM
+  hash equals 4:3. On a 300-frame Right, 500-frame Left run (camera `$1A0`
+  to `$200` to `$150`, every eighth frame), the native center matched 4:3
+  in all 100 sampled frames, no frame fell back to black margins, and in
+  BG1-only renders all 5,943 margin columns inside the map equal the
+  native BG1 column at the same world x (offsets derived from the frames,
+  not the leading camera word); all 1,388 margin columns outside the map
+  are black. Only the first frame after the restore (the hash's first
+  sample) shows black margins. With `DKC3_CULL_WIDEN=0` the margins are
+  black and WRAM equals 4:3. Unit tests cover the gate, the camera lead,
+  the east bound, the nine-bit scroll, and the clamp under all four edge
+  policies. All 30 CTest checks pass; the desktop and SDL apps build.
+- **Open - overworld sprite window:** the cartridge keeps overworld objects
+  in OAM only about 45-48 pixels past each native edge. A signpost left OAM
+  when its left edge passed x 302-304, and a 32-pixel rock when its left
+  edge passed about x -56, with 18 of its pixels still inside a 16:9 left
+  margin. At 16:9 a sprite can therefore vanish in a margin's outer pixels;
+  at 21:9 (margins to 351) the signpost vanishes about 47 pixels inside
+  the right margin. Widening that window needs the routine located in the
+  disassembly; nothing was widened.
+- **Unverified:** the live desktop app, other overworld screens and the
+  per-world maps (they keep black margins unless they pass the gate and
+  the static-map proof), the real west bound, transitions into and out of
+  the overworld in a live session, and macOS.

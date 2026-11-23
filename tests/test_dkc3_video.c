@@ -1641,6 +1641,88 @@ int main(void) {
     }
   }
 
+  {
+    /* The overworld gate: Mode 1, BG1 64x32 at camera - $100, other wide
+     * layers at BG1's phase, every enabled layer 32 rows tall. */
+    Dkc3VideoSetAspect(kDkc3VideoAspect16x9);
+    Dkc3VideoSetWidescreen(true);
+    uint8_t maps[4] = {0x79, 0x6c, 0x71, 0x00};
+    uint16_t scroll[3] = {0x00a0, 0x01a2, 0x00a0};
+#define OVERWORLD(vector, mode, layers, camera) \
+    Dkc3VideoIsResidentOverworld(vector, mode, maps, layers, scroll, camera)
+    if (!OVERWORLD(0xb4b179, 0x09, 0x17, 0x01a0) ||
+        OVERWORLD(0xb38076, 0x09, 0x17, 0x01a0) ||
+        OVERWORLD(0xb4b179, 0x02, 0x17, 0x01a0) ||
+        OVERWORLD(0xb4b179, 0x09, 0x16, 0x01a0) ||
+        !OVERWORLD(0xb4b179, 0x09, 0x17, 0x01a2) ||
+        !OVERWORLD(0xb4b179, 0x09, 0x17, 0x0198) ||
+        !OVERWORLD(0xb4b179, 0x09, 0x17, 0x01a8) ||
+        OVERWORLD(0xb4b179, 0x09, 0x17, 0x0197) ||
+        OVERWORLD(0xb4b179, 0x09, 0x17, 0x01a9) ||
+        Dkc3VideoIsResidentOverworld(0xb4b179, 0x09, NULL, 0x17, scroll,
+                                     0x01a0))
+      return fprintf(stderr, "FAIL: overworld scene gate\n"), 1;
+    scroll[2] = 0x00a1;
+    if (OVERWORLD(0xb4b179, 0x09, 0x17, 0x01a0) ||
+        !OVERWORLD(0xb4b179, 0x09, 0x13, 0x01a0))
+      return fprintf(stderr, "FAIL: overworld BG3 phase gate\n"), 1;
+    scroll[2] = 0x00a0;
+    maps[0] = 0x78;
+    if (OVERWORLD(0xb4b179, 0x09, 0x17, 0x01a0))
+      return fprintf(stderr, "FAIL: overworld 32-column BG1 accepted\n"), 1;
+    maps[0] = 0x7b;
+    if (OVERWORLD(0xb4b179, 0x09, 0x17, 0x01a0))
+      return fprintf(stderr, "FAIL: overworld 64-row BG1 accepted\n"), 1;
+    maps[0] = 0x79;
+    maps[1] = 0x7c;
+    if (OVERWORLD(0xb4b179, 0x09, 0x17, 0x01a0))
+      return fprintf(stderr, "FAIL: overworld shared tilemap page\n"), 1;
+    maps[1] = 0x6c;
+    scroll[0] = 0x02a0;
+    scroll[2] = 0x02a0;
+    if (!OVERWORLD(0xb4b179, 0x09, 0x17, 0x01a0))
+      return fprintf(stderr, "FAIL: overworld scroll above nine bits\n"), 1;
+    /* Rendered past the last camera position, where the right margin would
+     * wrap to the map's west edge; the east bound itself still qualifies. */
+    scroll[0] = scroll[2] = 0x0101;
+    if (OVERWORLD(0xb4b179, 0x09, 0x17, 0x0201))
+      return fprintf(stderr, "FAIL: overworld past the east bound\n"), 1;
+    scroll[0] = scroll[2] = 0x0100;
+    if (!OVERWORLD(0xb4b179, 0x09, 0x17, 0x0202))
+      return fprintf(stderr, "FAIL: overworld at the east bound\n"), 1;
+    scroll[0] = scroll[2] = 0x00a0;
+    if (Dkc3VideoOverworldRenderedX(0x02a0) != 0x01a0 ||
+        Dkc3VideoOverworldRenderedX(0x0000) != 0x0100)
+      return fprintf(stderr, "FAIL: overworld rendered x\n"), 1;
+#undef OVERWORLD
+
+    /* Margins clamp to the resident map [$100, $300) under any policy;
+     * the view never takes a bias. */
+    static const struct {
+      uint16_t camera;
+      int left, right;
+    } cases[] = {
+        {0x01a0, 43, 43}, {0x0100, 0, 43}, {0x0110, 16, 43},
+        {0x0200, 43, 0},  {0x01f0, 43, 16}, {0x012b, 43, 43},
+    };
+    const Dkc3VideoEdgePolicy policies[] = {
+        kDkc3VideoEdgeGlide, kDkc3VideoEdgeShift, kDkc3VideoEdgeReflect,
+        kDkc3VideoEdgeBars};
+    for (size_t p = 0; p < sizeof policies / sizeof policies[0]; p++) {
+      Dkc3VideoSetEdgePolicy(policies[p]);
+      for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        int left = -1, right = -1;
+        Dkc3VideoOverworldMargins(cases[i].camera, &left, &right);
+        if (left != cases[i].left || right != cases[i].right) {
+          fprintf(stderr, "FAIL: overworld margins camera %04x: %d %d\n",
+                  cases[i].camera, left, right);
+          return 1;
+        }
+      }
+    }
+    Dkc3VideoSetEdgePolicy(kDkc3VideoEdgeGlide);
+  }
+
   Dkc3VideoSetWidescreen(false);
   if (Dkc3VideoTerrainReady()) {
     fprintf(stderr, "FAIL: native mode retained widescreen terrain state\n");

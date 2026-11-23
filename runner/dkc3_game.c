@@ -109,6 +109,15 @@ static int s_bias_presented;
  * does. */
 enum { kDkc3BiasSettleFrames = 4 };
 static uint32_t s_bias_frames;
+/* The overworld's resident maps (Dkc3VideoIsResidentOverworld). Margins
+ * show them only while the enabled layers' tilemap words hash the same as
+ * on the previous drawn frame. A change while the picture is displayed
+ * means some map streams after all: margins stay black until the scene is
+ * left. A change under forced blank or zero brightness is a load and only
+ * restarts the proof. */
+static bool s_overworld_hash_valid;
+static uint64_t s_overworld_hash;
+static bool s_overworld_streams;
 /* The camera of the last prefill, for the hold's entry test: the player
  * stands within kDkc3HoldPlayerEdge pixels of the frame's west edge while
  * the camera does not move. The camera leads a walking player by about
@@ -1074,6 +1083,70 @@ static void Dkc3ResetWidescreenShadow(void) {
   s_hold_camera_valid = false;
   s_bias_valid = false;
   Dkc3VideoSetTerrainReady(false);
+}
+
+static void Dkc3ResetOverworldState(void) {
+  s_overworld_hash_valid = false;
+  s_overworld_streams = false;
+}
+
+/* FNV-1a over every page of each enabled BG1-BG3 tilemap. */
+static uint64_t Dkc3OverworldMapHash(uint8_t enabled_layers) {
+  uint64_t hash = 0xcbf29ce484222325ull;
+  for (unsigned layer = 0; layer < 3; layer++) {
+    if (!(enabled_layers & (1u << layer)))
+      continue;
+    uint8_t pages[4];
+    const unsigned count = Dkc3VideoTilemapPages(g_ppu->bgXsc[layer], pages);
+    for (unsigned page = 0; page < count; page++) {
+      const uint16_t *words = g_ppu->vram + ((unsigned)pages[page] << 10);
+      for (unsigned word = 0; word < 0x400; word++) {
+        hash ^= words[word];
+        hash *= 0x100000001b3ull;
+      }
+    }
+  }
+  return hash;
+}
+
+/* Present the resident overworld widened: raw BG1-BG3 across the margins,
+ * each margin clamped to the 512-pixel map. The view stays locked to the
+ * camera (no glide): a presentation bias shifts objects in the PPU, but on
+ * this raw path nothing shifts the backgrounds with them, so a biased frame
+ * would misplace every sprite against the map. Returns false (black
+ * margins) until the maps are proven static. */
+static bool Dkc3PresentOverworld(uint8_t enabled_layers) {
+  const uint64_t hash = Dkc3OverworldMapHash(enabled_layers);
+  const bool displayed =
+      !PPU_forcedBlank(g_ppu) && PPU_brightness(g_ppu) != 0;
+  const bool stable = s_overworld_hash_valid && hash == s_overworld_hash;
+  if (s_overworld_hash_valid && hash != s_overworld_hash && displayed)
+    s_overworld_streams = true;
+  s_overworld_hash = hash;
+  s_overworld_hash_valid = true;
+  if (!stable || s_overworld_streams)
+    return false;
+
+  const int extra = Dkc3VideoExtra();
+  int left_margin = extra;
+  int right_margin = extra;
+  /* Clamp at the scroll the frame renders, not the camera word, which
+   * leads it while the boat moves. */
+  Dkc3VideoOverworldMargins(Dkc3VideoOverworldRenderedX(g_ppu->hScroll[0]),
+                            &left_margin, &right_margin);
+  PpuSetExtraSpace(g_ppu, (uint8_t)extra);
+  Dkc3VideoSetPresentationBias(0);
+  PpuSetExtraSideSpace(g_ppu, left_margin, right_margin, 0);
+  Dkc3VideoClearOutsideMargins(g_ppu->renderBuffer, g_ppu->renderPitch,
+                               Dkc3VideoWidth(), kDkc3VideoHeight, extra,
+                               left_margin, right_margin);
+  /* Every enabled layer reads VRAM directly: BG1 and BG3 are the resident
+   * 512-pixel pictures and BG2's 32-column water wraps at 256 pixels as
+   * the hardware does, with its per-line HDMA scroll evaluated in place. */
+  const uint8_t layers = (uint8_t)(enabled_layers & 0x07u);
+  PpuSetWidescreenLayerMask(g_ppu, layers);
+  PpuSetWidescreenBg3Widen(g_ppu, (layers & 0x04u) != 0 ? 1u : 0u);
+  return true;
 }
 
 static const uint8_t *Dkc3LevelSourceBank(uint8_t *bank_out) {
@@ -2537,6 +2610,16 @@ void Dkc3DrawPpuFrame(void) {
           g_ppu->bgmode, g_ppu->bgXsc, g_ppu->bgTileAdr,
           g_snesrecomp_last_hdmaen, g_ppu->vram, 0x8000);
   const bool extend_world = wide_layer_mask != 0 && !name_card;
+  const uint8_t enabled_layers =
+      (uint8_t)(g_ppu->screenEnabled[0] | g_ppu->screenEnabled[1]);
+  const bool overworld = Dkc3VideoIsWidescreen() && !extend_world &&
+      !snow_arena &&
+      Dkc3VideoIsResidentOverworld(
+          Dkc3FactRead24(kDkc3WramMainLoopVector), g_ppu->bgmode,
+          g_ppu->bgXsc, enabled_layers, g_ppu->hScroll,
+          Dkc3ReadWram16(kDkc3WramCameraX));
+  if (!overworld)
+    Dkc3ResetOverworldState();
   int presentation_bias = 0;
   bool band_policies_active = false;
   bool blank_margins = false;
@@ -2546,6 +2629,11 @@ void Dkc3DrawPpuFrame(void) {
   PpuSetWidescreenLayerMask(g_ppu, 0);
   PpuSetWidescreenBg3Widen(g_ppu, 0);
   PpuSetWidescreenPresentationXBias(g_ppu, 0);
+  bool overworld_presented = false;
+  if (overworld) {
+    Dkc3ResetWidescreenShadow();
+    overworld_presented = Dkc3PresentOverworld(enabled_layers);
+  }
   if (extend_world) {
     const int extra = Dkc3VideoExtra();
     PpuSetExtraSpace(g_ppu, (uint8_t)extra);
@@ -2715,6 +2803,8 @@ void Dkc3DrawPpuFrame(void) {
     Dkc3ResetWidescreenShadow();
     PpuSetExtraSpace(g_ppu, (uint8_t)Dkc3VideoExtra());
     PpuSetWidescreenLayerMask(g_ppu, 0x03);
+  } else if (overworld_presented) {
+    /* Dkc3PresentOverworld set this frame's geometry and layer policy. */
   } else if (Dkc3VideoIsWidescreen()) {
     Dkc3ResetWidescreenShadow();
     /*

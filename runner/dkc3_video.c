@@ -818,6 +818,52 @@ bool Dkc3VideoUsesSnowArenaPlanes(bool in_level, uint16_t level,
   return true;
 }
 
+bool Dkc3VideoIsResidentOverworld(uint32_t main_loop_vector, uint8_t bg_mode,
+                                  const uint8_t bg_sc[4],
+                                  uint8_t enabled_layers,
+                                  const uint16_t h_scroll[3],
+                                  uint16_t camera_x) {
+  if (main_loop_vector != kDkc3OverworldMainLoop || (bg_mode & 7u) != 1u ||
+      !bg_sc || !h_scroll || !(enabled_layers & 1u) ||
+      !Dkc3VideoCullWidenEnabled())
+    return false;
+  /* BG1 is the 512-pixel world: 64 columns, 32 rows, rendered at the
+   * camera (within its lead) less $100. */
+  const int rendered = Dkc3VideoOverworldRenderedX(h_scroll[0]);
+  const int lead = (int)camera_x - rendered;
+  if ((bg_sc[0] & 3u) != 1u || rendered > kDkc3OverworldMaximumCameraX ||
+      lead < -kDkc3OverworldCameraLead || lead > kDkc3OverworldCameraLead)
+    return false;
+  for (unsigned layer = 0; layer < 3; layer++) {
+    if (!(enabled_layers & (1u << layer)))
+      continue;
+    if (bg_sc[layer] & 2u)
+      return false;
+    if (Dkc3VideoTilemapPagesCollide(bg_sc, layer, enabled_layers))
+      return false;
+    if ((bg_sc[layer] & 1u) &&
+        (h_scroll[layer] & 0x1ffu) != (h_scroll[0] & 0x1ffu))
+      return false;
+  }
+  return true;
+}
+
+uint16_t Dkc3VideoOverworldRenderedX(uint16_t bg1_h_scroll) {
+  return (uint16_t)(kDkc3OverworldMinimumCameraX + (bg1_h_scroll & 0x1ffu));
+}
+
+void Dkc3VideoOverworldMargins(uint16_t rendered_x, int *left_margin,
+                               int *right_margin) {
+  const int extra = Dkc3VideoExtra();
+  const int presented = (int)rendered_x;
+  if (left_margin)
+    *left_margin = Dkc3VideoClampInt(
+        presented - kDkc3OverworldMinimumCameraX, 0, extra);
+  if (right_margin)
+    *right_margin = Dkc3VideoClampInt(
+        kDkc3OverworldMaximumCameraX - presented, 0, extra);
+}
+
 bool Dkc3VideoDecodeWaterfallColumn(const uint8_t *bank, size_t bank_size,
                                      uint16_t layout_pointer,
                                      uint32_t world_tile_x,

@@ -25,6 +25,14 @@ Limbo.
 The 21:9 option uses the nearest symmetric width that preserves the shared
 runtime's safe sprite coordinate range: 446x224, or approximately 20.91:9.
 Screens the map does not cover center the native frame between black margins.
+The Northern Kremisphere overworld now fills the wide view from its fully
+resident 512-pixel map. The view stays locked to the camera, and a margin
+past the map's east or west end is black. Verified at one overworld quick
+save in 16:10, 16:9, and 21:9 with the native 256 columns and guest memory
+unchanged. The overworld's own sprite window extends only about 45 pixels
+past each native edge, so a sprite can vanish in the outermost pixels of a
+16:9 margin and well inside a 21:9 margin. Other overworld screens are
+unverified and keep black margins unless they pass the same checks.
 Short rooms (the bonus games) no longer slide the view after the player
 stops: the inward shift at each wall shrinks to fit the room and changes at
 most one pixel per eight of camera travel, or is zero when the room is

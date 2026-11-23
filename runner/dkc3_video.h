@@ -97,6 +97,40 @@ bool Dkc3VideoUsesSnowArenaPlanes(bool in_level, uint16_t level,
                                  const uint16_t *vram, size_t vram_words);
 
 /*
+ * The Northern Kremisphere overworld (main-loop vector $B4:B179) keeps its
+ * whole picture resident: a 64x32 BG1 map spans world x [$100, $300), the
+ * camera word $196D sits $100 ahead of BG1HOFS, and no map word changes as
+ * the camera travels (docs/BRINGUP.md, 2026-11-22). The scene qualifies only
+ * in Mode 1 with BG1 a 64-column, 32-row map whose rendered world x ($100 +
+ * the nine-bit BG1HOFS) lies in [$100, $200] and within the camera lead of
+ * $196D (the camera word runs up to two pixels ahead of the latched scroll
+ * while the boat moves), every other enabled 64-column BG layer at BG1's
+ * phase, and every enabled layer 32 rows tall. The host still has to prove
+ * the maps stay unwritten while displayed.
+ */
+enum {
+  kDkc3OverworldMainLoop = 0xb4b179,
+  kDkc3OverworldMinimumCameraX = 0x0100,
+  kDkc3OverworldMaximumCameraX = 0x0200,
+  kDkc3OverworldCameraLead = 8,
+};
+bool Dkc3VideoIsResidentOverworld(uint32_t main_loop_vector, uint8_t bg_mode,
+                                  const uint8_t bg_sc[4],
+                                  uint8_t enabled_layers,
+                                  const uint16_t h_scroll[3],
+                                  uint16_t camera_x);
+
+/* The overworld's rendered world x: $100 plus BG1's nine-bit scroll. */
+uint16_t Dkc3VideoOverworldRenderedX(uint16_t bg1_h_scroll);
+
+/* Margins for the overworld at its rendered world x, each clamped to the
+ * resident map [$100, $300) under every edge policy: the map's 512-pixel wrap is not authored, no
+ * mirror decoder exists for it, and the raw background path cannot follow
+ * a presentation bias, so the view stays locked to the camera. */
+void Dkc3VideoOverworldMargins(uint16_t rendered_x, int *left_margin,
+                               int *right_margin);
+
+/*
  * What a host margin shows where the level authors nothing: within one
  * margin of a hard level wall, and in rooms narrower than two margins.
  *

@@ -36,6 +36,13 @@ typedef struct Dkc3TerrainPrefillStats {
    * this frame (the calibration gate). */
   uint16_t row_bytes;
   uint8_t row_match_percent;
+  /* The presentation walls and margins this frame used, and the camera
+   * region word ($0478) they were taken from. */
+  uint16_t camera_region;
+  uint16_t wall_left;
+  uint16_t wall_right;
+  int16_t left_margin;
+  int16_t right_margin;
 } Dkc3TerrainPrefillStats;
 
 const RtlGameInfo *Dkc3GameInfo(void);

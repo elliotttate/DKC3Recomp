@@ -269,6 +269,30 @@ void Dkc3VideoMarginsForBias(uint16_t camera_x, uint16_t minimum_scroll_x,
                              uint16_t maximum_scroll_x, int bias,
                              int *left_margin, int *right_margin);
 
+/* Scroll bounds from a camera region's span ([region_left, region_right),
+ * the right edge one screen past the last camera x) capped by the level's
+ * maximum. A camera still outside the span (converging on a region it has
+ * just entered) gets the wall reflected about it, so the margin on that
+ * side equals the distance left to travel and closes as the camera arrives
+ * instead of vanishing on the frame `$0478` changes. */
+void Dkc3VideoRegionScrollBounds(uint16_t camera_x, uint16_t region_left,
+                                 uint16_t region_right,
+                                 uint16_t level_maximum_x,
+                                 uint16_t *minimum_scroll_x,
+                                 uint16_t *maximum_scroll_x);
+
+/* Pixels per frame a margin may open beyond the view's own motion when its
+ * wall moves outward (a region change opening onto a wider room). */
+enum { kDkc3VideoMarginOpenRate = 2 };
+
+/* The margin to present this frame: at most the last presented margin plus
+ * kDkc3VideoMarginOpenRate plus how far the view moved away from that side
+ * (positive view_step_outward), so a wall fixed in the world keeps pace
+ * and a wall that jumps outward wipes the margin open. Narrowing is never
+ * limited. */
+int Dkc3VideoLimitMarginGrowth(int presented_margin, int target_margin,
+                               int view_step_outward);
+
 
 /* `$B3:C0F4` (Ripsaw Rage's tree-trunk BG3 masks) writes W1 = [`$1A`,
  * `$1C`] and W2 = [`$1E`, `$20`] (world X in its direct page) minus the

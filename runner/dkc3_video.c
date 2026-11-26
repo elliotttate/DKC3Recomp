@@ -227,6 +227,51 @@ int Dkc3VideoStepPresentationBias(int presented_bias, int wanted_bias,
   return presented_bias + Dkc3VideoClampInt(step, -limit, limit);
 }
 
+void Dkc3VideoRegionScrollBounds(uint16_t camera_x, uint16_t region_left,
+                                 uint16_t region_right,
+                                 uint16_t level_maximum_x,
+                                 uint16_t *minimum_scroll_x,
+                                 uint16_t *maximum_scroll_x) {
+  const int camera = camera_x;
+  int lower = region_left < 0x0100u ? 0x0100 : (int)region_left;
+  int upper = (int)region_right - kDkc3VideoNativeWidth;
+  if (upper > (int)level_maximum_x)
+    upper = level_maximum_x;
+  /* The camera still converging on a region it has just entered shows,
+   * natively, the columns between it and the region's wall. Reflect the
+   * wall about the camera so the margin narrows by exactly the distance
+   * the camera has left to travel, and closes as the camera arrives. */
+  if (lower > camera) {
+    lower = 2 * camera - lower;
+    if (lower < 0x0100)
+      lower = 0x0100;
+    if (lower > camera)
+      lower = camera;
+  }
+  if (upper < camera) {
+    upper = 2 * camera - upper;
+    if (upper > (int)level_maximum_x)
+      upper = level_maximum_x;
+    if (upper < camera)
+      upper = camera;
+  }
+  if (minimum_scroll_x)
+    *minimum_scroll_x = (uint16_t)lower;
+  if (maximum_scroll_x)
+    *maximum_scroll_x = (uint16_t)upper;
+}
+
+int Dkc3VideoLimitMarginGrowth(int presented_margin, int target_margin,
+                               int view_step_outward) {
+  /* A wall fixed in the world widens its margin exactly as fast as the
+   * view moves away from it; anything beyond that is the wall itself
+   * jumping outward, which opens at a bounded rate instead of at once. */
+  int limit = presented_margin + kDkc3VideoMarginOpenRate;
+  if (view_step_outward > 0)
+    limit += view_step_outward < 0x10000 ? view_step_outward : 0x10000;
+  return target_margin < limit ? target_margin : limit;
+}
+
 void Dkc3VideoMarginsForBias(uint16_t camera_x, uint16_t minimum_scroll_x,
                              uint16_t maximum_scroll_x, int bias,
                              int *left_margin, int *right_margin) {

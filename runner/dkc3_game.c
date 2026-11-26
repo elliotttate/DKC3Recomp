@@ -120,6 +120,15 @@ static uint16_t s_bias_camera_x;
  * does. */
 enum { kDkc3BiasSettleFrames = 4 };
 static uint32_t s_bias_frames;
+/* The margins last presented and the view position (camera plus bias)
+ * they were presented at, so a wall that jumps outward opens its margin at
+ * a bounded rate (Dkc3VideoLimitMarginGrowth). Valid only while the bias
+ * is settled and the terrain stayed ready, so a restore, a level start, or
+ * a store reset still opens at once. */
+static bool s_margin_valid;
+static int s_margin_left;
+static int s_margin_right;
+static int s_margin_view_x;
 /* The edge policy the presented bias was computed under. Changing it from
  * the menu re-snaps the bias: easing from the old policy's bias would slide
  * the background and the screen-fixed HUD for up to a margin's worth of
@@ -2848,18 +2857,10 @@ void Dkc3DrawPpuFrame(void) {
       uint16_t region_left = 0, region_right = 0;
       if (Dkc3VideoCameraRegionSpan(g_ram,
                                     Dkc3ReadWram16(kDkc3WramCameraRegion),
-                                    &region_left, &region_right)) {
-        int lower = region_left < 0x0100u ? 0x0100 : (int)region_left;
-        int upper = (int)region_right - kDkc3VideoNativeWidth;
-        if (upper > (int)maximum_scroll_x)
-          upper = maximum_scroll_x;
-        if (lower > (int)camera_x)
-          lower = camera_x;
-        if (upper < (int)camera_x)
-          upper = camera_x;
-        region_minimum_x = (uint16_t)lower;
-        maximum_scroll_x = (uint16_t)upper;
-      }
+                                    &region_left, &region_right))
+        Dkc3VideoRegionScrollBounds(camera_x, region_left, region_right,
+                                    maximum_scroll_x, &region_minimum_x,
+                                    &maximum_scroll_x);
     }
     int bias = 0;
     int left_margin = extra;
@@ -2880,6 +2881,8 @@ void Dkc3DrawPpuFrame(void) {
       s_bias_policy = Dkc3VideoGetEdgePolicy();
       s_bias_valid = false;
     }
+    const bool limit_margins = s_margin_valid && s_bias_valid &&
+        s_bias_frames >= (uint32_t)kDkc3BiasSettleFrames;
     if (!s_bias_valid) {
       s_bias_presented = wanted_bias;
       s_bias_frames = 0;
@@ -2897,6 +2900,20 @@ void Dkc3DrawPpuFrame(void) {
     bias = s_bias_presented;
     Dkc3VideoMarginsForBias(camera_x, minimum_scroll_x, maximum_scroll_x,
                             bias, &left_margin, &right_margin);
+    /* A region change that opens onto a wider room moves its wall away
+     * in one frame; wipe the margin open rather than popping a full
+     * margin of terrain and objects in. DKC3_CULL_WIDEN=0 keeps the
+     * immediate walls for same-binary comparisons. */
+    const int view_x = (int)camera_x + bias;
+    if (limit_margins && Dkc3VideoCullWidenEnabled()) {
+      left_margin = Dkc3VideoLimitMarginGrowth(s_margin_left, left_margin,
+                                               view_x - s_margin_view_x);
+      right_margin = Dkc3VideoLimitMarginGrowth(s_margin_right, right_margin,
+                                                s_margin_view_x - view_x);
+    }
+    s_margin_left = left_margin;
+    s_margin_right = right_margin;
+    s_margin_view_x = view_x;
     const int terrain_layer = Dkc3VideoTerrainLayer(
         wide_layer_mask, g_ppu->bgXsc, Dkc3TerrainVramBase());
     /* The terrain phase the frame renders: the frame-start register unless
@@ -2931,6 +2948,13 @@ void Dkc3DrawPpuFrame(void) {
     PpuSetWidescreenLayerMask(g_ppu, wide_layer_mask);
     const bool terrain_ready = Dkc3PrepareWidescreenShadow(
         wide_layer_mask, terrain_layer, layout, bias, alias_layer);
+    s_terrain_prefill_stats.camera_region =
+        Dkc3ReadWram16(kDkc3WramCameraRegion);
+    s_terrain_prefill_stats.wall_left = minimum_scroll_x;
+    s_terrain_prefill_stats.wall_right = maximum_scroll_x;
+    s_terrain_prefill_stats.left_margin = (int16_t)left_margin;
+    s_terrain_prefill_stats.right_margin = (int16_t)right_margin;
+    s_margin_valid = terrain_ready;
     presentation_bias = terrain_ready ? bias : 0;
     trunk_windows_active = terrain_ready;
     /* Nothing authored reaches the margins while the world is unproven (a

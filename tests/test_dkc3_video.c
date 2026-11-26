@@ -374,6 +374,64 @@ int main(void) {
               right);
       return 1;
     }
+    /* A camera inside its region takes the region's walls; one still
+     * converging on a region it just entered (the shaft at $02C0..$03C0
+     * with the camera at $0295) gets the wall reflected about it, so the
+     * margin is the 43 pixels left to travel, capped at 16:10's 26, instead
+     * of zero. */
+    {
+      uint16_t lower = 0, upper = 0;
+      Dkc3VideoRegionScrollBounds(0x02c0, 0x02c0, 0x03c0, 0x0a00, &lower,
+                                  &upper);
+      if (lower != 0x02c0 || upper != 0x02c0) {
+        fprintf(stderr, "FAIL: region bounds inside (%04x %04x)\n", lower,
+                upper);
+        return 1;
+      }
+      Dkc3VideoRegionScrollBounds(0x0295, 0x02c0, 0x03c0, 0x0a00, &lower,
+                                  &upper);
+      Dkc3VideoMarginsForBias(0x0295, lower, upper, 0, &left, &right);
+      if (lower != 0x026a || upper != 0x02c0 || left != 26 || right != 26) {
+        fprintf(stderr, "FAIL: region bounds converging west (%04x %04x %d %d)\n",
+                lower, upper, left, right);
+        return 1;
+      }
+      Dkc3VideoRegionScrollBounds(0x02b8, 0x02c0, 0x03c0, 0x0a00, &lower,
+                                  &upper);
+      Dkc3VideoMarginsForBias(0x02b8, lower, upper, 0, &left, &right);
+      if (left != 8 || right != 8) {
+        fprintf(stderr, "FAIL: region margin closes with travel (%d %d)\n",
+                left, right);
+        return 1;
+      }
+      Dkc3VideoRegionScrollBounds(0x0300, 0x0100, 0x02e0, 0x0a00, &lower,
+                                  &upper);
+      if (lower != 0x0100 || upper != 0x0420) {
+        fprintf(stderr, "FAIL: region bounds converging east (%04x %04x)\n",
+                lower, upper);
+        return 1;
+      }
+      Dkc3VideoRegionScrollBounds(0x0110, 0x0200, 0x0400, 0x0300, &lower,
+                                  &upper);
+      if (lower != 0x0100 || upper != 0x0300) {
+        fprintf(stderr, "FAIL: region bounds clamp to the level (%04x %04x)\n",
+                lower, upper);
+        return 1;
+      }
+    }
+    /* A wall that jumps outward opens its margin at the bounded rate; a
+     * wall fixed in the world keeps pace with the view moving away from
+     * it; narrowing is immediate. */
+    if (Dkc3VideoLimitMarginGrowth(0, 43, 0) != kDkc3VideoMarginOpenRate ||
+        Dkc3VideoLimitMarginGrowth(10, 43, 4) !=
+            10 + 4 + kDkc3VideoMarginOpenRate ||
+        Dkc3VideoLimitMarginGrowth(10, 43, -4) !=
+            10 + kDkc3VideoMarginOpenRate ||
+        Dkc3VideoLimitMarginGrowth(10, 13, 3) != 13 ||
+        Dkc3VideoLimitMarginGrowth(43, 0, 0) != 0) {
+      fprintf(stderr, "FAIL: margin growth limit\n");
+      return 1;
+    }
     /* The bias steps one pixel toward its target, and may also cancel
      * the camera's own motion this frame, never add to it: a camera
      * scrolling 4 pixels right into a pinned east wall leaves the view
@@ -422,7 +480,7 @@ int main(void) {
     /* The shaft has no side links: its span is its own screen. */
     if (!Dkc3VideoCameraRegionSpan(wram, 6, &span_left, &span_right) ||
         span_left != 0x0190 || span_right != 0x0290) {
-      fprintf(stderr, "FAIL: shaft region span (%04x %04x)\n", span_left,
+      fprintf(stderr, "FAIL: shaft region span (%04x %04x)\n", span_left,
               span_right);
       return 1;
     }
@@ -430,13 +488,13 @@ int main(void) {
      * west link reaches back to the top room. */
     if (!Dkc3VideoCameraRegionSpan(wram, 4, &span_left, &span_right) ||
         span_left != 0x0190 || span_right != 0x0598) {
-      fprintf(stderr, "FAIL: top room region span (%04x %04x)\n", span_left,
+      fprintf(stderr, "FAIL: top room region span (%04x %04x)\n", span_left,
               span_right);
       return 1;
     }
     if (!Dkc3VideoCameraRegionSpan(wram, 8, &span_left, &span_right) ||
         span_left != 0x0190 || span_right != 0x0598) {
-      fprintf(stderr, "FAIL: corridor region span (%04x %04x)\n", span_left,
+      fprintf(stderr, "FAIL: corridor region span (%04x %04x)\n", span_left,
               span_right);
       return 1;
     }
@@ -448,7 +506,7 @@ int main(void) {
     wram[0x9d5a + 8] = 0x84;
     Dkc3VideoCameraRegionSpan(wram, 4, &span_left, &span_right);
     if (closed_right != 0x0290 || span_right != 0x0598) {
-      fprintf(stderr, "FAIL: region flags (%04x %04x)\n", closed_right,
+      fprintf(stderr, "FAIL: region flags (%04x %04x)\n", closed_right,
               span_right);
       return 1;
     }
@@ -459,13 +517,13 @@ int main(void) {
     wram[0x9d5b + 4] = 3;
     Dkc3VideoCameraRegionSpan(wram, 4, &span_left, &span_right);
     if (span_right != 0x0598) {
-      fprintf(stderr, "FAIL: second east candidate (%04x)\n", span_right);
+      fprintf(stderr, "FAIL: second east candidate (%04x)\n", span_right);
       return 1;
     }
     wram[0x9e5a + 8] = 0;
     Dkc3VideoCameraRegionSpan(wram, 4, &span_left, &span_right);
     if (span_right != 0x0290) {
-      fprintf(stderr, "FAIL: unnamed second candidate (%04x)\n", span_right);
+      fprintf(stderr, "FAIL: unnamed second candidate (%04x)\n", span_right);
       return 1;
     }
     /* No current region (entry 0), an odd or out-of-range offset, or a
@@ -477,7 +535,7 @@ int main(void) {
         Dkc3VideoCameraRegionSpan(wram, 0x100, NULL, NULL) ||
         Dkc3VideoCameraRegionSpan(wram, 2, NULL, NULL) ||
         Dkc3VideoCameraRegionSpan(NULL, 6, NULL, NULL)) {
-      fprintf(stderr, "FAIL: region span without a usable region\n");
+      fprintf(stderr, "FAIL: region span without a usable region\n");
       return 1;
     }
     /* The shaft's one-screen span is a room narrower than two margins:

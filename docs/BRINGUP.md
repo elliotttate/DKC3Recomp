@@ -3383,3 +3383,49 @@ equal to the monitor; the menu item and Escape restored the bar and
   saved-scene corpus and cave replay are not on this host. The live desktop
   app, `shift` at a wall, and region-change frames under `glide` are
   unverified.
+
+## 2026-11-25 - left margin popping at a camera-region change (shaft entry)
+
+- **Symptom:** in the owner's release quick save (`saves/dkc3s0.sav`,
+  SHA-256 `b959c9b4...bb82`, level word `$00C0` = `$003E`, 16:9, `glide`),
+  the Kongs stand where a pipe corridor meets a one-screen shaft. Without
+  input the whole 43-column left margin flips between black and terrain:
+  black on replay frames 2-17, full 18-45, black 46-127, full from 128.
+- **Measurement:** the presentation walls (new `region=`, `walls=`, and
+  `margins=` fields on `DKC3_PREFILL_TRACE`) follow `$0478`. Region 14 (the
+  corridor, `$02C0..$03A8`, narrower than a screen) is rejected by
+  `Dkc3VideoCameraRegionSpan`, so the level bounds apply and both margins
+  are 43. Region 15 (the shaft, `$02C0..$03C0`, no side links) bounds both
+  walls at `$02C0`. When `$0478` became 15 on frame 46 the camera was still
+  at `$0295`, converging on the shaft, and the old code clamped the west
+  wall to the camera: the margin went from 43 to 0 in one frame although
+  the native window itself still showed 43 columns west of the wall. On
+  frame 128 region 16 (linked west through 9 and 2 to `$0100`) opened it
+  from 0 to 43 in one frame.
+- **Change:** `Dkc3VideoRegionScrollBounds` (`runner/dkc3_video.c`)
+  replaces the inline clamp. A camera outside its region's span gets the
+  wall reflected about it, so the margin equals the distance the camera has
+  left to travel and closes as it arrives. `Dkc3VideoLimitMarginGrowth`
+  then caps how fast a margin may open: the view's own motion away from
+  that side plus `kDkc3VideoMarginOpenRate` (2) pixels a frame, so a wall
+  fixed in the world keeps pace and a wall that jumps outward wipes the
+  margin open. Narrowing is never limited. The limiter is off until the
+  bias has settled and while terrain is not ready (a restore or level start
+  still opens at once), and `DKC3_CULL_WIDEN=0` disables it. Bias, culls,
+  and the cartridge state are unchanged.
+- **Result:** on the same 400-frame replay the margins now open 2 pixels a
+  frame on frame 18 (both sides open by frame 39), close one pixel per pixel
+  of camera travel from frame 46 to 107, and the left margin opens again 2
+  pixels a frame from frame 128. A montage of every fourth frame shows no
+  margin-wide jumps.
+- **Verified (headless, private ROM, previous build as reference):** final
+  frame, WRAM, VRAM, CGRAM, and OAM hashes identical on the 400-frame replay
+  at 4:3, 16:9, and 21:9 with `DKC3_CULL_WIDEN` on and off, and on an
+  1,800-frame boot at 4:3 and 16:9. `test_dkc3_video` covers the reflected
+  walls (west, east, level clamp) and the growth limit. Windows Release
+  CTest 31/31. The test source also lost seven stray carriage returns inside
+  `fprintf` literals that MSVC read as line breaks.
+- **Unverified:** the saved-scene corpus and cave replay are not on this
+  host, so the mill elevator (2026-11-22) and Squeals on Wheels states were
+  not replayed against this change. The live desktop app was rebuilt but
+  not played at this spot.

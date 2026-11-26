@@ -150,6 +150,18 @@ remembered in `launcher.cfg`) shows or hides the badges at once; the letters
 are recorded either way. `DKC3_KONG_BADGES=0` or `=1` sets the same option at
 launch. See [docs/BRINGUP.md](docs/BRINGUP.md) for what was verified.
 
+Under **Assist Tools / Cheats**, an optional **Spawn animal buddy crates from
+pause menu** toggle (off by default, remembered as `PauseCrateSpawn` in
+`launcher.cfg` and gated behind **Enable Assist Tools / Cheats**) lets the
+active player press **Left** or **Right** while paused in a level to select any
+of the five animal buddy crates (**Ellie**, **Enguarde**, **Squitter**,
+**Squawks**, **Parry** — shown at the bottom middle of the screen) and press
+**B** to spawn it at the Kong's position (`DKC3_PAUSE_CRATE_SPAWN=1` enables it
+in headless runs). While enabled, pressing **X** also dismounts Squawks
+(matching Enguarde's dismount behavior), and animal buddy sprites that
+overflowed to palette 0 are automatically repaired when a hardware palette slot
+is available or via the widescreen extended OBJ palette table.
+
 ## Native macOS release
 
 The v0.0.6 release fixes the Windows menu bar staying on screen in

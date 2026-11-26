@@ -63,6 +63,15 @@ bool Dkc3KongTrackingEnable(const char *path);
 /* Shows or hides the map badges (the desktop Settings checkbox); recording
  * continues either way. */
 void Dkc3KongSetBadgesVisible(bool visible);
+/* Enables or disables the Assist Tools / Cheats option that spawns animal
+ * buddy crates from the in-game pause state (Left/Right selects buddy, B
+ * spawns the selected crate). Off by default. */
+void Dkc3SetPauseCrateSpawnEnabled(bool enabled);
+bool Dkc3PauseCrateSpawnEnabled(void);
+/* Returns the currently selected animal buddy name while paused in a level
+ * with the crate-spawn cheat enabled (or NULL otherwise), for host HUD
+ * display at the bottom middle of the screen. */
+const char *Dkc3PauseCrateHudLabel(void);
 void Dkc3DrawPpuFrame(void);
 uint32_t Dkc3ResumePc(void);
 int Dkc3LastLleResult(void);

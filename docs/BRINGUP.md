@@ -3497,3 +3497,123 @@ equal to the monitor; the menu item and Escape restored the bar and
   were not replayed against this change, and no DKC3 scene where the wall
   rule is needed was available to confirm it still fires. 16:10, the live
   desktop app (rebuilt, not played here), and macOS are unverified.
+
+## 2026-11-26 - Assist Tools / Cheats option: spawn Squawks or Enguarde crates while paused
+
+- **Feature:** Added an opt-in, default-off **Spawn animal buddy crates from
+  pause menu** checkbox under the overlay's **Assist Tools / Cheats** tab
+  (gated behind **Enable Assist Tools / Cheats**, persisted as
+  `PauseCrateSpawn` in `launcher.cfg`, reset to off by **Restore All Settings
+  to Defaults**, and also selectable in headless runs via
+  `DKC3_PAUSE_CRATE_SPAWN=1`).
+- **Cartridge facts verified from generated code and ROM:**
+  - In-level gameplay runs `$B3:8076` at `$004E..$0050`; in-game pause sets
+    `$05AF` bit 6 (`$0040`, `$80:8A6D..$80:8B0B`).
+  - `$04DA` holds the active player's newly-pressed SNES buttons each frame
+    even while paused (Up = `$0800`, Down = `$0400`, Start = `$1000`).
+  - `$04F9` points to the active Kong/player sprite record (`+$12` world X,
+    `+$16` world Y). Non-Kong sprite slots span `$0954..$1412` (stride `$6E`,
+    free when `+$00 == 0`).
+  - `animal_buddy_box_main` (`$B8:EE88`, sprite type `$0250`) uses bank `$FF`
+    init-scripts `$FF:65A7` for a Squawks crate (`+$5C = $023C`) and
+    `$FF:6590` for an Enguarde crate (`+$5C = $0238`), executed through
+    `apply_spawn_script_to_slot_direct` (`$BB:8FF1`).
+- **Implementation:** `runner/dkc3_animal_crate_cheat.{h,c}` provides ROM-free
+  detection and slot preparation; `Dkc3RunOneFrame` in `runner/dkc3_game.c`
+  invokes `apply_spawn_script_to_slot_direct_M0X0` with saved/restored CPU
+  and DP scratch state when enabled, paused in a level, Start is not newly
+  pressed, and Up or Down is newly pressed. Both `runner/sdl_main.c` and
+  `runner/desktop_main.c` sync the setting with `assist_tools`.
+- **Verified:**
+  - ROM-free unit tests: `test_dkc3_animal_crate_cheat` (env default-off,
+    gating, Up -> Squawks `$65A7`, Down -> Enguarde `$6590`, slot allocation,
+    full-table and invalid-pointer fail-closed) and
+    `test_desktop_launcher_settings` (`PauseCrateSpawn` default-off and
+    persistence).
+  - Windows x64 Release build (`dkc3_snesrecomp_headless`,
+    `DKC3RecompSDL.exe`, `DKC3Recomp.exe`) and full CTest suite: 32/32 passed.
+  - Headless ROM verification against a paused level quick save (`$0029`,
+    `flags=$40C0`, `kong=$0878`): with `DKC3_PAUSE_CRATE_SPAWN=0`, Up/Down
+    spawned nothing; with `DKC3_PAUSE_CRATE_SPAWN=1`, Up spawned a Squawks
+    crate (`type=$0250`, `+$5C=$023C`) and Down spawned an Enguarde crate
+    (`type=$0250`, `+$5C=$0238`) at the active Kong's position, and unpausing
+    for 35 frames completed cleanly (`rc=0`) with the Squawks crate active
+    (`state=1`) and Enguarde (`$0238`) hatched at the player's position.
+- **Follow-up fix (Squawks miscoloring on palette overflow & Squawks dismount):**
+  - **Root causes:**
+    1. When all 8 SNES OBJ hardware palette slots (`$073C..$074B`) are occupied
+       at the moment a spawned Squawks or Enguarde hatches (for example in
+       widescreen where more objects are active), `request_palette_direct`
+       (`$BB:95E6`) overflows to palette 0 (`$0F` effect palette) and records
+       `$0018` in `$1D4B`. Mounting Squawks then swaps `+$1E` OAM attributes
+       between the active Kong slot (`$04F9`, which becomes Squawks's sprite
+       with `pal=0`) and the buddy slot (`DP $007C`, which becomes the hanging
+       Kong with `pal != 0`). That broke widescreen overflow tracking (which
+       had been attached to the buddy slot) and left Squawks miscolored even
+       after a hardware palette slot later freed up.
+    2. In vanilla DKC3, `$B8:CC29` dispatches the `X` button (`$0040`) through
+       the jump table `$B8:CF2F,X` (`X = $04DE`). Enguarde/Ellie/Squitter map
+       to `$B8:D229` (the standard animal-buddy dismount routine), whereas
+       Squawks (`mode $1D`, `$04DE = $3A`, table entry `$B8:CF69`, ROM
+       `0x38CF69`) maps to `$B8:D228` (`RTS`), intentionally preventing
+       dismounting from Squawks.
+  - **Changes:**
+    - `runner/dkc3_animal_crate_cheat.{h,c}` and `runner/dkc3_game.c`: added
+      `Dkc3AnimalBuddyPaletteIdForType()` (`$0238` Enguarde -> `$0017`;
+      `$023C` Squawks -> `$001E` if `$0777 & $0010` else `$0018`),
+      `Dkc3DetectAnimalBuddyPaletteRepair()`, and
+      `Dkc3RunAnimalBuddyPaletteRepair()`. While `pause_crate_spawn` is
+      enabled, if a mounted or unmounted Squawks/Enguarde is stuck on `pal=0`
+      and a hardware slot in `$073C..$074B` is free (or already holds its
+      palette ID), the host invokes `request_palette_direct_M0X0` (`$BB:95C8`),
+      updates the sprite's `+$1E` palette bits, and decrements `$074C`
+      (`ref[0]`) if `> 1`.
+    - `runner/dkc3_game.c` (`Dkc3SyncWidescreenObjPalettes`): when all 8
+      hardware slots remain full in widescreen and `DP $007C` points to a
+      mounted Squawks/Enguarde whose active Kong slot (`0` or `1`) is on
+      `pal=0`, attach the buddy's palette ID to `s_sprite_overflow_pal[kong]`
+      so the extended OBJ palette table draws Squawks accurately immediately.
+    - `runner/dkc3_game.c` (`Dkc3PatchSquawksDismount`): toggles ROM offset
+      `0x38CF69` (`$B8:CF69`) between `$D228` (vanilla `RTS`) when disabled and
+      `$D229` (standard `X`-button dismount) when `pause_crate_spawn` is
+      enabled, failing closed if the expected bytes are not present.
+  - **Verified (Windows x64 Release, private ROM):**
+    - Extended `tests/test_dkc3_animal_crate_cheat.c` with 5 ROM-free unit
+      tests covering mounted Squawks repair, Quawks flag (`$0777 & $0010`),
+      full-table fail-closed, unmounted Enguarde slot reuse, and disabled
+      fail-closed.
+    - Rebuilt `test_dkc3_animal_crate_cheat`, `dkc3_snesrecomp_headless`,
+      `DKC3RecompSDL.exe`, and `DKC3Recomp.exe`; full CTest suite: 32/32 passed.
+    - Headless ROM E2E on `saves/dkc3s0.sav` (`DKC3_PAUSE_CRATE_SPAWN=1`):
+      spawning Squawks crate while paused, unpausing, jumping to hatch and
+      mount Squawks (`$7C=$0D32`, `mode=$3A`, `kong=$0878 st=63 pal=4`,
+      `pal0018=[(4, 1)]`), then tapping `X` (`0x200` for 2 frames) cleanly
+      dismounts (`$7C=$0000`, `mode=$04`, `kong=$0878 st=01 pal=1`, Squawks
+      hovering at `$0D32 st=00 pal=4`, `rc=0`).
+- **All-buddy selector and pause HUD update (2026-11-26):**
+  - Replaced Up/Down direct spawning with **Left/Right** selection across all
+    five `animal_buddy_box` bank `$FF` spawn scripts (`$FF:6586` Ellie
+    `$0234` / palette `$0016`, `$FF:6590` Enguarde `$0238` / `$0017`,
+    `$FF:659D` Squitter `$0240` / `$0019`, `$FF:65A7` Squawks `$023C` /
+    `$0018` or Quawks `$001E`, `$FF:65B1` Parry `$0244` / `$001A`) and **B**
+    (`$8000` in `$04DA`) to spawn the selected crate. Extended
+    `Dkc3AnimalBuddyPaletteIdForType()` to cover all five animal buddies.
+  - Added `Dkc3PauseCrateHudLabel()` (`runner/dkc3_game.{h,c}`) and
+    `Dkc3DesktopOverlaySetPauseBanner()` (`runner/desktop_overlay.{h,cpp}`,
+    wired in `runner/sdl_main.c` and `runner/desktop_main.c`) to draw the
+    selected animal buddy name (`< Name >`) in a centered pill at the bottom
+    middle of the screen while paused in a level with the cheat enabled.
+  - **Verified (Windows x64 Release, private ROM):**
+    - Updated `tests/test_dkc3_animal_crate_cheat.c` (all 5 crate names/scripts,
+      Left/Right wrap, `B`-button spawn, palette IDs for all 5 buddies + Quawks).
+    - Rebuilt `test_dkc3_animal_crate_cheat`, `dkc3_snesrecomp_headless`,
+      `DKC3RecompSDL.exe`, and `DKC3Recomp.exe` cleanly; full CTest: 32/32
+      passed.
+    - Headless ROM verification on `saves/dkc3s0.sav`: cycling Right + B
+      spawned all five crates (`Ellie`, `Enguarde`, `Squitter`, `Squawks`,
+      `Parry`) in order when enabled and none when disabled; wrapping Left from
+      `Ellie` to `Parry`, pressing B, and unpausing hatched Parry cleanly
+      (`rc=0`).
+- **Unverified:** interactive visual check of the bottom-middle HUD pill in
+  the live desktop app, macOS rebuild, and spawning/dismounting across all
+  levels/water states.

@@ -1029,6 +1029,8 @@ static void ApplyOverlaySettings(SdlHost *host,
   memcpy(host->player_pad_bind, updated.player_pad_bind,
          sizeof host->player_pad_bind);
   Dkc3KongSetBadgesVisible(Dkc3LauncherKongBadges() != 0);
+  Dkc3SetPauseCrateSpawnEnabled(updated.assist_tools != 0 &&
+                                Dkc3LauncherPauseCrateSpawn() != 0);
   memcpy(host->assist_key_bind, updated.assist_key_bind,
          sizeof host->assist_key_bind);
   memcpy(host->assist_pad_bind, updated.assist_pad_bind,
@@ -1189,6 +1191,8 @@ static int RunGame(const char *rom_path,
       sram_enabled = false;
     }
   }
+  Dkc3SetPauseCrateSpawnEnabled(settings->assist_tools != 0 &&
+                                Dkc3LauncherPauseCrateSpawn() != 0);
   if (!Dkc3DesktopColorFilterInit(&host.color_filter, screen_filter)) {
     free(rom);
 #ifdef __APPLE__
@@ -1843,6 +1847,7 @@ static int RunGame(const char *rom_path,
           }
         }
       }
+      Dkc3DesktopOverlaySetPauseBanner(host.overlay, Dkc3PauseCrateHudLabel());
       if (!present_pixels) {
         fprintf(stderr, "SDL video presentation failed: %s\n", SDL_GetError());
         Dkc3DiagnosticsFatal("SDL video presentation failed");
@@ -1850,7 +1855,8 @@ static int RunGame(const char *rom_path,
         break;
       }
 #ifdef __APPLE__
-      if (metal_presenter && !overlay_open) {
+      if (metal_presenter && !overlay_open &&
+          !Dkc3DesktopOverlayHasPauseBanner(host.overlay)) {
         /* The Metal view shows the game; the OpenGL swap and its
          * WindowServer round trip are skipped entirely. */
         Dkc3MacMetalPresenterSetVisible(true);

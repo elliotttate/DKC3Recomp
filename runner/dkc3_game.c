@@ -1,4 +1,5 @@
 #include "dkc3_game.h"
+#include "dkc3_animal_crate_cheat.h"
 #include "dkc3_hdma.h"
 #include "dkc3_intro_skip.h"
 #include "dkc3_kong_tracker.h"
@@ -33,6 +34,7 @@ static bool s_cpu_initialized;
 static Dkc3KongTracker s_kong_tracker;
 static bool s_kong_tracking;
 static bool s_kong_badges;
+static bool s_pause_crate_spawn_enabled;
 static bool s_kong_map_settled;
 static Dkc3KongMapSettle s_kong_map_settle;
 static char s_kong_path[512];
@@ -703,6 +705,149 @@ void Dkc3KongSetBadgesVisible(bool visible) {
   s_kong_badges = visible;
 }
 
+static Dkc3PauseCrateKind s_pause_crate_selected = kDkc3PauseCrateEllie;
+
+void Dkc3SetPauseCrateSpawnEnabled(bool enabled) {
+  s_pause_crate_spawn_enabled = enabled;
+}
+
+bool Dkc3PauseCrateSpawnEnabled(void) {
+  return s_pause_crate_spawn_enabled;
+}
+
+const char *Dkc3PauseCrateHudLabel(void) {
+  const bool enabled =
+      s_pause_crate_spawn_enabled ||
+      Dkc3PauseCrateSpawnEnabledFromEnv(getenv("DKC3_PAUSE_CRATE_SPAWN"));
+  if (!g_ram || !Dkc3IsPauseCrateMenuActive(g_ram, 0x20000u, enabled))
+    return NULL;
+  return Dkc3PauseCrateName(s_pause_crate_selected);
+}
+
+extern RecompReturn apply_spawn_script_to_slot_direct_M0X0(CpuState *cpu);
+extern RecompReturn request_palette_direct_M0X0(CpuState *cpu);
+
+/* In vanilla DKC3, $B8:CF2F[$1D] ($B8:CF69, ROM $38CF69) points to $B8:D228
+ * (RTS) so pressing X does not dismount Squawks, whereas Enguarde/Ellie/
+ * Squitter point to $B8:D229 (the standard X-button dismount routine). When
+ * the pause crate spawn cheat is enabled, redirect that interpreter-read table
+ * entry to $B8:D229 so the player can dismount Squawks with X; restore $B8:D228
+ * when disabled. Fails closed if the ROM bytes do not match. */
+static void Dkc3PatchSquawksDismount(bool enabled) {
+  static uint16_t applied_target = 0xD228u;
+  const uint16_t desired_target = enabled ? 0xD229u : 0xD228u;
+  if (desired_target == applied_target || !g_rom)
+    return;
+  enum { kSquawksXHandlerOffset = 0x38CF69u };
+  const uint32_t rom_size =
+      g_snes && g_snes->cart ? (uint32_t)g_snes->cart->romSize : 0u;
+  if (rom_size < kSquawksXHandlerOffset + 2u)
+    return;
+  uint8_t *rom = (uint8_t *)(uintptr_t)g_rom;
+  if (rom[kSquawksXHandlerOffset] != (uint8_t)(applied_target & 0xFFu) ||
+      rom[kSquawksXHandlerOffset + 1u] != (uint8_t)(applied_target >> 8))
+    return;
+  rom[kSquawksXHandlerOffset] = (uint8_t)(desired_target & 0xFFu);
+  rom[kSquawksXHandlerOffset + 1u] = (uint8_t)(desired_target >> 8);
+  applied_target = desired_target;
+}
+
+static void Dkc3RunAnimalBuddyPaletteRepair(bool enabled) {
+  Dkc3AnimalBuddyPaletteRepair repair;
+  if (!Dkc3DetectAnimalBuddyPaletteRepair(g_ram, 0x20000u, enabled, &repair))
+    return;
+
+  const uint8_t saved_req_lo = g_ram[kDkc3PauseCratePaletteReqAddr];
+  const uint8_t saved_req_hi = g_ram[kDkc3PauseCratePaletteReqAddr + 1u];
+  CpuState saved_cpu = g_cpu;
+  g_cpu.ram = g_ram;
+  g_cpu.P = (uint8_t)(g_cpu.P & ~(0x30u | 0x08u));
+  g_cpu.m_flag = 0;
+  g_cpu.x_flag = 0;
+  g_cpu._flag_D = 0;
+  g_cpu.D = 0x0000u;
+  g_cpu.DB = 0xBBu;
+  g_cpu.PB = 0xBBu;
+  g_cpu.A = repair.palette_id;
+  cpu_write8(&g_cpu, 0x00u, g_cpu.S, 0x95u);
+  g_cpu.S = (uint16_t)(g_cpu.S - 1u);
+  cpu_write8(&g_cpu, 0x00u, g_cpu.S, 0xC7u);
+  g_cpu.S = (uint16_t)(g_cpu.S - 1u);
+  g_cpu.host_return_valid = 2;
+  (void)request_palette_direct_M0X0(&g_cpu);
+
+  const uint8_t carry = g_cpu._flag_C;
+  const uint16_t pal_bits = (uint16_t)(g_cpu.A & 0x0E00u);
+  g_cpu = saved_cpu;
+  g_ram[kDkc3PauseCratePaletteReqAddr] = saved_req_lo;
+  g_ram[kDkc3PauseCratePaletteReqAddr + 1u] = saved_req_hi;
+
+  if (carry == 0u && pal_bits != 0u) {
+    const size_t oam_addr =
+        (size_t)repair.target_slot + kDkc3PauseCrateSpriteOamOffset;
+    const uint16_t old_oam =
+        (uint16_t)(g_ram[oam_addr] | ((uint16_t)g_ram[oam_addr + 1u] << 8));
+    const uint16_t new_oam = (uint16_t)((old_oam & ~0x0E00u) | pal_bits);
+    g_ram[oam_addr] = (uint8_t)(new_oam & 0xFFu);
+    g_ram[oam_addr + 1u] = (uint8_t)(new_oam >> 8);
+    /* Release the fallback reference on palette 0 if it is above baseline. */
+    const uint16_t ref0 = (uint16_t)(g_ram[kDkc3PauseCratePaletteSlotRefsAddr] |
+        ((uint16_t)g_ram[kDkc3PauseCratePaletteSlotRefsAddr + 1u] << 8));
+    if (ref0 > 1u) {
+      const uint16_t next_ref0 = (uint16_t)(ref0 - 1u);
+      g_ram[kDkc3PauseCratePaletteSlotRefsAddr] = (uint8_t)(next_ref0 & 0xFFu);
+      g_ram[kDkc3PauseCratePaletteSlotRefsAddr + 1u] = (uint8_t)(next_ref0 >> 8);
+    }
+  }
+}
+
+static void Dkc3RunPauseCrateSpawn(void) {
+  const bool enabled =
+      s_pause_crate_spawn_enabled ||
+      Dkc3PauseCrateSpawnEnabledFromEnv(getenv("DKC3_PAUSE_CRATE_SPAWN"));
+  Dkc3PatchSquawksDismount(enabled);
+  Dkc3RunAnimalBuddyPaletteRepair(enabled);
+  (void)Dkc3UpdatePauseCrateSelection(g_ram, 0x20000u, enabled,
+                                      &s_pause_crate_selected);
+  Dkc3PauseCrateRequest request;
+  if (!Dkc3DetectPauseCrateSpawn(g_ram, 0x20000u, enabled,
+                                 s_pause_crate_selected, &request))
+    return;
+
+  const uint8_t saved_dp76_lo = g_ram[kDkc3PauseCrateDpScratchSlotAddr];
+  const uint8_t saved_dp76_hi = g_ram[kDkc3PauseCrateDpScratchSlotAddr + 1u];
+  const uint8_t saved_dp42_lo = g_ram[kDkc3PauseCrateDpScratchTempAddr];
+  const uint8_t saved_dp42_hi = g_ram[kDkc3PauseCrateDpScratchTempAddr + 1u];
+  if (!Dkc3PreparePauseCrateSlot(g_ram, 0x20000u, &request))
+    return;
+
+  CpuState saved_cpu = g_cpu;
+  g_cpu.ram = g_ram;
+  g_cpu.P = (uint8_t)(g_cpu.P & ~(0x30u | 0x08u));
+  g_cpu.m_flag = 0;
+  g_cpu.x_flag = 0;
+  g_cpu._flag_D = 0;
+  g_cpu.D = 0x0000u;
+  g_cpu.DB = 0xBBu;
+  g_cpu.PB = 0xBBu;
+  g_cpu.X = request.slot;
+  g_cpu.Y = request.script_ptr;
+  cpu_write8(&g_cpu, 0x00u, g_cpu.S, 0xBBu);
+  g_cpu.S = (uint16_t)(g_cpu.S - 1u);
+  cpu_write8(&g_cpu, 0x00u, g_cpu.S, 0x8Fu);
+  g_cpu.S = (uint16_t)(g_cpu.S - 1u);
+  cpu_write8(&g_cpu, 0x00u, g_cpu.S, 0xF0u);
+  g_cpu.S = (uint16_t)(g_cpu.S - 1u);
+  g_cpu.host_return_valid = 3;
+  (void)apply_spawn_script_to_slot_direct_M0X0(&g_cpu);
+
+  g_cpu = saved_cpu;
+  g_ram[kDkc3PauseCrateDpScratchSlotAddr] = saved_dp76_lo;
+  g_ram[kDkc3PauseCrateDpScratchSlotAddr + 1u] = saved_dp76_hi;
+  g_ram[kDkc3PauseCrateDpScratchTempAddr] = saved_dp42_lo;
+  g_ram[kDkc3PauseCrateDpScratchTempAddr + 1u] = saved_dp42_hi;
+}
+
 static void Dkc3KongDrawFrameBadge(void) {
   if (!s_kong_tracking || !s_kong_badges || !s_kong_map_settled || !g_ppu ||
       !g_snes || !g_snes->cart)
@@ -759,6 +904,8 @@ static void Dkc3RunOneFrame(void) {
   }
 
   interp_bridge_set_master_deadline(0);
+  if (!first_frame)
+    Dkc3RunPauseCrateSpawn();
   s_resume_pc = interp_bridge_lle_resume_pc();
   if (g_cpu.master_cycles < s_next_frame_master) {
     g_cpu.master_cycles = s_next_frame_master;
@@ -1046,6 +1193,34 @@ static void Dkc3SyncWidescreenObjPalettes(bool in_level) {
     const uint16_t oam_attr = Dkc3ReadWram16((uint16_t)(base + 0x1Eu));
     if (type == 0 || oam_attr == 0 || ((oam_attr >> 9) & 7u) != 0)
       s_sprite_overflow_pal[slot] = 0;
+  }
+
+  /* If the active Kong is riding Squawks or Enguarde and inherited an
+   * overflowed palette 0 when DKC3 swapped OAM attributes on mount, ensure
+   * the extended widescreen palette table still serves the buddy's palette. */
+  {
+    const uint16_t mounted_buddy =
+        Dkc3ReadWram16(kDkc3PauseCrateDpMountedBuddyAddr);
+    const uint16_t active_kong =
+        Dkc3ReadWram16(kDkc3PauseCrateActiveKongAddr);
+    if (mounted_buddy >= kDkc3PauseCrateFirstFreeSlot &&
+        mounted_buddy < kDkc3PauseCrateSpriteTableEnd &&
+        ((mounted_buddy - kDkc3SpriteTableBase) % kDkc3SpriteSlotStride) == 0 &&
+        (active_kong == kDkc3SpriteTableBase ||
+         active_kong == kDkc3SpriteTableBase + kDkc3SpriteSlotStride)) {
+      const uint16_t buddy_type = Dkc3ReadWram16(mounted_buddy);
+      const uint16_t buddy_pal = Dkc3AnimalBuddyPaletteIdForType(
+          buddy_type, Dkc3ReadWram16(kDkc3PauseCrateLevelConfigFlagsAddr));
+      const unsigned kong_slot =
+          (unsigned)((active_kong - kDkc3SpriteTableBase) /
+                     kDkc3SpriteSlotStride);
+      const uint16_t kong_oam =
+          Dkc3ReadWram16((uint16_t)(active_kong + 0x1Eu));
+      if (buddy_pal != 0u && kong_slot < kDkc3SpriteSlotCount &&
+          kong_oam != 0u && ((kong_oam >> 9) & 7u) == 0u) {
+        s_sprite_overflow_pal[kong_slot] = buddy_pal;
+      }
+    }
   }
 
   /* Savestate recovery: if a loaded savestate already captured an overflowed

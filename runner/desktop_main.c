@@ -258,6 +258,7 @@ static void PaintFrame(HWND window) {
     EndPaint(window, &paint);
     return;
   }
+  Dkc3DesktopOverlaySetPauseBanner(s_overlay, Dkc3PauseCrateHudLabel());
   bool presented = s_gl_active
       ? Dkc3DesktopGlPresent(&s_gl_presenter, &client, present_pixels,
                              frame_width, kFrameHeight, s_linear_filter,
@@ -777,6 +778,8 @@ static void ApplyOverlaySettings(RecompLauncherCSettings *settings) {
   memcpy(s_assist_pad_bind, updated.assist_pad_bind,
          sizeof s_assist_pad_bind);
   Dkc3KongSetBadgesVisible(Dkc3LauncherKongBadges() != 0);
+  Dkc3SetPauseCrateSpawnEnabled(updated.assist_tools != 0 &&
+                                Dkc3LauncherPauseCrateSpawn() != 0);
   if (Dkc3VideoGetAspect() != (Dkc3VideoAspect)updated.aspect_index) {
     Dkc3VideoSetAspect((Dkc3VideoAspect)updated.aspect_index);
     memset(s_pixels, 0, sizeof s_pixels);
@@ -888,6 +891,8 @@ static int RunDesktop(const char *rom_path,
       sram_enabled = false;
     }
   }
+  Dkc3SetPauseCrateSpawnEnabled(settings->assist_tools != 0 &&
+                                Dkc3LauncherPauseCrateSpawn() != 0);
   if (!Dkc3DesktopColorFilterInit(&s_color_filter, s_screen_filter)) {
     fprintf(stderr, "unable to initialize the %s screen-color filter\n",
             Dkc3DesktopScreenFilterName(s_screen_filter));

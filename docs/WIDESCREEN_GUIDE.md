@@ -262,11 +262,15 @@ crop of its diff bounding box.
 A west hold needs both the void and a pinned player (within forty pixels
 of the frame's west edge with the camera unmoved, or the first eight
 frames after a level change; a state restore is not a level start). The
-presented bias moves at most one pixel per frame toward its target. That
-limit is only safe while the target changes by at most one pixel per frame,
-which is why a room shorter than the two releases takes a reduced, unpinned
-shift: a pinned target there tracks the camera nearly pixel for pixel, so
-it can move several pixels a frame and the presented bias falls behind.
+presented bias moves one pixel per frame toward its target, and may also
+move as far as the camera moved that frame when that step works against the
+camera's motion (`Dkc3VideoStepPresentationBias`): a pinned target that
+tracks the camera is then held, and no step makes the view move faster than
+the camera plus one pixel. The one-pixel glide alone is only safe while the
+target changes by at most one pixel per frame, which is why a room shorter
+than the two releases also takes a reduced, unpinned shift: a pinned target
+there tracks the camera nearly pixel for pixel, and the bias would trail it
+whenever it moves with the camera.
 
 ### 6.6 Special streamed layers
 

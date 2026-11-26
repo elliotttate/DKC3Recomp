@@ -46,6 +46,11 @@ changes at most one pixel per eight of camera travel, or is zero when the
 room is narrower than the wide view, so the HUD stays put and black shows
 only beyond a wall. Verified headless in the first level's two bonus rooms
 only; the bonus rooms of later levels and the live app are unverified.
+The presented shift still eases one pixel a frame, but it may also move as
+far as the camera moved that frame when doing so cancels the camera's
+motion (ported from DKC2Recomp), so a pinned wall holds the view still
+instead of letting it run past the wall and drift back. Unit-tested only;
+no live scene has been replayed with it.
 Walls now follow the game's own camera regions. A room the camera cannot
 leave sideways no longer widens into other rooms' map columns, which showed
 as a mismatched, cut-off strip at one edge. The elevator shaft in the

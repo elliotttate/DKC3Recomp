@@ -374,6 +374,21 @@ int main(void) {
               right);
       return 1;
     }
+    /* The bias steps one pixel toward its target, and may also cancel
+     * the camera's own motion this frame, never add to it: a camera
+     * scrolling 4 pixels right into a pinned east wall leaves the view
+     * still, and a still camera or one moving with the step keeps the
+     * one-pixel glide. */
+    if (Dkc3VideoStepPresentationBias(-20, -43, 4) != -25 ||
+        Dkc3VideoStepPresentationBias(-20, -22, 4) != -22 ||
+        Dkc3VideoStepPresentationBias(-20, -43, 0) != -21 ||
+        Dkc3VideoStepPresentationBias(-20, -43, -4) != -21 ||
+        Dkc3VideoStepPresentationBias(20, 43, -3) != 24 ||
+        Dkc3VideoStepPresentationBias(20, 43, 3) != 21 ||
+        Dkc3VideoStepPresentationBias(5, 5, 9) != 5) {
+      fprintf(stderr, "FAIL: presentation bias step\n");
+      return 1;
+    }
     /* Camera regions shaped like the reported elevator level: a floor room
      * (1), a shaft exactly one screen wide above it (3), the room at the
      * shaft's top (2), and the corridor east of that room (4, then 5). */

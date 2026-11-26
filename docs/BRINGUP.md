@@ -3352,3 +3352,34 @@ equal to the monitor; the menu item and Escape restored the bar and
   suite 31/31 with every target rebuilt.
 - **Unverified:** a quick load followed by a copy or erase on its first
   file-select frame in the app.
+
+## 2026-11-25 - presented bias may cancel the camera's motion (DKC2Recomp port)
+
+- **Source:** DKC2Recomp commit `d59c6127` ("Stop the widescreen view
+  overshooting the walls of small rooms"). There, in a room whose camera
+  scrolls 128 pixels, the pins let the 16:9 view move 42 pixels while the
+  presented bias stepped one pixel a frame and the camera's look-ahead moved
+  2-4, so the view ran up to 18 pixels past the east pin (a clamped black
+  strip) and slid back after every turn.
+- **DKC3 exposure:** DKC3 already avoids the short-room case under `glide`
+  (2026-11-22: rooms shorter than `2 * extra * 8` take a reduced, unpinned
+  shift). The pins still bind, and the target bias then tracks the camera,
+  under `shift` at every wall, and under `glide` when a camera region or a
+  west hold changes the bounds mid-level. In those frames the one-pixel step
+  lags the camera exactly as in DKC2.
+- **Change:** `Dkc3VideoStepPresentationBias` (`runner/dkc3_video.c`) keeps
+  the one-pixel step toward the target and also allows a step as large as
+  this frame's camera motion, only against it. `Dkc3DrawPpuFrame` records the
+  camera X it last stepped at (`s_bias_camera_x`). The settle frames, the
+  re-snap on a policy change, and the margins for a chosen bias are
+  unchanged. The cartridge camera and WRAM are unchanged; 4:3 has no bias.
+- **Tests:** `test_dkc3_video` checks the DKC2 cases: a camera moving 4 right
+  into a pinned east wall leaves the view still; a still camera, or one moving
+  with the step, keeps the one-pixel glide; no overshoot of the target.
+- **Verified:** Windows Release build; CTest 31/31.
+- **Unverified:** no replay measurement. The only local quick save
+  (`saves/dkc3s0.sav`) boots to the Rare logo when restored by the headless
+  runner, so no scene at a pinned wall was replayed before/after, and the
+  saved-scene corpus and cave replay are not on this host. The live desktop
+  app, `shift` at a wall, and region-change frames under `glide` are
+  unverified.

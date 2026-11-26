@@ -147,6 +147,7 @@ one 256-pixel page early until it was.
 | 8-pixel blocks of a parallax layer inside solid terrain in a margin only | layer-isolated render; the terrain cell entries against the ring when native; the parallax layer's band map and its native left/right edge | authored transparent BG1 cells that the camera range never lines up with the parallax art; the 256-pixel wrap is the hardware's, so keep it (Ripsaw Rage, owner's decision) |
 | A far layer shows through a trunk or wall in a margin, but not inside the native window | window registers along a walk: does one edge track a fixed world x and read 0 or 255 when it leaves? | a cartridge mask clamped to the 256-pixel screen; record its unclamped world edges from the writer (Ripsaw Rage, `$B3:C0F4`) |
 | A whole margin snaps between black and terrain as the Kongs move between rooms | `DKC3_PREFILL_TRACE` `region=`, `walls=`, `margins=` per frame | a region change moved a wall in one frame; a camera still converging on its new region gets the wall reflected about it, and a wall that jumps outward opens 2 px/frame (`Dkc3VideoRegionScrollBounds`, `Dkc3VideoLimitMarginGrowth`) |
+| Terrain blocks pop into a margin while the camera rests on an 8-pixel boundary and vanish when it moves a pixel | layer isolation; `DKC3_TERRAIN_FILL_MAP=2` at both phases; a 4:3 run that brings those columns into the window | the structural wall rule continuing a decorative trunk into an authored gap inside the camera's reach; gate the rule to columns outside the region's reach (DKC3 waterfall level `$0038`) |
 | Objects pop in inside the margin, or vanish while still visible | spawn trace, OAM trace, before/after with widening off | activation window, release window, or renderer cull not widened |
 | Banana arcs or other tile rows appear only at the native edge | OAM census for first appearance at x in [256, 266) | separate grid renderer with its own clips and sign-derived ninth bit |
 | Objects cut exactly at the authentic margin near a wall | | PPU nine-bit X limit must include the bias |
@@ -257,8 +258,11 @@ toward the native edge must be full and backed by another full one, on a
 corroborating adjacent row. A continued wall cell takes the metatile the
 map most often places beside the previous one outward, not a copy of the
 edge column. Rows the rule rejects mirror the authored terrain across the
-wall line. Judge every corpus state a wall-rule edit changes by a zoomed
-crop of its diff bounding box.
+wall line. Both rules apply only to columns outside the reach of the
+camera's scroll bounds (the region's walls, or a west hold): inside it the
+console draws the decoded map once the camera arrives, and a void there is
+authored (DKC3: a gap between two tree trunks). Judge every corpus state a
+wall-rule edit changes by a zoomed crop of its diff bounding box.
 
 A west hold needs both the void and a pinned player (within forty pixels
 of the frame's west edge with the camera unmoved, or the first eight
@@ -353,7 +357,7 @@ DKC3 headless switches (`runner/headless_main.c`): `DKC3_ASPECT`,
 `DKC3_FRAME_PPM` and `DKC3_FRAME_PPM_PREFIX/START/END/STEP` (END minus
 START must be a multiple of STEP), `DKC3_WRAM_OUTPUT`, `DKC3_VRAM_OUTPUT`,
 `DKC3_OAM_OUTPUT`, `DKC3_PREFILL_TRACE=1` (camera, ready, bias, present,
-matching per frame), `DKC3_PREFILL_DUMP=<frame counter>` (ring, decode,
+matching, walls, margins, and row stride per frame), `DKC3_PREFILL_DUMP=<frame counter>` (ring, decode,
 store, status per disagreeing or margin cell; the counter is the host
 frame plus the restored state's own counter), `DKC3_BAND_DUMP=1`,
 `DKC3_WATERFALL_TRACE=1` (source verification and matching native cells),

@@ -97,6 +97,11 @@ static void Dkc3CheckWaterfallSource(uint8_t wide_mask, int terrain_layer) {
  * source rows, and the band classification. */
 static uint16_t s_terrain_phase_h;
 static uint16_t s_terrain_phase_v;
+/* The camera's scroll bounds this frame (the current region's walls, or a
+ * west hold): the structural wall rule continues walls only into margin
+ * columns outside the span those bounds let the native window reach. */
+static uint16_t s_reach_minimum_x;
+static uint16_t s_reach_maximum_x;
 static bool s_terrain_phase_from_band;
 static int s_plane_band_count[2];
 /* Per layer: the verified row offset of its alias bands this frame (0 none). */
@@ -2145,7 +2150,18 @@ static bool Dkc3PrefillWidescreenLevelTerrain(uint8_t layer_mask,
             terrain_layer, tile_x, shadow_tile_y, transparent_tile, margin);
         continue;
       }
-      if (edge == 0 && outside_cartridge && cartridge_first_tile >= 32u) {
+      /* The wall rules below invent what the console never shows beside a
+       * wall. A column the camera can still scroll the native window over
+       * is not that: the console draws the decoded map there once the
+       * camera arrives. In the waterfall level the empty gap between two
+       * tree trunks sat one metatile past the window whenever the camera
+       * stood on a tile boundary, and the rule filled it with the trunk's
+       * successors (rock and grass that popped in at the right margin
+       * and vanished as soon as the camera moved a pixel). */
+      const bool in_reach = Dkc3VideoTileInCameraReach(
+          tile_x, s_reach_minimum_x, s_reach_maximum_x);
+      if (edge == 0 && outside_cartridge && !in_reach &&
+          cartridge_first_tile >= 32u) {
         const bool east =
             ((uint64_t)tile_x << 3) >= (uint64_t)cartridge_x +
                                            kDkc3VideoNativeWidth;
@@ -2914,6 +2930,8 @@ void Dkc3DrawPpuFrame(void) {
     s_margin_left = left_margin;
     s_margin_right = right_margin;
     s_margin_view_x = view_x;
+    s_reach_minimum_x = minimum_scroll_x;
+    s_reach_maximum_x = maximum_scroll_x;
     const int terrain_layer = Dkc3VideoTerrainLayer(
         wide_layer_mask, g_ppu->bgXsc, Dkc3TerrainVramBase());
     /* The terrain phase the frame renders: the frame-start register unless

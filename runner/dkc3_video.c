@@ -540,6 +540,16 @@ bool Dkc3VideoTileTouchesWidescreenMargin(uint32_t world_tile_x,
   return left < native_left || left + 8u > native_right;
 }
 
+bool Dkc3VideoTileInCameraReach(uint32_t world_tile_x,
+                                uint16_t minimum_scroll_x,
+                                uint16_t maximum_scroll_x) {
+  if (maximum_scroll_x < minimum_scroll_x)
+    return false;
+  const uint64_t left = (uint64_t)world_tile_x << 3;
+  return left >= minimum_scroll_x &&
+         left + 8u <= (uint64_t)maximum_scroll_x + kDkc3VideoNativeWidth;
+}
+
 static int s_presentation_bias;
 
 void Dkc3VideoSetPresentationBias(int bias) {

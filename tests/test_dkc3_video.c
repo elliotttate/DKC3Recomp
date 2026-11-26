@@ -951,6 +951,27 @@ int main(void) {
   }
   Dkc3VideoSetEdgePolicy(kDkc3VideoEdgeReflect);
 
+  /* Camera reach for the structural wall rule. The waterfall save's region
+   * spans camera $0100..$0380, so the native window can reach world x
+   * $0100..$047F: the trunk gap at tiles 100-106 is inside it and keeps
+   * its decode. A west hold at $0200 puts tile 63 outside, tile 64 inside;
+   * the east end is tile 143 inside, 144 outside. */
+  if (!Dkc3VideoTileInCameraReach(100, 0x0100, 0x0380) ||
+      !Dkc3VideoTileInCameraReach(106, 0x0100, 0x0380) ||
+      !Dkc3VideoTileInCameraReach(32, 0x0100, 0x0380) ||
+      Dkc3VideoTileInCameraReach(31, 0x0100, 0x0380) ||
+      !Dkc3VideoTileInCameraReach(143, 0x0100, 0x0380) ||
+      Dkc3VideoTileInCameraReach(144, 0x0100, 0x0380) ||
+      Dkc3VideoTileInCameraReach(63, 0x0200, 0x0380) ||
+      !Dkc3VideoTileInCameraReach(64, 0x0200, 0x0380) ||
+      /* A tile straddling a wall that is not on a tile boundary is
+       * partly beyond it, so the wall rule may still treat it. */
+      Dkc3VideoTileInCameraReach(64, 0x0204, 0x0380) ||
+      Dkc3VideoTileInCameraReach(64, 0x0300, 0x0200)) {
+    fprintf(stderr, "FAIL: camera reach for the wall rule\n");
+    return 1;
+  }
+
   {
     /* Murky Mill puts a 32-column BG3 light plane on the main screen and
      * changes its window through HDMA. It must render physically wide instead

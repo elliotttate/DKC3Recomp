@@ -60,6 +60,12 @@ region's linked neighbours extend its walls, so a run of linked rooms is
 one span, up to a missing link or a neighbour flagged `$20`, which never
 joins.
 Verified headless at that save in 16:10, 16:9, and 21:9.
+The wall rule that continues a wall into the void beside it now stays out of
+any column the camera's region lets the native window reach, where the level
+map is what the console draws. In a waterfall level it had filled the open
+gap between two tree trunks with rock and grass, which popped into the right
+margin whenever the camera stood on an 8-pixel boundary. Verified headless at
+the reported save in 16:9 and 21:9.
 The placed-object spatial scan and final activation checks, the sprite renderer
 culls, and the static banana/star grids are widened to the presented view by
 `scripts/apply_dkc3_widescreen_overrides.py`. Where the aspect permits, the

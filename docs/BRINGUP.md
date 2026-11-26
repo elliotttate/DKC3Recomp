@@ -3429,3 +3429,71 @@ equal to the monitor; the menu item and Escape restored the bar and
   host, so the mill elevator (2026-11-22) and Squeals on Wheels states were
   not replayed against this change. The live desktop app was rebuilt but
   not played at this spot.
+
+## 2026-11-25 - rocks popping into the right margin (wall rule inside camera reach)
+
+- **Symptom:** in the owner's release quick save (`saves/dkc3s0.sav`,
+  SHA-256 `89ec2329...524421f`, level word `$00C0` = `$0038`, a waterfall
+  level, 16:9, `glide`), blocks of rock and grass appeared in the right
+  margin over the waterfall and vanished again. With no input the camera
+  drifts from `$022A` to `$0220`; the blocks appear on replay frame 40, the
+  first frame at `$0220`, and stay while the camera sits there.
+- **Measurement:**
+  - Layer isolation: the blocks are BG1 (terrain), not the waterfall's BG2.
+    BG2's decoded source verifies on every frame (992 or 1024 cells).
+  - The world store equals the decode in every margin cell
+    (`margin_matching=420/420`), and the row stride is 64 bytes at 100% on
+    every frame (new `stride=` field on `DKC3_PREFILL_TRACE`). Yet the
+    expected entry for world tile (105, 280) is `$3A79` at phase 544 and
+    `$0000` at 548. The WRAM map at `$7F:0000` is unchanged.
+  - `DKC3_TERRAIN_FILL_MAP=2`: at phase 544 the cartridge's last tile is
+    99, so its edge metatile is column 16 (the right edge of a tree trunk,
+    full and backed by full), and column 17, the open gap between two
+    trunks, is void on the visible rows. `Dkc3VideoFindStructuralWallSource`
+    treats the trunk as a wall and `Dkc3WallChainMetatile` fills the gap
+    with the trunk's successors. At phase 548 the edge metatile is 17 itself
+    and the rule finds no wall. The rule ports DKC2's mine and shaft cases,
+    where void beside a wall is never shown natively.
+  - Native oracle: the 4:3 run walking right shows that gap empty when it
+    reaches the window (camera `$0259`). The current camera region (2)
+    bounds the camera at `$0100..$0380`, so the native window can reach world
+    x `$0100..$047F`, and the gap (`$0320..$0357`) lies inside it.
+- **Change:** `Dkc3VideoTileInCameraReach` (`runner/dkc3_video.c`) is true
+  for a tile wholly inside `[minimum, maximum + 256)` of the frame's camera
+  scroll bounds (the region walls, or a west hold). `Dkc3DrawPpuFrame`
+  records those bounds, and the prefill applies the structural
+  continuation and the held-wall mirror only to margin tiles outside that
+  reach. Inside it the decoded map stands, as it does on the console once
+  the camera arrives. Bias, margins, culls, and the cartridge state are
+  unchanged.
+- **Verified (headless, private ROM, previous build as reference):**
+  - A 360-frame replay (idle, right, idle, left) and an 1,800-frame boot at
+    4:3, 16:9, and 21:9: the WRAM, VRAM, CGRAM, and OAM hashes are identical
+    in every run. 4:3 frames are identical, and the boot's final frame is
+    identical at every aspect.
+  - 16:9 replay, every frame: pixels change only in the right margin
+    (x 295-341) on frames 40-66 and 328-359 and the left margin (x 0-46) on
+    frames 85-96 and 268-280. Those are the frames where the rule had
+    invented content beside the same two trunks.
+  - Pixel oracle on BG1 alone against the native 4:3 view of the same
+    world columns: the left margin at replay frame 86 matches on 9,000 of
+    9,000 pixels (previous build 4,852). The right margin at frame 59
+    matches on 8,619 of 10,152 at the best registration (previous build
+    1,047). The remainder sits along the trunk's edge, a registration
+    residue between a static and a walking run. A zoomed crop shows the
+    same trunk edge, gap, and ledge.
+  - `test_dkc3_video` covers the reach (inside, both ends, a west hold, an
+    unaligned wall, inverted bounds). Python unit tests 29/29, and Windows
+    Release CTest 31/31 with every target rebuilt (one smoke run timed out
+    while a second CTest ran beside it, then passed alone).
+- **Risk:** inside the region's span the rule no longer continues a wall
+  that holds the player while the camera could still scroll on. DKC3's
+  regions bound its rooms, and the west hold keeps its own bound, so that
+  case should be rare. But the region span ignores the cartridge's vertical
+  overlap gates, and a rejected region (narrower than a screen) falls back
+  to the level clamp, where nearly every column is in reach.
+- **Unverified:** the saved-scene corpus and cave replay are not on this
+  host, so the mill elevator, Squeals on Wheels, and bonus-room states
+  were not replayed against this change, and no DKC3 scene where the wall
+  rule is needed was available to confirm it still fires. 16:10, the live
+  desktop app (rebuilt, not played here), and macOS are unverified.

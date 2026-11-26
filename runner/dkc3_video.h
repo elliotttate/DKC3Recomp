@@ -369,6 +369,16 @@ bool Dkc3VideoMarginLeavesAuthoredExtent(uint16_t camera_x,
 bool Dkc3VideoTileTouchesWidescreenMargin(uint32_t world_tile_x,
                                           uint32_t camera_x);
 
+/* True when an 8x8 world tile lies wholly inside the span the cartridge's
+ * own 256-pixel window can reach with the camera anywhere in
+ * [minimum_scroll_x, maximum_scroll_x] (the current camera region's walls,
+ * or a west hold). The decoded level map there is what the console shows
+ * once the camera arrives, so a margin cell in that span must not be
+ * replaced by a continued or mirrored wall. */
+bool Dkc3VideoTileInCameraReach(uint32_t world_tile_x,
+                                uint16_t minimum_scroll_x,
+                                uint16_t maximum_scroll_x);
+
 /*
  * DKC3 stores left margins and total horizontal spans separately. Keeping
  * these calculations here makes the generated-code adaptations switch back

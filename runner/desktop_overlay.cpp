@@ -1090,6 +1090,9 @@ extern "C" void Dkc3DesktopOverlayRenderOpenGl(
     ImGuiIO &io = ImGui::GetIO();
     io.DisplaySize = ImVec2(static_cast<float>(width),
                             static_cast<float>(height));
+    /* width/height are framebuffer pixels; a scale left over from an
+     * earlier SDL menu frame (2 on HiDPI) would double the viewport. */
+    io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
     uint64_t counter = SDL_GetPerformanceCounter();
     uint64_t frequency = SDL_GetPerformanceFrequency();
     io.DeltaTime = overlay->last_counter && frequency

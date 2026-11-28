@@ -424,16 +424,19 @@ int main(int argc, char **argv) {
               "present=%u matching=%u margin_present=%u margin_matching=%u "
               "phase=[%u,%u] top=%u/%u region=%u walls=[%04x,%04x] "
               "margins=[%d,%d] stride=%u/%u\n",
-              frame, (unsigned)Dkc3FrameCounter(), ReadWram16(0x196d),
-              ReadWram16(0x1973),
+              frame, (unsigned)Dkc3FrameCounter(),
+              (unsigned)ReadWram16(0x196d), (unsigned)ReadWram16(0x1973),
               Dkc3VideoTerrainReady() ? 1 : 0, Dkc3VideoPresentationBias(),
-              prefill.present,
-              prefill.matching, prefill.margin_present,
-              prefill.margin_matching, prefill.phase_h, prefill.phase_v,
-              prefill.top_shadow_row, prefill.top_source_row,
-              prefill.camera_region >> 1, prefill.wall_left,
-              prefill.wall_right, prefill.left_margin, prefill.right_margin,
-              prefill.row_bytes, prefill.row_match_percent);
+              (unsigned)prefill.present, (unsigned)prefill.matching,
+              (unsigned)prefill.margin_present,
+              (unsigned)prefill.margin_matching, (unsigned)prefill.phase_h,
+              (unsigned)prefill.phase_v, (unsigned)prefill.top_shadow_row,
+              (unsigned)prefill.top_source_row,
+              (unsigned)(prefill.camera_region >> 1),
+              (unsigned)prefill.wall_left, (unsigned)prefill.wall_right,
+              (int)prefill.left_margin, (int)prefill.right_margin,
+              (unsigned)prefill.row_bytes,
+              (unsigned)prefill.row_match_percent);
     }
     if (frame_sequence_prefix && *frame_sequence_prefix &&
         frame >= frame_sequence_start && frame <= frame_sequence_end &&

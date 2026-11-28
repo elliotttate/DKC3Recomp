@@ -253,8 +253,13 @@ static bool PrepareRuntimeDirectory(char *assets_path, size_t capacity) {
     (void)snesrecomp_anchor_to_exe_dir();
     return true;
   }
-  if (!snesrecomp_exe_dir_path("assets", assets_path, capacity))
-    (void)snprintf(assets_path, capacity, "%s", "assets");
+  /* A relative "assets" would resolve under DKC3_USER_DIR after the chdir
+   * below, so an unresolvable executable directory fails closed. */
+  if (!snesrecomp_exe_dir_path("assets", assets_path, capacity)) {
+    fprintf(stderr,
+            "Unable to resolve the executable directory for DKC3_USER_DIR\n");
+    return false;
+  }
   if (DKC3_MKDIR(user_dir) != 0 && errno != EEXIST) {
     fprintf(stderr, "Unable to create DKC3_USER_DIR '%s'\n", user_dir);
     return false;
@@ -1858,6 +1863,9 @@ static int RunGame(const char *rom_path,
       const uint8_t *present_pixels = Dkc3DesktopColorFilterApply(
           &host.color_filter, host.pixels, host.filtered_pixels,
           Dkc3VideoPixelCount());
+      /* Set before arming the capture: a banner moves presentation off
+       * Metal, so both decisions must see the same state. */
+      Dkc3DesktopOverlaySetPauseBanner(host.overlay, Dkc3PauseCrateHudLabel());
       /* DKC3_DESKTOP_SCREENSHOT: capture the presented drawable (after the
        * upscaler and screen model, before the overlay is composited over it
        * is not possible, so the overlay should be closed) at frame
@@ -1871,7 +1879,8 @@ static int RunGame(const char *rom_path,
           screenshot_rgb = (uint8_t *)malloc((size_t)dw * (size_t)dh * 3u);
           if (screenshot_rgb) {
 #ifdef __APPLE__
-            if (metal_presenter && !overlay_open) {
+            if (metal_presenter && !overlay_open &&
+                !Dkc3DesktopOverlayHasPauseBanner(host.overlay)) {
               Dkc3MacMetalPresenterArmCapture(screenshot_rgb, dw, dh);
               host.presenter.capture_width = dw;
               host.presenter.capture_height = dh;
@@ -1882,7 +1891,6 @@ static int RunGame(const char *rom_path,
           }
         }
       }
-      Dkc3DesktopOverlaySetPauseBanner(host.overlay, Dkc3PauseCrateHudLabel());
       if (!present_pixels) {
         fprintf(stderr, "SDL video presentation failed: %s\n", SDL_GetError());
         Dkc3DiagnosticsFatal("SDL video presentation failed");

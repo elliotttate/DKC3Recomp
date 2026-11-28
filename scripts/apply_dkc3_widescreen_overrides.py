@@ -410,6 +410,8 @@ def adapt_trunk_windows(sources: dict, generated_dir: Path) -> None:
 
 HIDDEN_RENDER_BLOCK = "0xB78904"
 HIDDEN_RENDER_HOOK = "Dkc3RevealHiddenSpriteFlags"
+# The primary sprite renderer, whose loop holds the block's own copy.
+HIDDEN_RENDER_PRIMARY = "CODE_B78857"
 
 
 def adapt_hidden_sprite_reveal(sources: dict, generated_dir: Path) -> None:
@@ -421,24 +423,36 @@ def adapt_hidden_sprite_reveal(sources: dict, generated_dir: Path) -> None:
     The block is inlined into every renderer variant that loops back to the
     top, so every copy is wrapped. The host helper returns the word unchanged
     unless the assist is on; the native behavior is the helper disabled.
+    Every trace marker must sit in exactly one wrapped block, and the
+    primary renderer's copy must be among them, so a partial match fails.
     """
     label = re.compile(r"(  L_[0-9A-F]{4}_M[01]X[01]:)")
     read = re.compile(
         r"(uint16\s+\w+\s*=\s*)(cpu_read16\([^;\n]*\(uint32\)0x0026 \+ "
         r"\(uint32\)cpu->Y[^;\n]*\));")
+    function = re.compile(r"RecompReturn (\w+)\(")
     marker = f"cpu_trace_block(cpu, {HIDDEN_RENDER_BLOCK});"
+    markers = 0
     found = 0
+    wrapped_functions: set[str] = set()
     for path in sorted(generated_dir.glob("*.c")):
         text = sources.get(path)
         if text is None:
             text = path.read_text(encoding="utf-8")
         if marker not in text:
             continue
+        markers += text.count(marker)
         parts = label.split(text)
         for index in range(2, len(parts), 2):
             block = parts[index]
             if marker not in block:
                 continue
+            if block.count(marker) != 1:
+                raise ValueError(
+                    f"ambiguous $B7:8904 sprite renderer block in {path.name}")
+            owners = function.findall("".join(parts[:index]))
+            if owners:
+                wrapped_functions.add(owners[-1])
             if f"{HIDDEN_RENDER_HOOK}(" in block:
                 if block.count(f"{HIDDEN_RENDER_HOOK}(") != 1:
                     raise ValueError(
@@ -460,6 +474,15 @@ def adapt_hidden_sprite_reveal(sources: dict, generated_dir: Path) -> None:
         raise ValueError(
             "no $B7:8904 sprite renderer block found for the hidden "
             "sprite reveal")
+    if found != markers:
+        raise ValueError(
+            f"wrapped {found} of {markers} $B7:8904 sprite renderer blocks "
+            "for the hidden sprite reveal")
+    if not any(name.startswith(HIDDEN_RENDER_PRIMARY + "_")
+               for name in wrapped_functions):
+        raise ValueError(
+            f"the primary sprite renderer {HIDDEN_RENDER_PRIMARY} was not "
+            "wrapped for the hidden sprite reveal")
 
 
 def apply_overrides(generated_dir: Path) -> list[Path]:

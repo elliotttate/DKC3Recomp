@@ -851,11 +851,12 @@ bool Dkc3VideoIsTransparentTileEntry(uint16_t tile_entry,
 
 /* The sprite palette that `sprite_type`'s init scripts request, read from
  * one bank of the $BB:8FF9 init-script language. A script opens with
- * `$FF type`. Commands below `$EF` write a field, and `$FA`, `$FB`, `$FC`
- * (palette, through $BB:95C8), and `$FE` are three bytes each. `$EF` ends
- * the script, and so does `$F0` (which also sets priority 2 but keeps the
- * palette bits). $BB:8FF1 runs scripts with DB = $FF. Every such script for the type in the bank must request the
- * same palette exactly once. A script that names no palette, uses any other
+ * `$FF type`. Commands below `$EF` write a field. `$FA`, `$FB`, `$FC`, and
+ * `$FE` are three bytes each; only `$FC` (through $BB:95C8) sets a palette.
+ * `$EF` ends the script, and so does `$F0` (which also sets priority 2 but
+ * keeps the palette bits). $BB:8FF1 runs scripts with DB = $FF. Every such
+ * script for the type in the bank must request the same palette exactly
+ * once. A script that names no palette, uses any other
  * command, has no terminator, or disagrees with another makes the answer 0
  * (unknown). */
 uint16_t Dkc3VideoInitScriptPaletteForType(const uint8_t *bank, size_t size,

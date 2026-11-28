@@ -26,6 +26,8 @@
  * Environment:
  *   DKC3_ASPECT=4:3|16:10|16:9|21:9 presentation width (default 4:3)
  *   DKC3_SRAM_INPUT=<file>          exact battery-save image to start from
+ *   DKC3_KONG_TRACKER=<file>        track KONG letters in this sidecar and
+ *                                   draw the map badges (off by default)
  *   DKC3_SAVESTATE_INPUT=<file>     quick save to restore after boot
  *   SNESRECOMP_INPUT_PLAY=<file>    scripted input ("MASK * N" lines)
  *   DKC3_FRAME_PPM=<file>           final frame as a binary PPM
@@ -177,6 +179,18 @@ int main(int argc, char **argv) {
       free(rom);
       return 13;
     }
+  }
+  /* Unlike the interactive hosts, which carry on with empty flags, a
+   * headless run fails closed: a validation run given a KONG letter file
+   * must not silently measure something else. Dkc3KongTrackingEnable has
+   * already said why the file was not usable. */
+  const char *kong_tracker = getenv("DKC3_KONG_TRACKER");
+  if (kong_tracker && *kong_tracker &&
+      !Dkc3KongTrackingEnable(kong_tracker)) {
+    fprintf(stderr,
+            "headless runs stop on an unusable DKC3_KONG_TRACKER file\n");
+    free(rom);
+    return 21;
   }
 
   const char *trace_pc_text = getenv("DKC3_TRACE_PC");
@@ -408,14 +422,21 @@ int main(int argc, char **argv) {
       fprintf(stderr,
               "prefill frame=%ld counter=%u camera=[%04x,%04x] ready=%d bias=%d "
               "present=%u matching=%u margin_present=%u margin_matching=%u "
-              "phase=[%u,%u] top=%u/%u\n",
-              frame, (unsigned)Dkc3FrameCounter(), ReadWram16(0x196d),
-              ReadWram16(0x1973),
+              "phase=[%u,%u] top=%u/%u region=%u walls=[%04x,%04x] "
+              "margins=[%d,%d] stride=%u/%u\n",
+              frame, (unsigned)Dkc3FrameCounter(),
+              (unsigned)ReadWram16(0x196d), (unsigned)ReadWram16(0x1973),
               Dkc3VideoTerrainReady() ? 1 : 0, Dkc3VideoPresentationBias(),
-              prefill.present,
-              prefill.matching, prefill.margin_present,
-              prefill.margin_matching, prefill.phase_h, prefill.phase_v,
-              prefill.top_shadow_row, prefill.top_source_row);
+              (unsigned)prefill.present, (unsigned)prefill.matching,
+              (unsigned)prefill.margin_present,
+              (unsigned)prefill.margin_matching, (unsigned)prefill.phase_h,
+              (unsigned)prefill.phase_v, (unsigned)prefill.top_shadow_row,
+              (unsigned)prefill.top_source_row,
+              (unsigned)(prefill.camera_region >> 1),
+              (unsigned)prefill.wall_left, (unsigned)prefill.wall_right,
+              (int)prefill.left_margin, (int)prefill.right_margin,
+              (unsigned)prefill.row_bytes,
+              (unsigned)prefill.row_match_percent);
     }
     if (frame_sequence_prefix && *frame_sequence_prefix &&
         frame >= frame_sequence_start && frame <= frame_sequence_end &&

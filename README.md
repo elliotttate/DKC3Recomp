@@ -25,14 +25,69 @@ Limbo.
 The 21:9 option uses the nearest symmetric width that preserves the shared
 runtime's safe sprite coordinate range: 446x224, or approximately 20.91:9.
 Screens the map does not cover center the native frame between black margins.
+The Northern Kremisphere overworld now fills the wide view from its fully
+resident 512-pixel map. The view stays locked to the camera, and a margin
+past the map's east or west end is black; the east end was measured, the
+west end is assumed to be the map's first column. Verified at one overworld quick
+save in 16:10, 16:9, and 21:9 with the native 256 columns and guest memory
+unchanged. The overworld's own sprite window extends only about 45 pixels
+past each native edge, so a sprite can vanish in the outermost pixels of a
+16:9 margin and well inside a 21:9 margin. Once the hovercraft opens
+the north, the game streams map rows as the camera climbs; the margins now
+stay filled through that (verified headless at a hovercraft save, and by
+the user in the desktop app). The headless replay of that save also shows
+garbled tiles in the streamed rows at native 4:3, with or without the
+widening; it was not seen in the desktop app and is not investigated.
+Other overworld screens are
+unverified and keep black margins unless they pass the same checks.
+Short rooms such as the bonus games no longer slide the view after the
+player stops: the inward shift at each wall shrinks to fit the room and
+changes at most one pixel per eight of camera travel, or is zero when the
+room is narrower than the wide view, so the HUD stays put and black shows
+only beyond a wall. Verified headless in the first level's two bonus rooms
+only; the bonus rooms of later levels and the live app are unverified.
+The presented shift still eases one pixel a frame, but it may also move as
+far as the camera moved that frame when doing so cancels the camera's
+motion (ported from DKC2Recomp), so a pinned wall holds the view still
+instead of letting it run past the wall and drift back. Unit-tested only;
+no live scene has been replayed with it.
+Walls now follow the game's own camera regions. A room the camera cannot
+leave sideways no longer widens into other rooms' map columns, which showed
+as a mismatched, cut-off strip at one edge. The elevator shaft in the
+reported save is exactly one screen wide, so it rides between black margins,
+and the right margin opens once the camera reaches the room at the top. A
+region's linked neighbours extend its walls, so a run of linked rooms is
+one span, up to a missing link or a neighbour flagged `$20`, which never
+joins.
+Verified headless at that save in 16:10, 16:9, and 21:9.
+The wall rule that continues a wall into the void beside it now stays out of
+any column the camera's region lets the native window reach, where the level
+map is what the console draws. In a waterfall level it had filled the open
+gap between two tree trunks with rock and grass, which popped into the right
+margin whenever the camera stood on an 8-pixel boundary. Verified headless at
+the reported save in 16:9 and 21:9.
 The placed-object spatial scan and final activation checks, the sprite renderer
-culls, and the static banana arcs are widened to the presented view by
-`scripts/apply_dkc3_widescreen_overrides.py`, verified on Lakeside Limbo. The
+culls, and the static banana/star grids are widened to the presented view by
+`scripts/apply_dkc3_widescreen_overrides.py`. Where the aspect permits, the
+placement scan and sprite culls also extend past the presented edges by an
+off-screen spawn/cull lead (48 pixels per side by default, configurable via
+`DKC3_SPAWN_LEAD`, clamped to 0–64; sprite-cull lead is further clamped by
+aspect to preserve nine-bit OAM X) so sprites activate and queue tile DMA
+before entering the frame. This widening is verified on Lakeside Limbo and
+in-game in 16:9 on Doorstop Dash Bonus Level 1 ("Collect the Stars!") on
+Windows; the `DKC3_CULL_WIDEN=0` native-parity capture, 16:10/21:9 traversal,
+other bonus stages, and macOS rebuild remain unverified (see
+[docs/BRINGUP.md](docs/BRINGUP.md)). The
 scan includes adjacent 256-pixel cells so 21:9 objects, including objects in
 quick saves made by older builds, do not wait for a cell boundary to activate.
 Murky Mill's HDMA-windowed BG3 light cones are evaluated across the physical
 widescreen span instead of being clipped and repeated at the native edges,
 verified at the reported quick-save state in both 16:10 and 16:9.
+Ripsaw Rage's tree-trunk BG3 masks now cover a trunk inside a wide margin:
+the cartridge clamps each mask to the 256-pixel screen, so the forest showed
+through the trunk's hollow beside the native edge. The host records the
+unclamped edges (headless-verified in 16:9 and 21:9 against the native view;
+a paused save shows the fix from the first unpaused frame).
 Floodlit Fish's underwater BG3 color-math composition now receives its
 subscreen tint across transparent side-margin pixels without clipping the
 reconstructed BG1 terrain at the native edges, verified at the reported
@@ -48,9 +103,32 @@ Bleak's snowball arena now preserves Mode 2's correct background/sprite order,
 so the snowman appears in front of the distant snowbank and behind foreground
 cover. Its bounded background maps fill 16:10, 16:9, and 21:9 using their
 hardware wrap, with the native center and gameplay unchanged by widening.
+The level `$23` KAOS arena now fills 16:10, 16:9, and 21:9 from its static
+512-pixel room plane, stopping at the plane's ends instead of wrapping. KAOS's
+body continues into a margin through the cartridge's own body window and is
+never duplicated. The K. Roolenstein phase that follows, where the room moves
+to BG1, fills the wide view the same way; its floor electricity and haze
+(BG2/BG3) are drawn into the margins from their own map, clipped by the
+cartridge's room-anchored windows. The native center, 4:3 output, and
+gameplay are unchanged.
 Pothole Panic's cave now fills the wide view from its authored level map.
 Its shape-1 layout uses 32 metatile rows per column, twice the height of
 the previously supported horizontal layout.
+When the widened view keeps more enemies alive than the SNES's eight sprite
+palettes can hold (Squeals on Wheels' Sneek wheels with four Buzzes), the
+game's allocator falls back to palette 0 and the sprite turns fire-coloured.
+Wide aspects now draw that sprite with its own palette from a host-side
+table, leaving guest memory unchanged; the 4:3 path returns early and is
+not expected to change, but a byte-identical 4:3 comparison has not been
+measured. Quick saves that already captured the fallback are recovered
+in the first frames after the load: a sprite whose type's init scripts
+all request one palette gets that palette (a bear coin is silver again,
+not orange), and otherwise the game's last-overflow word is used when the
+fallback sprite can be identified. This was checked on two release saves
+only, and the interpreter path
+through the allocator does not record overflows. A save made in a wide
+aspect still shows the fallback colours if loaded at 4:3 until the sprite
+despawns.
 
 A second layer that streams a strip of the level map, Riverside Race's
 reflection under the water line, is served in the margins from the
@@ -59,6 +137,50 @@ static underwater backdrop wraps as a plane judged by row-level write
 tracking; and the first visible row of the margins now decodes like the
 rest instead of being blanked on tile boundaries. See
 [docs/BRINGUP.md](docs/BRINGUP.md) for the evidence.
+
+In builds from this source (Windows verified; the published v0.0.4 Mac
+archive predates it), the game's opening Rare logo, bouncing/developer credit
+intro, and copyright screen can be skipped directly to the Title Screen with
+the **Start** button on cold boot (`DKC3_SKIP_INTRO_START=0` restores the
+unskippable original first-boot behavior).
+
+In builds from this source, the desktop and SDL apps remember, per save
+file, which levels have had all four K-O-N-G letters collected, and show
+**KONG** beside that level's name on the world map. A world's name on the
+Northern Kremisphere shows it too once all five of its levels are done.
+The cartridge never saves KONG letters, so this lives in its own file,
+`saves/kong_letters.dat`; `saves/save.srm` is only read and stays exactly
+what the game writes, so it still works in other emulators. Copying or
+erasing a file on the file-select screen copies or clears its letters;
+nothing else clears them, so files played only through quick saves keep
+theirs. The exception is a `kong_letters.dat` that fails its checks at
+launch (wrong magic, version, size, or checksum): it is treated as empty,
+which drops every file's letters.
+**Settings > Gameplay > KONG letter badges on the map** (on by default,
+remembered in `launcher.cfg`) shows or hides the badges at once; the letters
+are recorded either way. `DKC3_KONG_BADGES=0` or `=1` sets the same option at
+launch. See [docs/BRINGUP.md](docs/BRINGUP.md) for what was verified.
+
+Under **Assist Tools / Cheats**, an optional **Spawn animal buddy crates from
+pause menu** toggle (off by default, remembered as `PauseCrateSpawn` in
+`launcher.cfg` and gated behind **Enable Assist Tools / Cheats**) lets the
+active player press **Left** or **Right** while paused in a level to select any
+of the five animal buddy crates (**Ellie**, **Enguarde**, **Squitter**,
+**Squawks**, **Parry** — shown at the bottom middle of the screen) and press
+**B** to spawn it at the Kong's position (`DKC3_PAUSE_CRATE_SPAWN=1` enables it
+in headless runs). While enabled, pressing **X** also dismounts Squawks
+(matching Enguarde's dismount behavior), and animal buddy sprites that
+overflowed to palette 0 are automatically repaired when a hardware palette slot
+is available or via the widescreen extended OBJ palette table.
+
+Also under **Assist Tools / Cheats**, **Show hidden objects** (off by default,
+remembered as `ShowHiddenObjects` in `launcher.cfg` and gated behind **Enable
+Assist Tools / Cheats**) draws sprites the game keeps invisible, such as hidden
+bear coins. Their behavior is unchanged; only the renderer's skip is bypassed
+(`DKC3_SHOW_HIDDEN_OBJECTS=1` enables it in headless runs). It applies only
+during level gameplay and only to sprites that hold tiles or a palette, so
+hidden controllers such as the world map's are never drawn. K. Rool, whom the
+game hides after the final fight, also stays hidden.
 
 ## Native macOS release
 
@@ -87,9 +209,10 @@ paths work, but full-game compatibility is not yet claimed.
 
 ## Building on Windows
 
-The Windows x64 SDL build has passed all 23 project tests, a 4,801-frame
-headless run, and a packaged launcher/visible-game smoke check. Full-game
-completion and hardware/controller coverage are not claimed.
+The Windows x64 SDL build has passed the full project CTest suite (see
+[docs/BRINGUP.md](docs/BRINGUP.md)), a 4,801-frame headless run, and a
+packaged launcher/visible-game smoke check. Full-game completion and
+hardware/controller coverage are not claimed.
 
 Requirements: Visual Studio 2022 with Desktop development with C++, CMake,
 and Python 3. Initialize the Git submodules before building. In PowerShell:
@@ -109,6 +232,10 @@ overlay, and audio rate control. Keep `SDL2.dll` and the `assets` directory
 beside the executable when moving it. Select your own ROM in the launcher.
 The separate `DKC3Recomp.exe` in the build directory is the legacy Win32 host;
 portable packages use the SDL executable renamed to `DKC3Recomp.exe`.
+Config, quick states and SRAM live beside the executable unless
+`DKC3_USER_DIR` names another directory; the Windows smoke tests use their own
+directories under `build-windows`, so running CTest leaves `Release/saves`
+untouched.
 
 The game window now has native **Game** and **View** dropdown menus matching
 the Mac's game commands: Pause / Settings, Quick Save, Quick Load, fullscreen,
@@ -229,7 +356,9 @@ in `runner/headless_main.c` write frames as PPM (`DKC3_FRAME_PPM`,
 `DKC3_FRAME_PPM_PREFIX` with `START/END/STEP`), raw audio
 (`DKC3_AUDIO_PCM`), and memory dumps, restore an SRAM image or a quick
 save (`DKC3_SRAM_INPUT`, `DKC3_SAVESTATE_INPUT`), and replay scripted
-input (`SNESRECOMP_INPUT_PLAY`).
+input (`SNESRECOMP_INPUT_PLAY`). `DKC3_KONG_TRACKER=<file>` turns on the
+KONG letter tracker and its map badges with that sidecar file; it is off by
+default, so headless hashes do not depend on it.
 `DKC3_PPU_LEGACY=1` selects the independent scalar renderer for pixel-oracle
 comparisons. CMake applies the checked Mode 2 priority adaptation, with the
 other runtime hunks, to build copies of the pinned sources; the submodule

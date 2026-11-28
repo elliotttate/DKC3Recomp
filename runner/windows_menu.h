@@ -14,5 +14,6 @@ void Dkc3WindowsMenuUpdate(Dkc3WindowsMenu *menu, const Dkc3MenuState *state);
  * checkmarks and command routing survive; only the attachment changes. */
 void Dkc3WindowsMenuSetVisible(Dkc3WindowsMenu *menu, bool visible);
 bool Dkc3WindowsMenuIsVisible(const Dkc3WindowsMenu *menu);
+bool Dkc3WindowsMenuUsesSysWMEvent(const Dkc3WindowsMenu *menu);
 
 #endif

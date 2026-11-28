@@ -44,6 +44,9 @@ void Dkc3DesktopOverlaySetSettings(Dkc3DesktopOverlay *overlay,
 uint32_t Dkc3DesktopOverlayTakeActions(Dkc3DesktopOverlay *overlay);
 void Dkc3DesktopOverlaySetStatus(Dkc3DesktopOverlay *overlay,
                                   const char *status, bool success);
+void Dkc3DesktopOverlaySetPauseBanner(Dkc3DesktopOverlay *overlay,
+                                      const char *text);
+bool Dkc3DesktopOverlayHasPauseBanner(const Dkc3DesktopOverlay *overlay);
 
 /* Called by a presenter after drawing the game and before swapping buffers.
  * The presenter must have its OpenGL context current. */

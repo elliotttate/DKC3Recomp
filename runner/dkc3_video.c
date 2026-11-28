@@ -171,6 +171,107 @@ void Dkc3VideoPresentationMargins(uint16_t camera_x,
                                       bias, left_margin, right_margin);
 }
 
+void Dkc3VideoClearOutsideMargins(uint8_t *buffer, size_t pitch, int width,
+                                  int height, int extra, int left_margin,
+                                  int right_margin) {
+  if (!buffer || extra <= 0 || height <= 0 ||
+      width < kDkc3VideoNativeWidth + 2 * extra)
+    return;
+  const int left_dead = extra - Dkc3VideoClampInt(left_margin, 0, extra);
+  const int right_dead = extra - Dkc3VideoClampInt(right_margin, 0, extra);
+  if (left_dead == 0 && right_dead == 0)
+    return;
+  const size_t right_offset =
+      (size_t)(width - right_dead) * kDkc3VideoBytesPerPixel;
+  for (int y = 0; y < height; y++) {
+    uint8_t *row = buffer + (size_t)y * pitch;
+    if (left_dead > 0)
+      memset(row, 0, (size_t)left_dead * kDkc3VideoBytesPerPixel);
+    if (right_dead > 0)
+      memset(row + right_offset, 0,
+             (size_t)right_dead * kDkc3VideoBytesPerPixel);
+  }
+}
+
+unsigned Dkc3VideoUnclampedTrunkWindows(const uint16_t world[4],
+                                        uint16_t camera,
+                                        const uint8_t regs[4],
+                                        int16_t edges[4]) {
+  if (!world || !regs || !edges)
+    return 0;
+  unsigned mask = 0;
+  for (int window = 0; window < 2; window++) {
+    bool clamped = true;
+    for (int side = 0; side < 2; side++) {
+      const int index = window * 2 + side;
+      const int edge = (int16_t)(uint16_t)(world[index] - camera);
+      edges[index] = (int16_t)edge;
+      if (regs[index] != (uint8_t)Dkc3VideoClampInt(edge, 0, 255))
+        clamped = false;
+    }
+    if (clamped)
+      mask |= 1u << window;
+  }
+  return mask;
+}
+
+int Dkc3VideoStepPresentationBias(int presented_bias, int wanted_bias,
+                                  int camera_delta) {
+  const int step = wanted_bias - presented_bias;
+  int limit = 1;
+  /* A step against the camera's motion cancels it on screen. */
+  if ((step > 0 && camera_delta < 0) || (step < 0 && camera_delta > 0)) {
+    const int moved = camera_delta < 0 ? -camera_delta : camera_delta;
+    limit += moved < 0x10000 ? moved : 0x10000;
+  }
+  return presented_bias + Dkc3VideoClampInt(step, -limit, limit);
+}
+
+void Dkc3VideoRegionScrollBounds(uint16_t camera_x, uint16_t region_left,
+                                 uint16_t region_right,
+                                 uint16_t level_maximum_x,
+                                 uint16_t *minimum_scroll_x,
+                                 uint16_t *maximum_scroll_x) {
+  const int camera = camera_x;
+  int lower = region_left < 0x0100u ? 0x0100 : (int)region_left;
+  int upper = (int)region_right - kDkc3VideoNativeWidth;
+  if (upper > (int)level_maximum_x)
+    upper = level_maximum_x;
+  /* The camera still converging on a region it has just entered shows,
+   * natively, the columns between it and the region's wall. Reflect the
+   * wall about the camera so the margin narrows by exactly the distance
+   * the camera has left to travel, and closes as the camera arrives. */
+  if (lower > camera) {
+    lower = 2 * camera - lower;
+    if (lower < 0x0100)
+      lower = 0x0100;
+    if (lower > camera)
+      lower = camera;
+  }
+  if (upper < camera) {
+    upper = 2 * camera - upper;
+    if (upper > (int)level_maximum_x)
+      upper = level_maximum_x;
+    if (upper < camera)
+      upper = camera;
+  }
+  if (minimum_scroll_x)
+    *minimum_scroll_x = (uint16_t)lower;
+  if (maximum_scroll_x)
+    *maximum_scroll_x = (uint16_t)upper;
+}
+
+int Dkc3VideoLimitMarginGrowth(int presented_margin, int target_margin,
+                               int view_step_outward) {
+  /* A wall fixed in the world widens its margin exactly as fast as the
+   * view moves away from it; anything beyond that is the wall itself
+   * jumping outward, which opens at a bounded rate instead of at once. */
+  int limit = presented_margin + kDkc3VideoMarginOpenRate;
+  if (view_step_outward > 0)
+    limit += view_step_outward < 0x10000 ? view_step_outward : 0x10000;
+  return target_margin < limit ? target_margin : limit;
+}
+
 void Dkc3VideoMarginsForBias(uint16_t camera_x, uint16_t minimum_scroll_x,
                              uint16_t maximum_scroll_x, int bias,
                              int *left_margin, int *right_margin) {
@@ -237,20 +338,41 @@ void Dkc3VideoPresentationMarginsBounded(uint16_t camera_x,
        * upper-reach], so the wide frame stays inside the level. */
       const int pin_low = lower + reach - (int)camera_x;
       const int pin_high = upper - reach - (int)camera_x;
+      /* The glide's shift at each wall: one margin, released one pixel per
+       * kDkc3VideoEdgeGlideSpan pixels of camera travel, so the two walls'
+       * releases need 2 * extra * kDkc3VideoEdgeGlideSpan pixels of room.
+       * A shorter room (DKC3's bonus rooms travel 24 to 128 pixels) cannot
+       * hide both walls at that rate: pinning it would make the target bias
+       * follow the camera nearly pixel for pixel, which the host's
+       * one-pixel-per-frame limit turns into a lag and a drift long after
+       * the player stops, sliding the screen-fixed HUD with it. There the
+       * shift shrinks so both releases fit at the same rate, the pins are
+       * dropped, and each margin is clamped to the authored extent. A room
+       * narrower than two margins takes no shift at all and is exactly
+       * bars. */
+      int shift = extra;
+      bool short_room = false;
+      if (s_edge_policy == kDkc3VideoEdgeGlide &&
+          range < 2 * extra * kDkc3VideoEdgeGlideSpan) {
+        short_room = true;
+        shift = range < 2 * extra
+                    ? 0
+                    : range / (2 * kDkc3VideoEdgeGlideSpan);
+      }
       int wanted = 0;
-      if (s_edge_policy == kDkc3VideoEdgeGlide) {
-        /* One margin of inward shift at each wall, released one pixel per
-         * kDkc3VideoEdgeGlideSpan pixels of camera travel away from it. */
-        const int span = extra * kDkc3VideoEdgeGlideSpan;
+      if (s_edge_policy == kDkc3VideoEdgeGlide && shift > 0) {
+        const int span = shift * kDkc3VideoEdgeGlideSpan;
         const int west_travel = (int)camera_x - lower;
         const int east_travel = upper - (int)camera_x;
         if (west_travel >= 0 && west_travel < span)
-          wanted += extra - west_travel / kDkc3VideoEdgeGlideSpan;
+          wanted += shift - west_travel / kDkc3VideoEdgeGlideSpan;
         if (east_travel >= 0 && east_travel < span)
-          wanted -= extra - east_travel / kDkc3VideoEdgeGlideSpan;
+          wanted -= shift - east_travel / kDkc3VideoEdgeGlideSpan;
       }
-      result_bias = Dkc3VideoClampInt(
-          Dkc3VideoClampInt(wanted, pin_low, pin_high), -extra, extra);
+      result_bias = short_room
+          ? Dkc3VideoClampInt(wanted, -shift, shift)
+          : Dkc3VideoClampInt(Dkc3VideoClampInt(wanted, pin_low, pin_high),
+                              -extra, extra);
       const int presented = (int)camera_x + result_bias;
       result_left = Dkc3VideoClampInt(presented - lower, 0, extra);
       result_right = Dkc3VideoClampInt(upper - presented, 0, extra);
@@ -265,6 +387,101 @@ void Dkc3VideoPresentationMarginsBounded(uint16_t camera_x,
     *left_margin = result_left;
   if (right_margin)
     *right_margin = result_right;
+}
+
+/* The camera regions in WRAM bank $7E ($B7:D4B1 builds them from the
+ * level's table at $FD:C25B): parallel word arrays indexed by region * 2,
+ * entry 0 the whole level. Left and right edges bound the world columns the
+ * camera may show (the last screen's left edge plus $100), top and bottom
+ * the rows. The link word holds the region's flags (low byte) and its right
+ * neighbour (high byte); the left-link word holds two left neighbours. */
+enum {
+  kDkc3RegionLeft = 0x995a,
+  kDkc3RegionRight = 0x9a5a,
+  kDkc3RegionTop = 0x9b5a,
+  kDkc3RegionBottom = 0x9c5a,
+  kDkc3RegionFlagsRightLink = 0x9d5a,
+  kDkc3RegionLeftLinks = 0x9e5a,
+  kDkc3RegionCount = 0x80,
+  /* $B7:DD16: a neighbour with this flag never widens the camera. */
+  kDkc3RegionClosed = 0x20,
+};
+
+static uint16_t Dkc3RegionWord(const uint8_t *wram, unsigned base,
+                               unsigned region) {
+  const unsigned address = base + region * 2u;
+  return (uint16_t)(wram[address] | (wram[address + 1u] << 8));
+}
+
+/* A linked neighbour continues the span when it is a real region, is not
+ * closed, and abuts or overlaps the span on its side. */
+static bool Dkc3RegionContinues(const uint8_t *wram, unsigned region,
+                                bool east, int span_left, int span_right) {
+  if (region == 0 || region >= kDkc3RegionCount)
+    return false;
+  const int left = Dkc3RegionWord(wram, kDkc3RegionLeft, region);
+  const int right = Dkc3RegionWord(wram, kDkc3RegionRight, region);
+  if (right <= left ||
+      Dkc3RegionWord(wram, kDkc3RegionBottom, region) <=
+          Dkc3RegionWord(wram, kDkc3RegionTop, region))
+    return false;
+  if (wram[kDkc3RegionFlagsRightLink + region * 2u] & kDkc3RegionClosed)
+    return false;
+  return east ? left <= span_right && right > span_right
+              : right >= span_left && left < span_left;
+}
+
+bool Dkc3VideoCameraRegionSpan(const uint8_t *wram, uint16_t region_offset,
+                               uint16_t *left_edge, uint16_t *right_edge) {
+  if (!wram || region_offset == 0 || (region_offset & 1u) ||
+      region_offset >= kDkc3RegionCount * 2u)
+    return false;
+  const unsigned current = region_offset >> 1;
+  int span_left = Dkc3RegionWord(wram, kDkc3RegionLeft, current);
+  int span_right = Dkc3RegionWord(wram, kDkc3RegionRight, current);
+  if (span_right - span_left < kDkc3VideoNativeWidth)
+    return false;
+  /* Each step strictly widens the span, so the chains end. East: the
+   * linked neighbour, else the region after it when that one names the
+   * region it leaves as a left neighbour ($B7:E0ED). */
+  unsigned from = current;
+  for (;;) {
+    const unsigned link = wram[kDkc3RegionFlagsRightLink + from * 2u + 1u];
+    unsigned next = 0;
+    if (Dkc3RegionContinues(wram, link, true, span_left, span_right)) {
+      next = link;
+    } else if (link != 0 && link + 1u < kDkc3RegionCount &&
+               (wram[kDkc3RegionLeftLinks + (link + 1u) * 2u] == from ||
+                wram[kDkc3RegionLeftLinks + (link + 1u) * 2u + 1u] ==
+                    from) &&
+               Dkc3RegionContinues(wram, link + 1u, true, span_left,
+                                   span_right)) {
+      next = link + 1u;
+    }
+    if (next == 0)
+      break;
+    span_right = Dkc3RegionWord(wram, kDkc3RegionRight, next);
+    from = next;
+  }
+  /* West: the first of the two linked neighbours that continues it. */
+  from = current;
+  for (;;) {
+    unsigned next = 0;
+    for (unsigned slot = 0; slot < 2u && next == 0; slot++) {
+      const unsigned link = wram[kDkc3RegionLeftLinks + from * 2u + slot];
+      if (Dkc3RegionContinues(wram, link, false, span_left, span_right))
+        next = link;
+    }
+    if (next == 0)
+      break;
+    span_left = Dkc3RegionWord(wram, kDkc3RegionLeft, next);
+    from = next;
+  }
+  if (left_edge)
+    *left_edge = (uint16_t)span_left;
+  if (right_edge)
+    *right_edge = (uint16_t)span_right;
+  return true;
 }
 
 bool Dkc3VideoMarginLeavesAuthoredExtent(uint16_t camera_x,
@@ -323,6 +540,16 @@ bool Dkc3VideoTileTouchesWidescreenMargin(uint32_t world_tile_x,
   return left < native_left || left + 8u > native_right;
 }
 
+bool Dkc3VideoTileInCameraReach(uint32_t world_tile_x,
+                                uint16_t minimum_scroll_x,
+                                uint16_t maximum_scroll_x) {
+  if (maximum_scroll_x < minimum_scroll_x)
+    return false;
+  const uint64_t left = (uint64_t)world_tile_x << 3;
+  return left >= minimum_scroll_x &&
+         left + 8u <= (uint64_t)maximum_scroll_x + kDkc3VideoNativeWidth;
+}
+
 static int s_presentation_bias;
 
 void Dkc3VideoSetPresentationBias(int bias) {
@@ -345,7 +572,7 @@ int Dkc3VideoPresentationBias(void) {
  */
 /* DKC3_CULL_WIDEN=0 keeps every cull and activation window native while
  * the margins still present, for before/after comparisons. */
-static bool Dkc3VideoCullWidenEnabled(void) {
+bool Dkc3VideoCullWidenEnabled(void) {
   static int enabled = -1;
   if (enabled < 0) {
     const char *setting = getenv("DKC3_CULL_WIDEN");
@@ -398,9 +625,93 @@ uint16_t Dkc3VideoExpandCullRight(uint16_t native_right) {
   return widened;
 }
 
-size_t Dkc3VideoPlacementScanCells(uint16_t native_cell_offset,
-                                    uint16_t row_stride,
-                                    uint16_t cell_offsets[3]) {
+static int s_spawn_lead = -1;
+
+static int Dkc3VideoConfiguredSpawnLead(void) {
+  if (s_spawn_lead < 0) {
+    int lead = kDkc3VideoDefaultSpawnLead;
+    const char *setting = getenv("DKC3_SPAWN_LEAD");
+    if (setting && setting[0] != '\0') {
+      char *end = NULL;
+      long parsed = strtol(setting, &end, 10);
+      if (end != setting && *end == '\0') {
+        if (parsed < 0)
+          lead = 0;
+        else if (parsed > kDkc3VideoMaxSpawnLead)
+          lead = kDkc3VideoMaxSpawnLead;
+        else
+          lead = (int)parsed;
+      }
+    }
+    s_spawn_lead = Dkc3VideoClampInt(lead, 0, kDkc3VideoMaxSpawnLead);
+  }
+  return s_spawn_lead;
+}
+
+void Dkc3VideoSetSpawnLead(int lead) {
+  s_spawn_lead = Dkc3VideoClampInt(lead, 0, kDkc3VideoMaxSpawnLead);
+}
+
+int Dkc3VideoSpawnLead(void) {
+  if (!Dkc3VideoTerrainReady() || !Dkc3VideoCullWidenEnabled())
+    return 0;
+  return Dkc3VideoConfiguredSpawnLead();
+}
+
+int Dkc3VideoSpriteCullLead(void) {
+  const int lead = Dkc3VideoSpawnLead();
+  if (lead <= 0)
+    return 0;
+  /* Nine-bit OAM X wraps at 512. Reserving 48 px for the native $30 cull and
+   * 48 px for sub-sprite offsets + 16 px tile width leaves 160 - 2*extra px of
+   * safe extra cull lead (108 px at 16:10, 74 px at 16:9, 0 px at 21:9). */
+  const int safe_oam_lead = 160 - 2 * g_ws_extra;
+  if (safe_oam_lead <= 0)
+    return 0;
+  return lead < safe_oam_lead ? lead : safe_oam_lead;
+}
+
+/* Placement rows in DATA_BBA8BE with Lx < $60 and Wx < $1C0 (rows $00, $10,
+ * $30, $40, $70, including all 16- and 32-pixel spawn/despawn rows) receive
+ * the extra spawn lead. Wider rows ($20 at 96 px, $50/$60 at 248 px) already
+ * have ample slack and skip it so camera_x - Lx_widened never underflows
+ * 16-bit unsigned subtraction near camera_x = $0100. */
+uint16_t Dkc3VideoExpandSpawnLeft(uint16_t native_margin) {
+  const uint16_t base = Dkc3VideoExpandCullLeft(native_margin);
+  const int lead = native_margin < 0x60u ? Dkc3VideoSpawnLead() : 0;
+  const uint16_t widened = (uint16_t)(base + (uint16_t)lead);
+  Dkc3VideoCullTrace("spawn_left", native_margin, widened);
+  return widened;
+}
+
+uint16_t Dkc3VideoExpandSpawnSpan(uint16_t native_span) {
+  const uint16_t base = Dkc3VideoExpandCullSpan(native_span);
+  const int lead = native_span < 0x1c0u ? Dkc3VideoSpawnLead() : 0;
+  const uint16_t widened = (uint16_t)(base + (uint16_t)(2 * lead));
+  Dkc3VideoCullTrace("spawn_span", native_span, widened);
+  return widened;
+}
+
+uint16_t Dkc3VideoExpandSpriteCullLeft(uint16_t native_margin) {
+  const uint16_t base = Dkc3VideoExpandCullLeft(native_margin);
+  const int lead = Dkc3VideoSpriteCullLead();
+  const uint16_t widened = (uint16_t)(base + (uint16_t)lead);
+  Dkc3VideoCullTrace("sprite_left", native_margin, widened);
+  return widened;
+}
+
+uint16_t Dkc3VideoExpandSpriteCullSpan(uint16_t native_span) {
+  const uint16_t base = Dkc3VideoExpandCullSpan(native_span);
+  const int lead = Dkc3VideoSpriteCullLead();
+  const uint16_t widened = (uint16_t)(base + (uint16_t)(2 * lead));
+  Dkc3VideoCullTrace("sprite_span", native_span, widened);
+  return widened;
+}
+
+size_t Dkc3VideoPlacementScanCells(
+    uint16_t native_cell_offset,
+    uint16_t row_stride,
+    uint16_t cell_offsets[kDkc3VideoPlacementScanMaxCells]) {
   if (!cell_offsets)
     return 0;
   cell_offsets[0] = native_cell_offset;
@@ -408,14 +719,28 @@ size_t Dkc3VideoPlacementScanCells(uint16_t native_cell_offset,
       (native_cell_offset & 1u) != 0)
     return 1;
 
+  /* Worst-case horizontal reach past the native 256-pixel placement cell:
+   * full wall bias (2 * extra) + configured spawn lead + 32 px right-side
+   * asymmetry on DATA_BBA8BE row $70/$78. A camera at sub-cell offset 255
+   * can reach floor((255 + reach) / 256) neighbor cells away. */
+  const int reach = 2 * g_ws_extra + Dkc3VideoConfiguredSpawnLead() + 32;
+  int radius = (255 + reach) / 256;
+  if (radius < 1)
+    radius = 1;
+  if (radius > kDkc3VideoPlacementScanMaxRadius)
+    radius = kDkc3VideoPlacementScanMaxRadius;
+
   size_t count = 1;
   const uint16_t cell = (uint16_t)(native_cell_offset / 2u);
   const uint16_t column = (uint16_t)(cell % row_stride);
-  if (column != 0)
-    cell_offsets[count++] = (uint16_t)(native_cell_offset - 2u);
-  if ((uint16_t)(column + 1u) < row_stride &&
-      native_cell_offset <= UINT16_MAX - 2u)
-    cell_offsets[count++] = (uint16_t)(native_cell_offset + 2u);
+  for (int step = 1; step <= radius; step++) {
+    const uint16_t delta = (uint16_t)(step * 2);
+    if (column >= (uint16_t)step && native_cell_offset >= delta)
+      cell_offsets[count++] = (uint16_t)(native_cell_offset - delta);
+    if ((uint32_t)column + (uint32_t)step < (uint32_t)row_stride &&
+        native_cell_offset <= (uint16_t)(UINT16_MAX - delta))
+      cell_offsets[count++] = (uint16_t)(native_cell_offset + delta);
+  }
   return count;
 }
 
@@ -675,6 +1000,195 @@ bool Dkc3VideoUsesSnowArenaPlanes(bool in_level, uint16_t level,
       return false;
   }
   return true;
+}
+
+int Dkc3VideoKaosArenaPlaneLayer(bool in_level, uint16_t level,
+                                 uint8_t mode, const uint8_t maps[4],
+                                 const int plane_bands[2], int band_count) {
+  /* Level $23 keeps its terrain stream base ($1969 = $7800) off every
+   * wide layer, so no layer owns a world stream. The room is one
+   * 64-column plane ($71): BG2 while KAOS's body occupies BG1 ($78), BG1
+   * once K. Roolenstein appears (BG2 and BG3 then share $7C). The band
+   * classifier must have proven that plane static on every band before
+   * its adjacent columns are shown. */
+  if (!in_level || level != 0x23 || (mode & 7u) != 1u || !maps ||
+      !plane_bands || band_count <= 0 || !Dkc3VideoCullWidenEnabled())
+    return -1;
+  int layer = -1;
+  if (maps[0] == 0x78 && maps[1] == 0x71 && maps[2] == 0x7c)
+    layer = 1;
+  else if (maps[0] == 0x71 && maps[1] == 0x7c && maps[2] == 0x7c)
+    layer = 0;
+  if (layer < 0 || plane_bands[layer] != band_count) return -1;
+  return layer;
+}
+
+void Dkc3VideoKaosArenaMargins(uint16_t h_scroll, int extra, int *left,
+                               int *right) {
+  const int x = (int)(h_scroll & 0x01ffu);
+  int l = x < extra ? x : extra;
+  int r = 0x200 - kDkc3VideoNativeWidth - x;
+  if (r > extra) r = extra;
+  if (r < 0) r = 0;
+  if (l < 0) l = 0;
+  if (left) *left = l;
+  if (right) *right = r;
+}
+
+bool Dkc3VideoKaosRoomWindow(uint8_t reg_left, uint8_t reg_right,
+                             uint16_t room_h_scroll, int west, int east,
+                             int *left, int *right) {
+  if (reg_left > reg_right)
+    return false;
+  const int s = (int)(room_h_scroll & 0x01ffu);
+  int l = reg_left, r = reg_right;
+  /* A register pinned to the screen edge hides where the room-anchored
+   * edge really lies; take it from the room scroll, and only when that
+   * places it at or past the same screen edge. */
+  if (reg_left == 0) {
+    l = west - s;
+    if (l > 0) return false;
+  } else if (abs(reg_left - (west - s)) > 2) {
+    return false;
+  }
+  if (reg_right == 0xff) {
+    r = east - s;
+    if (r < 0xff) return false;
+  } else if (abs(reg_right - (east - s)) > 2) {
+    return false;
+  }
+  if (left) *left = l;
+  if (right) *right = r;
+  return true;
+}
+
+bool Dkc3VideoKaosBodyWindow(const uint8_t *table, size_t length,
+                             uint16_t bg1_h_scroll, uint8_t *reg_left,
+                             uint8_t *reg_right, int *left, int *right) {
+  if (!table)
+    return false;
+  const int s = (int)(bg1_h_scroll & 0xffu);
+  if (s == 0)
+    return false; /* the map exactly fills the native window */
+  size_t at = 0;
+  int lines = 0;
+  while (at < length && lines < 240) {
+    const uint8_t count_byte = table[at++];
+    if (count_byte == 0)
+      break;
+    const int count = count_byte & 0x7f;
+    const int pairs = (count_byte & 0x80u) ? count : 1;
+    for (int pair = 0; pair < pairs; pair++) {
+      if (at + 2u > length)
+        return false;
+      const int l = table[at], r = table[at + 1];
+      at += 2;
+      /* Extent starts left of the screen at -s: clamped to [0, 255 - s]. */
+      if (l == 0 && r < 255 && abs(r - (255 - s)) <= 2) {
+        if (reg_left) *reg_left = (uint8_t)l;
+        if (reg_right) *reg_right = (uint8_t)r;
+        if (left) *left = r - 255;
+        if (right) *right = r;
+        return true;
+      }
+      /* Extent starts inside the screen at 256 - s: [256 - s, 255]. */
+      if (r == 255 && l > 0 && abs(l - (256 - s)) <= 2) {
+        if (reg_left) *reg_left = (uint8_t)l;
+        if (reg_right) *reg_right = (uint8_t)r;
+        if (left) *left = l;
+        if (right) *right = l + 255;
+        return true;
+      }
+    }
+    lines += count;
+  }
+  return false;
+}
+
+bool Dkc3VideoIsResidentOverworld(uint32_t main_loop_vector, uint8_t bg_mode,
+                                  const uint8_t bg_sc[4],
+                                  uint8_t enabled_layers,
+                                  const uint16_t h_scroll[3],
+                                  uint16_t camera_x) {
+  if (main_loop_vector != kDkc3OverworldMainLoop || (bg_mode & 7u) != 1u ||
+      !bg_sc || !h_scroll || !(enabled_layers & 1u) ||
+      !Dkc3VideoCullWidenEnabled())
+    return false;
+  /* BG1 is the 512-pixel world: 64 columns, 32 rows, rendered at the
+   * camera (within its lead) less $100. */
+  const int rendered = Dkc3VideoOverworldRenderedX(h_scroll[0]);
+  const int lead = (int)camera_x - rendered;
+  if ((bg_sc[0] & 3u) != 1u || rendered > kDkc3OverworldMaximumCameraX ||
+      lead < -kDkc3OverworldCameraLead || lead > kDkc3OverworldCameraLead)
+    return false;
+  for (unsigned layer = 0; layer < 3; layer++) {
+    if (!(enabled_layers & (1u << layer)))
+      continue;
+    if (bg_sc[layer] & 2u)
+      return false;
+    if (Dkc3VideoTilemapPagesCollide(bg_sc, layer, enabled_layers))
+      return false;
+    if ((bg_sc[layer] & 1u) &&
+        (h_scroll[layer] & 0x1ffu) != (h_scroll[0] & 0x1ffu))
+      return false;
+  }
+  return true;
+}
+
+uint16_t Dkc3VideoOverworldRenderedX(uint16_t bg1_h_scroll) {
+  return (uint16_t)(kDkc3OverworldMinimumCameraX + (bg1_h_scroll & 0x1ffu));
+}
+
+void Dkc3VideoOverworldMargins(uint16_t rendered_x, int *left_margin,
+                               int *right_margin) {
+  const int extra = Dkc3VideoExtra();
+  const int presented = (int)rendered_x;
+  if (left_margin)
+    *left_margin = Dkc3VideoClampInt(
+        presented - kDkc3OverworldMinimumCameraX, 0, extra);
+  if (right_margin)
+    *right_margin = Dkc3VideoClampInt(
+        kDkc3OverworldMaximumCameraX - presented, 0, extra);
+}
+
+bool Dkc3VideoTilemapRowVisible(uint16_t v_scroll, unsigned row) {
+  /* The row's first line, in screen lines below the frame's top. */
+  const unsigned offset = (row * 8u - (unsigned)v_scroll) & 0xffu;
+  return offset < (unsigned)kDkc3VideoHeight || offset + 7u > 0xffu;
+}
+
+bool Dkc3VideoOverworldWritesAreRows(uint32_t changed_rows, uint16_t v_scroll,
+                                     bool vertical_hdma) {
+  unsigned shown = 0;
+  for (unsigned row = 0; row < 32; row++) {
+    if ((changed_rows & (1u << row)) &&
+        (vertical_hdma || Dkc3VideoTilemapRowVisible(v_scroll, row)))
+      shown++;
+  }
+  return shown <= kDkc3OverworldShownRowWrites;
+}
+
+uint8_t Dkc3VideoHdmaVerticalScrollLayers(uint8_t active_channels,
+                                          const uint8_t b_address[8],
+                                          const uint8_t mode[8]) {
+  /* B-bus offsets each HDMA transfer mode writes, from the base address. */
+  static const uint8_t kSpan[8] = {1, 2, 1, 2, 4, 2, 1, 2};
+  uint8_t layers = 0;
+  if (!b_address || !mode)
+    return 0;
+  for (unsigned channel = 0; channel < 8; channel++) {
+    if (!(active_channels & (1u << channel)))
+      continue;
+    const unsigned span = kSpan[mode[channel] & 7u];
+    for (unsigned offset = 0; offset < span; offset++) {
+      const unsigned target = (unsigned)b_address[channel] + offset;
+      for (unsigned layer = 0; layer < 3; layer++) {
+        if (target == 0x0eu + layer * 2u)
+          layers |= (uint8_t)(1u << layer);
+      }
+    }
+  }
+  return layers;
 }
 
 bool Dkc3VideoDecodeWaterfallColumn(const uint8_t *bank, size_t bank_size,
@@ -1078,6 +1592,59 @@ bool Dkc3VideoIsTransparentTileEntry(uint16_t tile_entry,
   return (tile_entry & 0x03ffu) == (transparent_tile & 0x03ffu);
 }
 
+enum { kDkc3InitScriptMaxCommands = 32 };
+
+uint16_t Dkc3VideoInitScriptPaletteForType(const uint8_t *bank, size_t size,
+                                           uint16_t sprite_type) {
+  if (!bank || size < 4u || sprite_type == 0)
+    return 0;
+  uint16_t answer = 0;
+  for (size_t start = 0; start + 3u <= size; start++) {
+    if (bank[start] != 0xffu ||
+        (uint16_t)(bank[start + 1u] | (bank[start + 2u] << 8)) != sprite_type)
+      continue;
+    uint16_t palette = 0;
+    bool ended = false, usable = true;
+    size_t at = start + 3u;
+    for (unsigned n = 0; n < kDkc3InitScriptMaxCommands && usable; n++) {
+      if (at >= size) {
+        usable = false;
+        break;
+      }
+      const uint8_t op = bank[at];
+      if (op == 0xefu || op == 0xf0u) {
+        ended = true;
+        break;
+      }
+      if (at + 3u > size ||
+          !(op < 0xefu || op == 0xfau || op == 0xfbu || op == 0xfcu ||
+            op == 0xfeu)) {
+        usable = false;
+        break;
+      }
+      if (op == 0xfcu) {
+        if (palette != 0) {
+          usable = false;
+          break;
+        }
+        palette = (uint16_t)(bank[at + 1u] | (bank[at + 2u] << 8));
+        if (palette == 0)
+          usable = false;
+      }
+      at += 3u;
+    }
+    /* Fail closed: a run that opens with this type but cannot be walked
+     * (an unknown command such as a sub-script call, or no terminator)
+     * might request another palette, so it refutes the answer like a
+     * script without a palette or with a different one. */
+    if (!usable || !ended || palette == 0 ||
+        (answer != 0 && answer != palette))
+      return 0;
+    answer = palette;
+  }
+  return answer;
+}
+
 
 
 
@@ -1206,6 +1773,13 @@ bool Dkc3VideoMirrorSourceTileAcrossEdge(uint32_t source_tile_x,
   return true;
 }
 
+static uint16_t Dkc3VideoScrollPhaseDistance8(uint16_t a, uint16_t b) {
+  uint16_t distance = (uint16_t)((a - b) & 0x00ffu);
+  if (distance > 0x0080u)
+    distance = (uint16_t)(0x0100u - distance);
+  return distance;
+}
+
 bool Dkc3VideoSelectTerrainPhase(const Dkc3HdmaBands *bands,
                                  int layer,
                                  uint16_t frame_h,
@@ -1218,12 +1792,28 @@ bool Dkc3VideoSelectTerrainPhase(const Dkc3HdmaBands *bands,
     *phase_h = frame_h;
   if (phase_v)
     *phase_v = frame_v;
+  if (!bands || layer < 0 || layer >= 4 || !phase_h || !phase_v)
+    return false;
   const uint16_t camera_h = (uint16_t)(camera_x & 0x03ffu);
   const uint16_t camera_v = (uint16_t)(camera_y & 0x03ffu);
-  if (!bands || layer < 0 || layer >= 4 || !phase_h || !phase_v ||
-      Dkc3VideoScrollAtTerrainPhase(frame_h, frame_v, camera_h, camera_v))
-    return false;
+  if (Dkc3VideoScrollAtTerrainPhase(frame_h, frame_v, camera_h, camera_v)) {
+    if (bands->count == 0)
+      return false;
+    int frame_phase_lines = 0;
+    for (int index = 0; index < bands->count; index++) {
+      const Dkc3HdmaBand *band = &bands->band[index];
+      if (Dkc3VideoScrollAtTerrainPhase(band->h_scroll[layer],
+                                        band->v_scroll[layer],
+                                        frame_h, frame_v)) {
+        frame_phase_lines +=
+            (int)band->last_line - (int)band->first_line + 1;
+      }
+    }
+    if (frame_phase_lines * 2 >= kDkc3HdmaLastLine)
+      return false;
+  }
   int best_lines = 0;
+  int best_phase_lines = 0;
   uint16_t best_h = frame_h;
   uint16_t best_v = frame_v;
   for (int index = 0; index < bands->count; index++) {
@@ -1233,56 +1823,98 @@ bool Dkc3VideoSelectTerrainPhase(const Dkc3HdmaBands *bands,
     if (!Dkc3VideoScrollAtTerrainPhase(h, v, camera_h, camera_v))
       continue;
     int lines = 0;
-    for (int other = index; other < bands->count; other++) {
+    int phase_lines = 0;
+    for (int other = 0; other < bands->count; other++) {
       const Dkc3HdmaBand *candidate = &bands->band[other];
-      if (candidate->h_scroll[layer] == h && candidate->v_scroll[layer] == v)
-        lines += (int)candidate->last_line - (int)candidate->first_line + 1;
+      const int span =
+          (int)candidate->last_line - (int)candidate->first_line + 1;
+      if (Dkc3VideoScrollAtTerrainPhase(candidate->h_scroll[layer],
+                                        candidate->v_scroll[layer], h, v)) {
+        phase_lines += span;
+        if (candidate->h_scroll[layer] == h &&
+            candidate->v_scroll[layer] == v)
+          lines += span;
+      }
     }
-    if (lines > best_lines) {
+    if (lines > best_lines ||
+        (lines == best_lines && phase_lines > best_phase_lines)) {
       best_lines = lines;
+      best_phase_lines = phase_lines;
       best_h = h;
       best_v = v;
     }
   }
-  if (best_lines == 0) {
-    /* Nothing renders at the camera phase. When the HDMA table sets the
-     * terrain layer's scroll from its first line, the frame-start register
-     * is not what the frame renders: Toxic Tower's Rattly bounces move the
-     * camera five pixels a frame and BG1's scroll follows through HDMA,
-     * leaving the register a frame behind; keyed on the register, every
-     * band read as off-phase and the whole layer repeated its ring into the
-     * margins for that frame. Adopt the scroll that covers at least half
-     * the frame's lines when it lies within the follow distance of the
-     * camera. */
-    int dominant_lines = 0;
+  if (best_lines == 0 || best_phase_lines * 2 < kDkc3HdmaLastLine) {
+    /* Either nothing renders at the 10-bit camera phase, or only a minority
+     * band does (e.g. a one-line HDMA band while the rest of the frame renders
+     * a shifted terrain phase). When HDMA sets the terrain layer's scroll from
+     * its first line, the frame-start register is not what the frame renders:
+     * Toxic Tower's Rattly bounces move the camera five pixels vertically per
+     * frame, and Tidal Trouble's underwater HDMA writes BG2HOFS from scanline
+     * 1 so Enguarde's 7-8 px/frame charge leaves the register more than
+     * kDkc3VideoTerrainPhaseLeadX behind. Adopt the scroll whose terrain-phase
+     * neighborhood covers at least half the frame's lines (breaking ties by
+     * exact-line count so wavy water bands select their dominant scroll) when
+     * it lies within the follow distance of the camera — matching either the
+     * 10-bit vertical phase (64-row vertical maps) or the 8-bit 256-pixel
+     * vertical phase within the first page when the vertical scroll also
+     * follows the frame-start register (32-row horizontal maps staged one
+     * 256-pixel page above camera Y). */
+    int dominant_phase_lines = 0;
+    int dominant_exact_lines = 0;
     uint16_t dominant_h = frame_h, dominant_v = frame_v;
     for (int index = 0; index < bands->count; index++) {
       const Dkc3HdmaBand *band = &bands->band[index];
       const uint16_t h = band->h_scroll[layer];
       const uint16_t v = band->v_scroll[layer];
-      int lines = 0;
+      int phase_lines = 0;
+      int exact_lines = 0;
       for (int other = 0; other < bands->count; other++) {
         const Dkc3HdmaBand *candidate = &bands->band[other];
-        if (candidate->h_scroll[layer] == h &&
-            candidate->v_scroll[layer] == v)
-          lines += (int)candidate->last_line - (int)candidate->first_line + 1;
+        const int span =
+            (int)candidate->last_line - (int)candidate->first_line + 1;
+        if (Dkc3VideoScrollAtTerrainPhase(candidate->h_scroll[layer],
+                                          candidate->v_scroll[layer], h, v)) {
+          phase_lines += span;
+          if (candidate->h_scroll[layer] == h &&
+              candidate->v_scroll[layer] == v)
+            exact_lines += span;
+        }
       }
-      if (lines > dominant_lines) {
-        dominant_lines = lines;
+      if (phase_lines > dominant_phase_lines ||
+          (phase_lines == dominant_phase_lines &&
+           exact_lines > dominant_exact_lines)) {
+        dominant_phase_lines = phase_lines;
+        dominant_exact_lines = exact_lines;
         dominant_h = h;
         dominant_v = v;
       }
     }
-    if (dominant_lines * 2 < kDkc3HdmaLastLine ||
-        (dominant_h == frame_h && dominant_v == frame_v) ||
-        Dkc3VideoScrollPhaseDistance(dominant_h, camera_h) >
-            kDkc3VideoTerrainPhaseFollowX ||
-        Dkc3VideoScrollPhaseDistance(dominant_v, camera_v) >
-            kDkc3VideoTerrainPhaseFollowY)
+    const bool v_matches_10bit =
+        Dkc3VideoScrollPhaseDistance(dominant_v, camera_v) <=
+            kDkc3VideoTerrainPhaseFollowY;
+    const bool v_follows_frame =
+        Dkc3VideoScrollPhaseDistance(dominant_v, frame_v) <=
+            kDkc3VideoTerrainPhaseFollowY ||
+        (frame_v < 0x0100u && dominant_v < 0x0100u &&
+         Dkc3VideoScrollPhaseDistance8(dominant_v, frame_v) <=
+             kDkc3VideoTerrainPhaseFollowY);
+    const bool v_matches_8bit =
+        v_follows_frame && dominant_v < 0x0100u &&
+        Dkc3VideoScrollPhaseDistance8(dominant_v,
+                                      (uint16_t)(camera_y & 0x00ffu)) <=
+            kDkc3VideoTerrainPhaseFollowY;
+    if (dominant_phase_lines * 2 >= kDkc3HdmaLastLine &&
+        (dominant_h != frame_h || dominant_v != frame_v) &&
+        Dkc3VideoScrollPhaseDistance(dominant_h, camera_h) <=
+            kDkc3VideoTerrainPhaseFollowX &&
+        (v_matches_10bit || v_matches_8bit)) {
+      *phase_h = dominant_h;
+      *phase_v = dominant_v;
+      return true;
+    }
+    if (best_lines == 0)
       return false;
-    *phase_h = dominant_h;
-    *phase_v = dominant_v;
-    return true;
   }
   *phase_h = best_h;
   *phase_v = best_v;

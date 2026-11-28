@@ -1930,3 +1930,2116 @@ windowed 960x720 with the bar; View > Toggle Full Screen and the saved
 fullscreen preference both gave `GetMenu()` NULL and a `WS_POPUP` client
 equal to the monitor; the menu item and Escape restored the bar and
 960x720. All 28 CTest checks pass. No cartridge, widescreen or Mac change.
+
+## 2026-11-21 - widescreen enemy spawn and sprite-cull lead-in (16:9 Doorstop Dash)
+
+- **Symptom:** in 16:9 widescreen (specifically reported in Doorstop Dash,
+  level `$0028`), enemies and doors could still blink onto the screen past
+  the widened edge instead of walking or scrolling smoothly across it.
+- **Cause:** Doorstop Dash places all 118 objects through the standard
+  `$BB:A647` / `$BB:AAD4` / `$B7:8857` pipeline (90 placements on
+  `DATA_BBA8BE` row `$00` with `32 px` native slack, and 28 door/gear
+  placements on row `$10` with `16 px` native slack). The existing
+  widescreen helpers (`Dkc3VideoExpandCullLeft` / `Dkc3VideoExpandCullSpan`)
+  widened those windows by only the exact presented margin (`extra ± bias`)
+  with no extra lead-in. Because newly activated sprites require 2+ frames
+  for VRAM tile DMA upload inside the sprite renderer at `$B7:8857`
+  (`CODE_B78857`), which queues uploads at `$B7:90AA` (`CODE_B790AA`), and
+  `$B7:8925` culls sprites before reaching `CODE_B790AA`, fast sprint/roll
+  scrolling plus sprite half-widths consumed the 16-32 px slack before tiles
+  finished uploading. In addition, the interpreter-patched cull at `$B7:A88F`
+  (`Dkc3PatchInterpreterCull`) previously widened symmetrically without
+  `presentation_bias`.
+- **Change:**
+  - Added configurable widescreen spawn-ahead helpers in
+    `runner/dkc3_video.h` and `runner/dkc3_video.c`:
+    `Dkc3VideoSetSpawnLead`, `Dkc3VideoSpawnLead`,
+    `Dkc3VideoSpriteCullLead`, `Dkc3VideoExpandSpawnLeft`,
+    `Dkc3VideoExpandSpawnSpan`, `Dkc3VideoExpandSpriteCullLeft`, and
+    `Dkc3VideoExpandSpriteCullSpan` (default `48 px` per side, overridable
+    via `DKC3_SPAWN_LEAD`, clamped to `[0, 64]`).
+  - Expanded `Dkc3VideoPlacementScanCells` and `Dkc3PlacementScanBegin`
+    (`runner/dkc3_game.c`) to scan up to two 256-pixel neighbor buckets per
+    side (`kDkc3VideoPlacementScanMaxCells = 5`) whenever the worst-case
+    widened reach (`2 * extra + lead + 32 px` asymmetric row slack) can
+    cross a second 256-pixel cell boundary (e.g., 21:9 with spawn lead).
+  - Placement lead applies only to `DATA_BBA8BE` rows with `Lx < $60` and
+    `Wx < $1C0` (rows `$00`, `$10`, `$30`, `$40`, `$70`), preserving 8-pixel
+    spawn/despawn hysteresis while skipping already-wide rows (`$20`, `$50`,
+    `$60`) so `camera_x - Lx_widened` cannot underflow 16-bit unsigned
+    subtraction near `camera_x = $0100`.
+  - Sprite renderer cull lead is clamped to `160 - 2 * extra` (`108 px` cap
+    at 16:10, `74 px` cap at 16:9, `0 px` at 21:9) so off-screen sprites
+    can queue VRAM tile DMA early without wrapping nine-bit OAM X onto the
+    opposite margin.
+  - Wired `$BB:AAD4` to `Dkc3VideoExpandSpawnLeft/Span` and the nine `$B7`
+    sprite renderer cull sites to `Dkc3VideoExpandSpriteCullLeft/Span` in
+    `scripts/apply_dkc3_widescreen_overrides.py`, leaving `$B6:F186` and
+    the static banana/star grid renderer (`$B7:E8E0` / `$B7:E981`) on the
+    exact `Dkc3VideoExpandCull*` helpers. Updated `Dkc3PatchInterpreterCull`
+    in `runner/dkc3_game.c` to use `Dkc3VideoExpandSpriteCullLeft/Span`
+    after per-frame bias and terrain-readiness updates.
+  - Native 4:3, unproven terrain frames, and `DKC3_CULL_WIDEN=0` keep zero
+    lead and native windows.
+- **Unit tests (ROM-free):** `python -m unittest discover -s tests` (22/22,
+  including updated `test_apply_dkc3_widescreen_overrides.py`).
+- **Unverified:** this widened window change remains unverified until a
+  paired `DKC3_CULL_WIDEN=0` vs `1` A/B comparison (and 4:3 hash-parity
+  check) is captured and recorded; an informal live Windows Release check
+  in 16:9 Doorstop Dash observed reduced enemy edge pop-in, without a
+  paired `DKC3_CULL_WIDEN=0` baseline capture. Also unverified: C/CTest
+  (`test_dkc3_video`), macOS rebuild, and full-game traversal across 16:10,
+  16:9, and 21:9. Regenerating `generated/snesrecomp/` from a ROM is
+  required to pick up the updated generated-code wrappers.
+
+## 2026-11-21 - Pot Hole Panic / Tyrant Twin Tussle black screen, crash, and save corruption
+
+- **Symptom:** in Pot Hole Panic (level `$0045`) and Tyrant Twin Tussle
+  (level `$004B`), the window turned black (`INIDISP=$8F`), the game
+  eventually crashed with an off-rails runtime failure, and closing the
+  window during the black-screen hang could corrupt `saves/save.srm`.
+- **Root cause:** both levels contain the only two `PLA; JMP $F27D`
+  non-local child-sprite despawn sites in bank `$B6` (`CODE_B6B22E` at
+  `$B6:B234` in Pot Hole Panic and `CODE_B69D33` at `$B6:9D3F` in Tyrant
+  Twin Tussle). When a parent sprite despawns before its child sprite,
+  the interpreted sprite handler (`$B6:B228` / `$B6:9D19`) executes a
+  `JSR` that call-bounces into the compiled helper with `entry_s = $01FA,
+  hrv = 2`. The helper executes `PLA` (discarding its own 2-byte `JSR`
+  return frame so `cpu->S = $01FC > entry_s`), tail-calls `$B6:F27D`
+  (deleting the sprite via `$BB:8591`), and executes `$B6:F281: JML [$04F5]`
+  (sprite-loop continuation), which enters `interp_tier_dispatch_balanced`
+  with `cpu->S` already strictly shallower than `entry_s`.
+  - Previously, `interp_tier_dispatch_balanced` started a nested
+    `interp_bridge_run_ex2` anchored at the stale `s_exit = entry_s`
+    (`$01FA`). When the child was the highest active sprite slot (as
+    reproduced deterministically at host frame 759 / `snes_frame_counter=57800`
+    in 16:9 Pot Hole Panic with `SNESRECOMP_LLE_JUMP_BOUNCE=1` or `0`),
+    the nested run finished the sprite loop and executed `$BB:B9AF: RTL`,
+    popping the outer interpreter's `JSL $BB:85BB` frame (`$01FC -> $01FF`),
+    exited with `ok = 1`, got `cpu_resolve_post_return_skip($01FF) == -1`
+    (outer caller was the interpreter, not compiled `g_recomp_stack`), and
+    returned `RECOMP_RETURN_NORMAL`. The owning interpreter then resumed at
+    `$B6:B22A` with empty stack `S = $01FF`, executed `$BB:B9AF: RTL` a
+    second time, popped garbage `$A0:78C3` from `$0200..$0202`, ran
+    off-rails inside the HiROM SRAM window (`$A0:6000-$7FFF`) and WRAM
+    with `INIDISP=$8F` for ~388 frames (`frame 800..1187`), and finally
+    tripped `off-rails runtime failure at host frame 1188 resume=$8034b3`
+    (`rc=6`). Closing the black window before `g_fail` triggered caused
+    shutdown to persist the corrupted `g_sram` buffer to `saves/save.srm`.
+  - Even when a higher active sprite slot existed (observed on slot 7 with
+    slot 8 active), `$BB:B8EB`'s `PHA; PHA; RTL` trampoline for slot 8
+    landed at `in.sp = $01FC > s_exit ($01FA)`, causing the nested run to
+    exit prematurely, silently skipping slot 8 and resuming `$B6:B22A` on
+    the deleted sprite.
+- **Change (`cmake/runtime-patches/interp_bridge.hunks`):**
+  - In `interp_tier_dispatch_balanced` (`@@ balanced-goto-unwind-to-owner`),
+    when `cpu->S` is already strictly shallower than `entry_s`
+    (`pre_s_delta != 0 && pre_s_delta < 0x8000u`), unwind straight back to
+    the owning interpreter at `target_pc24 & 0xFFFFFFu` with live `cpu->S`
+    via `interp_bridge_lle_yield_unwind` whenever
+    `s_interp_bounce_owner_depth > 0`, `!cpu_interrupt_context_active()`,
+    and `cpu->S` has not crossed above `s_interp_owner_exit_s`.
+  - When falling through to `interp_bridge_run_ex2` (`@@ arrival-bounce-balanced-hrv`)
+    with `cpu->S` already shallower than `entry_s` (e.g., no owning
+    interpreter or `S` crossed above a nested interpreter's exit watermark),
+    anchor the nested run at `run_s_exit = cpu->S` with `s_run_hrv = 0`
+    rather than the stale `entry_s`.
+  - Added defense in depth in `interp_tier_dispatch_balanced`'s epilogue
+    (`@@ balanced-overpop-unwind-to-owner`): capture `post_return_pc` via
+    `interp_bridge_run_ex2` and, if a nested run returns `ok` with `cpu->S`
+    strictly above `expected_post_s` and no compiled ancestor matches
+    (`cpu_resolve_post_return_skip <= 0`), unwind to the owning interpreter
+    at `post_return_pc` instead of returning `RECOMP_RETURN_NORMAL`.
+  - Added ROM-free unit test `test_balanced_dispatch_unwinds_nonlocal_stack_pops`
+    in `tests/test_apply_dkc3_runtime_patches.py`.
+- **Verified (Windows x64 Release, private ROM):**
+  - ROM-free Python tests on this branch: `python -m unittest discover -s tests` (23/23).
+  - Full Windows Release build and 28/28 CTest suite (including
+    `supplied_rom_headless_boot` and all four Windows SDL aspect smoke
+    tests: 4:3, 16:10, 16:9, 21:9), plus Pot Hole Panic (2,000 frames,
+    all four aspects, `DKC3_CULL_WIDEN=0`, `SNESRECOMP_LLE_JUMP_BOUNCE=0`,
+    and `[ibr]` trace confirming clean `yield-unwind -> $B6F281 sp=$01FC`
+    on both crash and slot-skip cases), Tyrant Twin Tussle (2,000 frames
+    across all four aspects), and 600-frame boot runs (`4:3`, `16:9`) all
+    exited `rc=0` with `inidisp=$0f`.
+- **Unverified:** clean rebuild of `build-windows` directly on this
+  branch without the sibling widescreen-lead changes, live triggering of
+  the `$B6:9D3F` despawn branch inside Tyrant Twin Tussle (proven
+  statically to execute the identical `PLA; JMP $F27D -> $B6:F281`
+  sequence as `$B6:B234`), full playthrough of both stages to the
+  flagpole, and macOS rebuild.
+
+## 2026-11-21 - Poisonous Pipeline (`$003F`) — PPU window logic, widescreen window alignment, and Koco wall-exit investigation
+
+- **Reported symptoms:**
+  1. The pink water-surface pattern rendered far below the actual water
+     surface (and inverted over the rock walls at water shafts).
+  2. Fish ("odd fish movements") swimming into/through solid walls.
+- **Root cause 1 — Water surface patterns (three distinct bugs, all fixed):**
+  - **Missing `WBGLOG`/`WOBJLOG` combine logic in `PpuWindows_CalcWithExtra`
+    (`snesrecomp/runner/src/snes/ppu.c:605`):** Poisonous Pipeline renders
+    its pink water surface on BG3 (`bgXsc[2]=$70`, 32x32 tiles wrapping
+    vertically every 256 px) with `W34SEL=$0A` (W1 and W2 enabled,
+    non-inverted), `WBGLOG=$30` (`XNOR` for BG3), `TMW=TSW=$04`,
+    `W2=[255, 0]` (always empty), and `W1=[shaft_left, shaft_right]` at
+    water shafts or `W1=[255, 0]` deeper underwater. `PpuWindows_CalcWithExtra`
+    ignored `ppu->wbgobjlog` and hardcoded `win->bits = w1_bits | w2_bits`
+    (`OR`). Deep underwater (`W1=W2=[255,0]`), `OR(false, false) = false`
+    left BG3 unmasked everywhere, exposing its 256 px / 512 px vertical
+    wrap on the pipe floor; at water shafts, `OR(in_w1, false) = in_w1`
+    inverted the mask, hiding the surface inside the shaft and drawing it
+    over the surrounding walls.
+  - **Unshifted hardware windows under `wsPresentationXBias`
+    (`PpuWindows_CalcWithExtra`):** Near level walls (e.g. Poisonous
+    Pipeline's entrance shaft with `bias=+36`), `Dkc3DrawPpuFrame` shifts
+    BG `hScroll` and OBJ presentation left by `bias` pixels, but
+    `PpuWindows_CalcWithExtra` left non-pinned hardware window edges at
+    native screen X, misaligning the water-surface window by `bias` pixels.
+  - **Wall-extent BG3 clear overriding windowed 32-column BG3
+    (`runner/dkc3_game.c`):** `Dkc3VideoMarginLeavesAuthoredExtent(...)`
+    cleared bit `0x04` of `physical_wide_mask` *after* ORing
+    `Dkc3VideoPhysicalWindowedLayerMask(...)` instead of only clearing the
+    64-column BG3 ring bit from `Dkc3VideoPhysicalWideLayerMask(...)`.
+    Near the west wall, that forced Poisonous Pipeline's windowed 32-column
+    BG3 into `wsLayerRepeat`, wrapping the entrance-shaft water surface
+    into the opposite margin.
+- **Root cause 2 — Fish swimming through walls (original SNES behavior +
+  widescreen exposure; no recompiler/CPU bug):**
+  - Decoded all 109 placements of `$003F` (`$FE:4CEE` via `$FF:0040 + type`)
+    against the decompressed 96x80 metatile map (`$7F:0000`). All 40 fish
+    in the stage are Kocos (`$B6:8220`, `sid=$0300`): 12 patrolling Kocos
+    (`w_5a=$07 -> $B9:E1DB`, all patrol ranges inside open pipe chambers)
+    and 28 straight-swimming green Kocos (`w_5a=$08 -> $B9:E20D`:
+    `JSR $EE6E; JSR $E0EC; JMP $E183`, constant horizontal speed with
+    vertical bobbing and **no terrain/wall collision in the SNES ROM**).
+  - Audited `koco_main_idle` (already executes in authoritative LLE),
+    `recomp/bankb9.cfg`, and generated bank `$B9` movement functions, and
+    verified identical Koco `(x, y)` coordinates in 4:3 AOT vs 4:3 LLE
+    (`SNESRECOMP_LLE_BOUNCE=0`).
+  - Even on authentic 4:3 LLE, straight-swimming Koco `#7` (`$5C0, $240`,
+    `type=$02B8`) swims straight into the sloped ceiling if the player
+    pauses to watch. In 16:9 / 21:9, widened side margins and widened
+    `$BB:AAD4` activation/despawn (`+43 px` in 16:9, `+95 px` in 21:9)
+    spawn straight-swimming Kocos earlier and keep them visible further
+    past the native 256 px edges, visibly exposing their straight-line
+    wall exits. Per the cartridge correctness oracle, Koco physics were
+    left authentic.
+- **Changes:**
+  - `cmake/runtime-patches/ppu.hunks`: added fail-closed hunks
+    `@@ window-combine-logic` (honors `(ppu->wbgobjlog >> (layer * 2)) & 3u`
+    for OR/AND/XOR/XNOR across all 6 window layers and masks unused upper
+    bits by `(1u << nr) - 1u`, matching `ppu_legacy.c`) and
+    `@@ window-presentation-bias` (shifts non-pinned edges of non-empty
+    W1/W2 windows by `-ppu->wsPresentationXBias`, clamped to
+    `[win->edges[0], window_right - 1]`; exact no-op when bias is 0).
+  - `runner/dkc3_game.c`: moved the `Dkc3VideoMarginLeavesAuthoredExtent`
+    BG3-ring bit clear before ORing `Dkc3VideoPhysicalWindowedLayerMask`.
+  - `tests/test_dkc3_ppu_windows.c`, `CMakeLists.txt`, and
+    `tests/test_apply_dkc3_runtime_patches.py`: added 247 ROM-free PPU
+    window cases (216 BG3 + 24 OBJ/Color Window oracle comparisons against
+    `ppu_legacy.c` and 7 widescreen presentation-X-bias checks) plus
+    runtime-patch hunk assertions.
+- **Verified (Windows x64 Release, private ROM):**
+  - `python -m unittest discover -s tests`: 23/23 passed on this branch.
+  - Full Windows Release build and 29/29 CTest suite (including
+    `dkc3_ppu_windows`, `dkc3_ppu_mode2`, `supplied_rom_headless_boot`,
+    and all four Windows SDL aspect smoke tests: 4:3, 16:10, 16:9, 21:9).
+  - Poisonous Pipeline (`$003F`, 1,310-frame swim replay through entrance
+    shaft, deep underwater, and second shaft):
+    - **4:3 fast PPU vs `DKC3_PPU_LEGACY=1`:** 107/107 sampled frames
+      (frames 240–1300 step 10) are **byte-for-byte identical (0 diffs)**;
+      `audio_fnv1a=451a775a3b3b4f8f`.
+    - **16:9 and 21:9 visual inspection:** entrance shaft (`bias=+36`),
+      deep underwater (frames 700, 850), right-margin shaft entry (frames
+      1015–1070), and second shaft (frames 1150, 1300) all render with
+      aligned water surfaces, zero wrapped patterns deep underwater, and
+      zero opposite-margin repeat leaks.
+- **Unverified:** full playthrough of Poisonous Pipeline to the flagpole
+  (including the second sub-room), Murky Mill / Floodlit Fish live visual
+  regression captures, and macOS rebuild.
+
+## 2026-11-21 - missing bonus stars near the left wall in widescreen (issue #4)
+
+- **Symptom:** in Doorstop Dash's first bonus round ("Collect the Stars!",
+  60 stars, level `$52`), one star was missing and uncollectible in 16:9
+  widescreen, while 4:3 completed normally.
+- **Cause:** DKC3's "Collect the Stars!" bonus games store their stars in
+  the same `$7E:6780` static tile-row list as banana formations, initialized
+  by `$B7:E4B7` and walked every frame by `$B7:E8E0`. For each active group,
+  `$B7:E8E0` calls both the renderer (`$B7:E981`) and the collector
+  (`$B7:EB69`). The walk computes `$2C = camera_x + right` (`$B7:E8E4`,
+  native `$0100`), subtracts `$2C` from the group's left X (`$B7:E905`),
+  adds the group's width (`$B7:E909`), and adds back a span constant
+  (`$B7:E90D`, native `$010F`), skipping both drawing and collection on
+  `BMI` (`$B7:E910`). Because `$B7:E8E4` widens `$0100` with
+  `Dkc3VideoExpandCullRight` (`+ extra + bias`), `$B7:E90D` must widen
+  `$010F` by both margins (`Dkc3VideoExpandCullSpan`, `+ 2 * extra`) so the
+  left cutoff stays at `camera_x - ($0F + extra - bias)`, matching
+  `$B7:E9C8`. `scripts/apply_dkc3_widescreen_overrides.py` instead wrapped
+  `0x10f` in `Dkc3VideoExpandCullLeft` (`+ extra - bias`), so `extra`
+  canceled out and the left cutoff moved to `camera_x - 15 + 2 * bias`:
+  with `bias = 0` the left margin was never widened, and near a left wall
+  with positive glide/shift bias (`+43` in 16:9, `+95` in 21:9) the cutoff
+  moved inside the native viewport (up to `camera_x + 71` in 16:9 and
+  `camera_x + 175` in 21:9). In Doorstop Dash Bonus 1 (map shape 4), entry 0
+  is a single-star group spanning world X `$0148..$0150` (`328..336`), so
+  near the left wall in 16:9 its right edge falls below the shifted cutoff
+  and it is skipped for both drawing and collection.
+- **Fix:** `adapt_grid_renderer` in
+  `scripts/apply_dkc3_widescreen_overrides.py` now wraps `0x10f` in block
+  `0xB7E909` with `Dkc3VideoExpandCullSpan`. Because
+  `Dkc3VideoExpandCullSpan(0x10f) - Dkc3VideoExpandCullRight(0x100)` equals
+  `Dkc3VideoExpandCullLeft(0x0f)` for every aspect ratio, presentation bias,
+  terrain-ready state, and `DKC3_CULL_WIDEN=0`, the walk and draw bounds
+  agree everywhere and 4:3 stays native. Updated
+  `tests/test_apply_dkc3_widescreen_overrides.py` and added the
+  `Span(0x10f) - Right(0x100) == Left(0x0f)` invariant checks across
+  positive, zero, and negative presentation bias in `tests/test_dkc3_video.c`.
+- **Verified:** `tests/test_apply_dkc3_widescreen_overrides.py` (4/4),
+  ROM-backed Windows Release regeneration and build, all 28 CTest checks
+  (including `dkc3_video`'s new `Span(0x10f) - Right(0x100) == Left(0x0f)`
+  checks), and live in-game verification in Doorstop Dash Bonus Level 1
+  ("Collect the Stars!", 60 stars) in widescreen confirming the previously
+  missing star now appears and is collectible.
+- **Unverified:** macOS rebuild, headless 4:3/wide hash-parity capture of
+  Doorstop Dash Bonus 1 with `DKC3_CULL_WIDEN=0` vs `1`, and traversal of
+  every other "Collect the Stars!" bonus level across 16:10, 16:9, and 21:9.
+  Regenerating generated C from a ROM is required to pick up the override
+  change in a compiled binary.
+
+## 2026-11-21 - Windows Alt+Tab CPU spike and desktop hang mitigation
+
+- **Symptom:** Alt+Tabbing away from the Windows game (`DKC3RecompSDL.exe`,
+  configured with `Fullscreen=1`, `Upscaler=2` Reconstruct, OpenGL VSync on
+  Windows 11 26200 / NVIDIA 621.24) spiked CPU and could hang the computer.
+- **Root causes found in the Windows desktop hosts:**
+  1. **No focus-loss / minimize pause or swap suppression
+     (`runner/sdl_main.c`, `runner/desktop_main.c`):** `SDL_WINDOW_FULLSCREEN_DESKTOP`
+     does not minimize on focus loss in SDL2, and neither desktop host handled
+     `SDL_WINDOWEVENT_FOCUS_LOST`, `SDL_WINDOWEVENT_MINIMIZED`, or unfocused
+     states. Even though `ReadControls` already blocked all gameplay input
+     when unfocused, the main loop kept running full emulation, full-monitor
+     21-tap Reconstruct OpenGL shaders, `glFlush()`, `SDL_GL_SwapWindow()`
+     (`wglSwapIntervalEXT(1)`), and per-second `SetWindowTextW` updates right
+     through Alt+Tab DWM / NVIDIA Direct-Flip transitions and while
+     backgrounded.
+  2. **Busy-spin inside `PaceFrame()` (`runner/sdl_main.c`) and `WaitUntil()`
+     (`runner/desktop_main.c`):** Whenever `SDL_GL_SwapWindow` returned early
+     (for example when VSync detached on focus loss/minimization, on >60 Hz
+     displays, or in hidden mode), `PaceFrame()` spun in a tight
+     `SDL_Delay(0); PumpEvents(host);` loop for the last 1–2 ms of every frame,
+     calling `WIN_PumpEvents` and `SDL_JoystickUpdate` (HID/WGI/RawInput/XInput)
+     repeatedly at 100% CPU. In `desktop_main.c`, `WaitUntil()` similarly spun
+     when `remaining < 1 ms` and never reanchored `deadline` after stalls,
+     causing an unthrottled catch-up burst after returning from Alt+Tab or
+     window drags.
+  3. **`SDL_SYSWMEVENT` queue flooding (`runner/windows_menu.c`):** Enabling
+     `SDL_EventState(SDL_SYSWMEVENT, SDL_ENABLE)` solely to observe menu
+     `WM_COMMAND` messages caused SDL2 to wrap and enqueue every raw Win32
+     message sent during Alt+Tab and DWM focus transitions.
+- **Changes:**
+  - `runner/desktop_pacer.h` / `runner/desktop_pacer.c` /
+    `tests/test_desktop_pacer.c`: added unit-tested background-pause and
+    paused-repaint policy helpers (`Dkc3DesktopShouldPauseInBackground`,
+    `Dkc3DesktopShouldRepaintWhenPaused`).
+  - `runner/sdl_main.c`:
+    - Pauses emulation, pauses/resets SDL audio (unified with overlay pause),
+      and stops OpenGL presentation while minimized/hidden or (on Windows)
+      unfocused (`DKC3_RUN_IN_BACKGROUND=1` opts out of focus-loss pause while
+      still pausing when minimized). Windowed paused instances repaint once on
+      demand for expose/resize; minimized windows never call
+      `SDL_GL_SwapWindow`, and unfocused fullscreen windows do not unless
+      `DKC3_RUN_IN_BACKGROUND=1`.
+    - Sleeps in `MsgWaitForMultipleObjectsEx(0, NULL, 50, QS_ALLINPUT, ...)`
+      while background-paused on Windows (with an anti-spin guard) instead of
+      spinning or polling joysticks (`SDL_WaitEventTimeout` falls back to
+      polling when a joystick is attached), and reanchors frame deadline and
+      FPS counter on focus return.
+    - Replaced `PaceFrame()`'s `SDL_Delay(0)` busy-spin on Windows with a
+      high-resolution waitable timer (`CREATE_WAITABLE_TIMER_HIGH_RESOLUTION`)
+      waited via `MsgWaitForMultipleObjectsEx` (with an anti-spin fallback to
+      `WaitForSingleObject`), exiting `PaceFrame` immediately if focus is lost.
+  - `runner/desktop_present_sdl.c`: skips GL work immediately when
+    `SDL_WINDOW_MINIMIZED` is set and drops the redundant `glFlush()` before
+    `SDL_GL_SwapWindow()`.
+  - `runner/windows_menu.c` / `tests/test_windows_menu.c`: routes menu
+    `WM_COMMAND` from the existing `MenuProc` subclass via a dedicated
+    `SDL_RegisterEvents(1)` user event without enabling `SDL_SYSWMEVENT`
+    (keeping `SDL_SYSWMEVENT` only as a fallback if event registration fails).
+  - `runner/desktop_main.c` / `CMakeLists.txt`: applied the same background
+    pause, high-resolution waitable timer, `deadline` stall reanchoring, and
+    minimized/unfocused-fullscreen `WM_PAINT` guard to the Win32 host.
+- **Verified (Windows x64 Release, private ROM):**
+  - Clean MSVC `/W4` Release rebuild of `DKC3RecompSDL.exe`, `DKC3Recomp.exe`,
+    `test_desktop_pacer.exe`, and `test_windows_menu.exe` (0 warnings in
+    modified files).
+  - Full Windows CTest suite: 29/29 passed (including updated `desktop_pacer`,
+    `windows_menu` asserting `SDL_SYSWMEVENT` matches the selected routing mode,
+    and all four Windows SDL aspect smoke tests).
+  - Hidden-mode CPU measurement (`DKC3_DESKTOP_TEST_HIDDEN=1`, 16:9
+    Reconstruct): before fix, 300 frames took `1.359 s` total CPU
+    (`0.953 s` user, `0.406 s` kernel in `5.475 s` wall); after fix, 360 frames
+    (20% more frames) took `0.844 s` total CPU (`0.688 s` user, `0.156 s`
+    kernel in `6.329 s` wall, `6.006 s` active runtime for 360 frames).
+- **Unverified:** Interactive live Alt+Tab in fullscreen on the user's desktop
+  (automated tests run hidden without driving the live Alt+Tab switcher) and
+  macOS rebuild.
+
+## 2026-11-21 - Fix widescreen margin distortion during fast movement in HDMA-scrolled horizontal levels
+
+- **Symptom:** Moving rapidly in widescreen (for example, charging on Enguarde
+  in Tidal Trouble, Lake Orangatanga level 3, `$00C0 = $0027`, shape 0
+  horizontal map) visibly distorted both side margins for the duration of the
+  high-speed dash.
+- **Root cause:**
+  1. In Tidal Trouble, HDMA channel 7 (`$210D`, mode 3) writes `BG1HOFS` and
+     `BG2HOFS` (terrain layer `BG2`, `BG2SC = $79`, 64x32 tilemap) on every
+     scanline starting at line 1 (flat above water, 3-value wavy ripple
+     underwater). Because HDMA overwrites `BG2HOFS` from line 1, the
+     frame-start `g_ppu->hScroll[1]` register holds the previous frame's last
+     scanline value. During Enguarde's 7–8 px/frame charge, `|band_h - frame_h|`
+     exceeds `kDkc3VideoTerrainPhaseLeadX` (6 px).
+  2. `Dkc3VideoSelectTerrainPhase()` (`runner/dkc3_video.c`) was designed to
+     adopt the rendered HDMA band scroll in this case, but failed on 32-row
+     horizontal levels for two reasons:
+     - Its vertical follow check compared `dominant_v` against
+       `camera_y & 0x03ff` modulo 1024 only. In 32-row horizontal levels
+       staged one 256-pixel page above `camera_y` (e.g., `camera_y = $0218`,
+       `v_scroll = 23`), the 10-bit distance is 511 (> `kDkc3VideoTerrainPhaseFollowY = 32`),
+       so `Dkc3VideoSelectTerrainPhase()` always returned `false`, leaving
+       `s_terrain_phase_h` stuck on the stale frame-start register and causing
+       `Dkc3ClassifyBands()` to drop 50–69 of 68–69 terrain scanline bands to
+       `kDkc3BandPolicyRepeat` (`R`) instead of `kDkc3BandPolicyWorld` (`W`).
+     - Its dominant-scroll fallback counted only exact `(h, v)` line matches
+       against the `>= 112` half-screen threshold, which can fail when a
+       full-screen underwater wavy HDMA ripple spreads 224 lines across 3+
+       adjacent horizontal scroll values.
+     - Its early-return guard kept `frame_h, frame_v` whenever it lay within
+       lead distance of `(camera_h, camera_v)` even when HDMA bands rendered
+       more than 6 px away on the opposite side of the camera.
+- **Changes:**
+  - `runner/dkc3_video.c`: updated `Dkc3VideoSelectTerrainPhase()` to:
+    - accept an 8-bit (256-pixel) vertical phase match against `camera_y & 0xff`
+      in the dominant-scroll fallback when `dominant_v` also follows `frame_v`
+      within `kDkc3VideoTerrainPhaseFollowY` (including 255 -> 0 wrap when both
+      `< 0x0100`), preserving rejection of far parallax scrolls on 64-row
+      vertical maps;
+    - count phase-compatible lines (`Dkc3VideoScrollAtTerrainPhase`) for the
+      half-screen majority gate, breaking ties by exact-line count so wavy
+      underwater bands pick their dominant scroll;
+    - only take the early return when the frame-start register already covers
+      at least half the rendered lines (or there are no HDMA bands).
+  - `tests/test_dkc3_video.c`: added ROM-free unit tests covering 32-row
+    horizontal fast-charge HDMA phase selection, full-screen 3-value wavy
+    underwater ripples, 32-row vertical wrap (`255 -> 0`), and stale
+    frame-start register replacement when within camera lead.
+- **Verified (Windows x64 Release, private ROM):**
+  - Rebuilt Release targets cleanly via `cmake --build build-windows --config Release`.
+  - CTest: 29/29 passed (`dkc3_video`, `supplied_rom_headless_boot`, and all
+    four Windows SDL aspect smoke tests).
+  - Python unit tests (`python -m unittest discover -s tests`): 24/24 passed.
+  - Headless Tidal Trouble Enguarde charge replay (`dkc3_snesrecomp_headless.exe`
+    from Lake Orangatanga node 4 savestate into Tidal Trouble, 2,320 frames):
+    - Before fix (16:9, frames 2270–2278): 9 frames dropped 50/68–69/69 terrain
+      bands to `R` (`kDkc3BandPolicyRepeat`), distorting 40.2% of the left
+      margin (3,871/9,632 px) and 6.9% of the right margin (666/9,632 px) at
+      frame 2275.
+    - After fix: `0` terrain `R`-band frames across the entire run in 16:10,
+      16:9, and 21:9 (frames 2270–2278: `68/68` and `69/69` `W` bands, `0` `R`
+      bands). At frame 2275 in 16:9, `terrain_ready=1`, `margin_matching=465/465`,
+      and the native 256x224 center window is bit-identical (`0` pixels changed)
+      to the pre-fix 16:9 render.
+- **Unverified:** macOS rebuild and live interactive desktop playtest in Tidal
+  Trouble.
+
+## 2026-11-21 - Fix general audio distortion (DSP ring overflow and starvation)
+
+- **Symptom:** Audio distorted / buzzed during launch (~5–7 seconds in, right
+  as the title screen music starts) and after savestate loads / rewinds.
+- **Root causes in the pinned `snesrecomp` APU synchronization path:**
+  1. **Double-counted SPC cycles in `interp_bridge.c`:**
+     `interp_bridge_use_absolute_apu_timeline()` only suppressed the legacy
+     relative `bridge_apu_flush()` catch-up for SA-1 cartridges. Because DKC3
+     is not SA-1, `interp_bridge.c` ran `bridge_apu_flush()` (`snes_catchupApu`)
+     *on top of* `RtlRunFrame()`'s absolute guest-cycle timeline
+     (`rtl_sync_apu_to_cpu_locked()`, `apu_schedulePortWrite()`, and
+     `rtl_sync_apu_frame_boundary()`). During interpreter-heavy phases such as
+     SPC music uploads (frames 60–120 and 378–397), the SPC ran ahead of real
+     time, overflowing the 8,192-sample DSP ring (before fix on a 600-frame SDL
+     boot with `SNESRECOMP_AUDIO_STATS=1`: `8,719` dropped samples, `2,807`
+     audible dropped across `29` drop runs, `hiwater=8192`). Once the upload
+     finished, `apu_runToGuestCycle()` saw `portClock >= target` and stalled
+     for ~20 frames until guest time caught up, draining the ring dry and
+     starving `rtl_render_native()` for 6 consecutive frames (`underflows=10`,
+     400 zero samples per 533-sample frame at frames 412–417, producing a 60 Hz
+     chopping buzz).
+  2. **Unanchored guest timeline and stale port queue after reset / savestate
+     load / rewind (`common_rtl.c`):**
+     - `apu_saveload()` intentionally does not serialize the host port queue or
+       guest-to-SPC anchor, yet neither `RtlLoadSnapshot()` nor
+       `RtlLoadSnapshotFromMemory()` called `apu_clearPortQueue()`. Across a
+       `snes_frame_counter` jump (savestate load or rewind), stale anchors
+       caused either repeated `[apu] frame-boundary guest-clock sync timed out`
+       stalls (forward jump) or silent starvation (backward jump).
+     - Whenever `apu->portTimeValid` was `false` (after reset or
+       `apu_clearPortQueue()`), `apu_runToGuestCycle()` returned immediately
+       without advancing the SPC until the next CPU write to `$2140-$217F`. On
+       `saves/dkc3s0.sav`, 596 of 598 frames starved with 445 zero samples per
+       533-sample frame.
+- **Changes:**
+  - `cmake/runtime-patches/interp_bridge.hunks`: added
+    `@@ apu-flush-use-frame-timeline` and `@@ apu-loop-use-frame-timeline` so
+    `interp_bridge.c` defers to `rtl_apu_frame_timeline_active()` instead of
+    also running `bridge_apu_flush()` relative catch-up (DKC3 enforces a
+    per-frame master-cycle deadline in `Dkc3RunOneFrame()`, so the absolute
+    timeline advances monotonically on every frame).
+  - `cmake/runtime-patches/common_rtl.hunks` (new):
+    - `@@ apu-anchor-frame-timeline`: anchors `portGuestAnchor` /
+      `portTargetAnchor` at frame start in `RtlRunFrame()` whenever
+      `!g_snes->apu->portTimeValid`, so `rtl_sync_apu_frame_boundary()` always
+      advances the SPC by exactly 17,088 cycles (534 DSP samples) per frame.
+    - `@@ apu-clear-port-queue-on-file-load` and
+      `@@ apu-clear-port-queue-on-memory-load`: clear the host APU port queue
+      and mapping on successful `RtlLoadSnapshot()` and
+      `RtlLoadSnapshotFromMemory()` calls under `RtlApuLock()`.
+  - `tests/test_apply_dkc3_runtime_patches.py`: added
+    `test_apu_timeline_uses_single_clock_and_clears_port_queue_on_load`.
+- **Verified (Windows x64 Release, private ROM):**
+  - Rebuilt `dkc3_snesrecomp_headless.exe`, `DKC3RecompSDL.exe`, and
+    `DKC3Recomp.exe` cleanly.
+  - Python unit tests (`python -m unittest discover -s tests`): 25/25 passed.
+  - Full Windows Release CTest suite: 29/29 passed (including
+    `supplied_rom_headless_boot`, `dkc3_runtime_patches`, and all four Windows
+    SDL aspect smoke tests exercising overlay, rewind, fast-forward, and
+    save/load).
+  - 600-frame SDL hidden boot (`SNESRECOMP_AUDIO_STATS=1`): `dropped=0` (was
+    `8,719`), `dropped_audible=0` (was `2,807`), `drop_runs=0` (was `29`),
+    `underflows=0` (was `10`), `hiwater=2188` (was `8192`).
+  - 1,800-frame headless boot PCM: all six starvation chops at frames 412–417
+    eliminated (only the 4 genuine game silences remain across 30 seconds).
+  - `saves/dkc3s0.sav` 600-frame headless replay: 0 starvation runs across all
+    598 active frames (down from 596), 0 APU sync timeouts, and all five
+    guest-state hashes (`frame`, `wram`, `vram`, `cgram`, `oam`) unchanged.
+  - Live interactive Windows desktop audio playback verified by the user.
+- **Unverified:** macOS rebuild.
+
+## 2026-11-22 - Fix black screen and crash after beating the first boss and collecting the token
+
+- **Symptom:** After beating the first boss (Belcha's Barn) and collecting the
+  token, the screen went black for ~63 frames and the runtime stopped with
+  `FATAL: native runtime stopped unexpectedly` at frame 4633
+  (`resume_pc = $80ffc0`; diagnostic bundle
+  `diagnostic_bundle_20261122_143241_11584`).
+- **Root cause:**
+  1. The diagnostic bundle's `dispatch_log` ended abruptly at frame 4569 with
+     the boss-victory sequence: `CODE_B898AB` -> `CODE_B89C4C` ->
+     `CODE_B8F39B` (unresolved indirect jump at `$B8:F3C0` via
+     `interp_tier_dispatch_balanced`) -> `CODE_B8F5B9` -> `CODE_B2800F`
+     (music transition) -> three consecutive calls to
+     `upload_spc_engine_write_spc_command_a` (`$B2:825E`), ending at
+     `$B2:825D` (`i=237044`) and `$B2:825E` (`i=237045`), followed by 0
+     compiled dispatches across frames 4570–4632.
+  2. Inside `interp_tier_dispatch_balanced` (a nested `interp_bridge_run_ex2`
+     run with `auto_quiescent == 0`, `yield_pc == 0`), `_interp_run_core()`
+     only checked `s_lle_master_deadline` when `auto_quiescent` was true.
+     When `upload_spc_engine_write_spc_command_a` (`$B2:825E`: `SEP #$10;
+     LDX $06; CPX $2140; BNE $8262; ...; REP #$10; RTS`) spun waiting for the
+     SPC700 past the end of frame 4569 (`RTL_MASTER_CYCLES_PER_FRAME`), the
+     nested interpreter did not yield the frame.
+  3. With `bridge_apu_flush()` deferred to `RtlRunFrame()`'s absolute guest
+     timeline (`0152975`), `rtl_apu_guest_cycle()` clamped `within` at
+     `RTL_MASTER_CYCLES_PER_FRAME - 1` while `snes_frame_counter` stayed
+     frozen at 4569. The SPC never advanced further, so `$B2:8262` spun to the
+     interpreter step cap and returned `ok = 0`.
+  4. `interp_tier_dispatch_balanced()` then fell back to
+     `cpu_unresolved_abandon_balanced()`, abandoning the routine mid-handshake
+     with `x_flag = 1` (8-bit index registers from `SEP #$10` at `$B2:825E`,
+     before `REP #$10` at `$B2:8270`) and `DB = $B2`. With `x_flag = 1`, no
+     `M0X0` compiled entries matched on frames 4570–4632, the game corrupted
+     into a black screen, and 63 frames later went off-rails to `$80:FFC0`.
+- **Changes:**
+  - `cmake/runtime-patches/interp_bridge.hunks`: added
+    `@@ nested-deadline-owner-static`, `@@ nested-deadline-owner-depth`, and
+    `@@ nested-deadline-unwind` so `interp_bridge_run_ex2()` records the
+    bridge depth of the enclosing auto-quiescent scheduler frame
+    (`s_lle_sched_owner_depth`, set only when `yield_pc == 0xFFFFFFFE`), and
+    any nested interpreter run that is not in interrupt context, is not a
+    `stop_on_rti` run, and has a scheduler owner frame below it, and that
+    reaches `s_lle_master_deadline`, cleanly unwinds to that scheduler
+    frame at `pc_before` via the existing `s_lle_unwind_active` mechanism. The
+    top-level scheduler frame then yields the frame cleanly, `RtlRunFrame()`
+    advances the SPC across the frame boundary, and the next frame resumes at
+    `pc_before` with exact guest registers and stack.
+  - `tests/test_apply_dkc3_runtime_patches.py`: added
+    `test_nested_interp_unwinds_to_scheduler_on_master_deadline`.
+- **Verified (Windows x64 Release, private ROM):**
+  - Reconfigured and rebuilt `dkc3_snesrecomp_headless.exe`,
+    `DKC3RecompSDL.exe`, and `DKC3Recomp.exe` cleanly.
+  - Python unit tests (`python -m unittest discover -s tests`): 26/26 passed.
+  - Full Windows Release CTest suite: 29/29 passed (including
+    `supplied_rom_headless_boot`, `dkc3_runtime_patches`, and all four Windows
+    SDL aspect smoke tests).
+  - 600-frame SDL hidden boot (`SNESRECOMP_AUDIO_STATS=1`): `dropped=0`,
+    `dropped_audible=0`, `drop_runs=0`, `underflows=0`, `hiwater=2201`.
+  - 600-frame headless replay on `saves/dkc3s0.sav` and 300-frame headless
+    replay on `build-windows/Release/saves/dkc3s0.sav`: both completed cleanly
+    with 0 APU timeouts.
+  - Live interactive Windows desktop verification by the user beating the first
+    boss (Belcha's Barn) and collecting the token with no black screen or crash.
+- **Unverified:** macOS rebuild.
+
+## 2026-11-22 - Skip opening logo and bouncing/developer credit scenes with Start
+
+- **Feature:** Allow pressing the **Start** button on cold boot to skip DKC3's
+  opening Rare bouncing/rolling log (`$B2:8751`, State 0), bouncing/developer
+  credit intro (`$B2:8B2C`, State 1), and copyright screen (`$B2:8EE5`,
+  State 3) directly to the Title Screen (`$B2:8E05`, State 2).
+- **Cartridge mechanism (verified from bank `$80` and `$B2` disassembly):**
+  - On cold boot `$80:82B4` initializes `$06AB = $0000`, causing both
+    `$B2:8788` (State 0) and `$B2:8B76` (State 1) to skip controller polling.
+    After the first attract-mode loop completes State 3 (`$B2:8F28`), the
+    cartridge sets bits 0 and 2 of `$06AB` (`$0005`), enabling its own button
+    check (`$04CE & $9080`), fade-out (`$B2:8603`), and direct transition to
+    State 2 (Title Screen via `$B2:850E`).
+  - State 3 (`$B2:8EE5`) polls buttons but waits until scene frame timer
+    `$00F4 >= $005A` (90 frames) before calling `$B2:8603`.
+  - When skipping State 0/1 before State 3 has polled `$4016` (`JOYSER0`) 16
+    times, `snesrecomp`'s `joypad1Index` is still 0 (whereas real hardware's
+    VBlank auto-joypad read shifts all 16 bits, leaving `$4016` bit 0 = 1),
+    causing `$80:8B49` to discard `$04CA`/`$04CE`. Advancing `joypad1Index` to
+    16 under `autoJoyRead` when the skip triggers lets the cartridge's own
+    first poll succeed cleanly.
+- **Changes:**
+  - `runner/dkc3_intro_skip.h`, `runner/dkc3_intro_skip.c`: added
+    `Dkc3IntroSkipEnabledFromEnv()` (enabled by default; `DKC3_SKIP_INTRO_START=0`
+    disables) and `Dkc3ApplyIntroStartSkip()`, which sets `$06AB |= $0005` in
+    States 0/1 and advances `$00F4` to `$005A` in State 3 only when Start is
+    pressed and no fade is active (`$04ED == 0` and `($00BC & 1) == 0`).
+  - `runner/dkc3_game.c`: called `Dkc3ApplyIntroStartSkip()` in
+    `Dkc3RunOneFrame()` before NMI dispatch and synced `joypad1Index = 16` when
+    triggered under `autoJoyRead`.
+  - `tests/test_dkc3_intro_skip.c` and `CMakeLists.txt`: wired into all three
+    game targets (`dkc3_snesrecomp_headless`, `dkc3_snesrecomp_sdl`,
+    `dkc3_snesrecomp_desktop`) and added ROM-free unit test `dkc3_intro_skip`.
+  - `README.md`: documented the Start-button intro skip and env override.
+- **Verified (Windows x64 Release, private ROM):**
+  - Rebuilt `dkc3_snesrecomp_headless.exe`, `DKC3RecompSDL.exe`,
+    `DKC3Recomp.exe`, and `test_dkc3_intro_skip.exe` cleanly.
+  - Full Windows Release CTest suite: 30/30 passed (including `dkc3_intro_skip`,
+    `supplied_rom_headless_boot`, and all four Windows SDL aspect smoke tests).
+  - Headless ROM verification (7 scripted scenarios):
+    - 900-frame no-input boot: frame and WRAM hashes bit-identical to pre-change
+      baseline (`2dbea76e20ae...` / `f05d976d802c...`).
+    - Start at frame 200 (State 0) and Start held from frame 1 through fade-in:
+      both fade out cleanly and reach Title Screen (`$B2:8E05`) by frame 350.
+    - Start at frame 500 (State 1): reaches Title Screen (`$B2:8E05`) by frame 650.
+    - Start at frame 1140 (State 3): reaches Title Screen (`$B2:8E05`) by frame 1260.
+    - Start during State 0 followed by Start on Title Screen: enters File Select
+      (`$80:9586`) cleanly.
+    - `DKC3_SKIP_INTRO_START=0` with Start at frame 200: stays in State 0
+      (`$B2:8751`, `$06AB=$0000`).
+  - Live interactive Windows desktop playtest verified by the user.
+- **Unverified:** macOS rebuild.
+
+## 2026-11-22 - Barrel Shield Bust-Up (`$0030`) — black side background from edge-parked PPU windows
+
+- **Symptom:** In Barrel Shield Bust-Up (World 2 Level 1, `$0030`, map shape 4),
+  the forest background (`BG2`/`BG3`) was blacked out on the right side in
+  widescreen (16:10, 16:9, 21:9) at the level start, and on the left side once
+  scrolling into the second hollow tree trunk.
+- **Root cause:** Barrel Shield Bust-Up uses both SNES hardware windows (`W1`
+  and `W2`, `windowsel=$00a00aa0`, `wbgobjlog=$0000` OR, `main_window=$06`
+  masking 32-column `BG2` and `BG3` plus Color Window) to hide the forest
+  background behind the transparent arch corners of up to two hollow tree
+  trunks. When a trunk is off-screen, the cartridge clamps both of its 8-bit
+  window edges to the screen boundary, parking the unused window at the
+  1-pixel degenerate sentinel `[255, 255]` (off the right) or `[0, 0]` (off
+  the left). In widescreen:
+  1. `PpuWidescreenAdjustPinnedWindowEdges()` (`snesrecomp/runner/src/snes/ppu.h`)
+     checked `*wNl == 0` and `*wNr == 255` independently, expanding `[255, 255]`
+     to `[255, window_right - 1]` and `[0, 0]` to `[screen_left, 0]`, turning
+     the 1-pixel parked sentinel into a full-margin black bar.
+  2. `@@ window-presentation-bias` (`cmake/runtime-patches/ppu.hunks`) then
+     shifted the unpinned endpoint by `-wsPresentationXBias` (e.g. `bias=+33`
+     at the start shifted `w2l` to `222`, masking `[222, 298]` in 16:9 and
+     `[222, 350]` in 21:9; `bias=-31` at the second trunk shifted `w1r` to
+     `+31`, masking `[-43, 31]`), extending the black bar into the native
+     viewport.
+- **Changes:**
+  - `cmake/runtime-patches/ppu.hunks` (`@@ window-presentation-bias`): when
+    widescreen margins are active (`win->edges[0] < 0 || window_right > 256`),
+    treat 1-pixel edge-parked sentinels (`[0, 0]` and `[255, 255]`) as empty
+    (`wl = 1, wr = 0`) and skip presentation-bias shifting for them. Exact
+    no-op at native 4:3 (`win->edges[0] == 0`, `window_right == 256`,
+    `wsPresentationXBias == 0`).
+  - `tests/test_dkc3_ppu_windows.c`: added `{4, 211, 255, 255}` and
+    `{0, 0, 105, 255}` to the 4:3 `ppu_legacy.c` oracle (now 288 BG3 cases)
+    and added 4 widescreen masked-window cases covering `[255, 255]` and
+    `[0, 0]` at zero, positive, and negative presentation bias (11 widescreen
+    window cases total).
+  - `tests/test_apply_dkc3_runtime_patches.py`: asserted `w1_parked` /
+    `w2_parked` in `test_ppu_windows_honors_combine_logic_and_presentation_bias`.
+- **Verified (Windows x64 Release, private ROM):**
+  - Reconfigured and rebuilt `dkc3_snesrecomp_headless.exe`,
+    `DKC3RecompSDL.exe`, `DKC3Recomp.exe`, and `test_dkc3_ppu_windows.exe`
+    cleanly.
+  - Python unit tests (`python -m unittest discover -s tests`): 26/26 passed.
+  - Full Windows Release CTest suite: 30/30 passed (including `dkc3_ppu_windows`
+    with 288 BG3 oracle + 24 OBJ/Color Window oracle + 11 widescreen
+    presentation-X-bias/parked-window cases, `dkc3_runtime_patches`,
+    `supplied_rom_headless_boot`, and all four Windows SDL aspect smoke tests).
+  - Barrel Shield Bust-Up (`$0030`) headless replay from the start savestate
+    through the first branch into the second tree trunk:
+    - 4:3 fast PPU vs `DKC3_PPU_LEGACY=1` at frame 5 (`w1=[4,211], w2=[255,255]`)
+      and frame 230 (`w1=[0,0], w2=[20,227]`): byte-identical (`0` diffs).
+    - 16:10, 16:9, and 21:9 visual inspection at frames 5, 100, 145, and 230:
+      continuous forest canopy on both sides with zero right- or left-side
+      black bars and zero 1-pixel vertical seams, while active hollow trunk
+      masks stay aligned.
+  - Live interactive Windows desktop playtest verified by the user.
+- **Unverified:** full playthrough of Barrel Shield Bust-Up and other
+  hollow-trunk stages to the flagpole, and macOS rebuild.
+- **Scope decision (review follow-up, 2026-11-22):** the parked-sentinel rule
+  applies to every stage, not only Barrel Shield Bust-Up. A 1-pixel window
+  at `[0, 0]` or `[255, 255]` is what the cartridge's edge clamp produces for
+  an off-screen mask, and in a wide aspect neither alternative is faithful:
+  pin-expanding it paints a full-margin bar, and keeping its single native
+  column leaves a 1-pixel seam inside the picture, because native column 0
+  or 255 is no longer the screen edge. Gating by stage ID would miss other
+  levels that use the same clamp. The cost is that one native edge column
+  loses its window in wide aspects; 4:3 is unaffected. No other stage has
+  been surveyed for a legitimate 1-pixel edge window.
+
+## 2026-11-22 - Squeals on Wheels (world 2, level 3) - Sneek drawn with the fire palette in widescreen
+
+- **Symptom:** in the release quick save (`saves/dkc3s0.sav`, SHA-256
+  `7542f1de...c0a`, made in a wide aspect), the Sneek in its wheel on the left is drawn
+  in red/yellow fire colours instead of its own purple/grey.
+- **Measurement (16:9, after load):** the OBJ palette allocator's eight
+  hardware slots at `$073C` hold IDs `$0F,$01,$02,$14,$26,$00,$1D,$47`; sprite
+  slot 20 (type `$0398`, the Sneek) has OAM attribute `$2060`, palette 0, and
+  `$1D4B` (last failed request) is `$0058`. Four Buzzes, the barrel, both
+  Kongs, and the Sneek were all alive in the widened window when `$0058` was
+  requested, so `$BB:95DF` raised exception `$20` and `$BB:95E6` fell back to
+  palette 0, which holds the common effect palette `$0F`. The allocator never
+  retries, so the sprite keeps palette 0 after slot 5 later frees.
+- **Root cause:** a consequence of widened object activation, not a runtime
+  defect: more concurrently live objects than the hardware's eight OBJ palettes.
+- **Changes (commit `68ad82c` plus this entry):**
+  - `scripts/apply_dkc3_widescreen_overrides.py` (`adapt_palette_overflow`):
+    after `cpu_trace_block(cpu, 0xBB95E6)` in `request_palette_direct_M0X0`,
+    call `Dkc3RecordSpritePaletteOverflow(cpu->D)`, which records the failed
+    ID (`$04EF`) against the sprite slot at DP `$76`. Fails closed if the
+    anchor moves. No guest state is written; it returns early at 4:3.
+  - `runner/dkc3_game.c` (`Dkc3SyncWidescreenObjPalettes`, every frame before
+    the PPU draws): drops entries whose slot despawned or received a real
+    palette, recovers a save that already captured the fallback (`$1D4B` not
+    in `$073C` and not tracked, attached to the active palette-0 dynamic sprite
+    whose tiles are in OAM), loads the 15 colours from the ROM table at
+    `$3D3201` (or the WRAM tinted copy when `$0775` bit 15 is set), and tags
+    palette-0 OAM entries in the slot's tile range.
+  - `cmake/runtime-patches/ppu.hunks`: a host-only extended OBJ CGRAM table (24
+    palettes) and per-line OAM tag buffer; `PpuLookupPixelColor` serves tagged
+    OBJ pixels (layers 4/6) from it in the main, color-math, and HUD-margin
+    composite paths. The SIMD sprite fast path is skipped only while a tag is
+    active. Inactive (plain `cgram` lookup) at 4:3 and whenever every sprite
+    fits the hardware palettes.
+  - `@@ composite-ext-obj-fallback-sub` now anchors on the
+    `math_enabled_cur & 0x100` line: its two-line replacement also appeared in
+    the main composite path, so reversing hunks found it twice and
+    `test_pinned_sources_apply_and_change_only_where_stated` failed.
+  - `tests/test_apply_dkc3_widescreen_overrides.py`: a palette allocator
+    fixture (the suite failed without one), hook placement assertions, and a
+    fail-closed test for a moved `$BB:95E6` anchor.
+  - `DKC3_EXT_PAL_TRACE=1` prints the tracked slot/palette pairs every frame.
+- **Verified (Windows x64 Release, private ROM):**
+  - Python unit tests 27/27; full Release CTest 30/30.
+  - Release quick save, headless, 400 frames (unpause, walk left into the
+    Buzzes, then right until the Sneek despawns): Sneek drawn in its own
+    palette in 16:10, 16:9, and 21:9; a second live overflow (`$0023`, slot 22)
+    was recorded and released; tags cleared when the sprites despawned.
+  - The 4:3 render of the same save still shows palette 0: the guest state
+    in the save carries the fallback, and the 4:3 image is the oracle.
+- **Accepted divergence:** for this save, wide aspects now draw the Sneek
+  differently from the 4:3 oracle, which shows palette 0. That is deliberate:
+  the overflow is produced by widened activation, so at 4:3 the cartridge
+  draws exactly what it computed, and the host table only repairs a state the
+  wide aspect caused. The 4:3 path is left untouched rather than "corrected",
+  because correcting it would mean the 4:3 image no longer follows guest
+  state. No follow-up is planned for 4:3.
+- **Review follow-up (2026-11-22):**
+  - The save-recovery heuristic no longer runs every frame. A state load, and
+    every in-level frame at 4:3, arm an 8-frame window; recovery runs only in
+    that window and disarms on the first attachment. Before, once the
+    original sprite despawned, a stale `$1D4B` could be attached to any later
+    palette-0 dynamic sprite.
+  - Leaving a wide aspect now clears the tracked slots, so returning to a
+    wide aspect cannot apply a stale overflow palette to a sprite that
+    legitimately uses palette 0.
+  - Verified: headless 16:9 replay of the release quick save still attaches
+    `$0058` to slot 20 on the first frame after load; the 4:3 replay
+    records nothing. The despawn-then-respawn case that motivated the change
+    was not reproduced.
+- **Unverified:** a byte-identical 4:3 A/B against the previous build on the
+  saved-scene corpus (argued from the early returns, not measured); a live
+  overflow reached from a level start rather than a save; the interpreter
+  (LLE) path through `$BB:95E6`, which does not call the hook; the live
+  desktop app; macOS rebuild.
+
+## 2026-11-22 - bonus-room background slides in widescreen (glide in narrow rooms)
+
+- **Symptom:** in the first level's bonus room (level word `$00C0` = `$0051`,
+  the reported release quick save), widescreen showed black bars and the
+  background moved noticeably when walking left or right, kept sliding after
+  the player stopped, and the HUD banana counter drifted sideways.
+- **Measurement:** the room's camera range is `$0100..$0118` (24 pixels of
+  travel), narrower than two margins at every wide aspect (52 at 16:10, 86 at
+  16:9, 190 at 21:9). `Dkc3VideoPresentationMarginsBounded` under `glide`
+  pinned the presented center to `$010C`, so the target bias was
+  `$010C - camera`, moving one pixel per pixel of camera travel. The adapter
+  limits the presented bias to one pixel per frame (`runner/dkc3_game.c`), so
+  on a 16:9 replay (60 frames Right, 60 Left) the camera fell from `$0118` to
+  `$0104` in 8 frames while the bias went `-12` to `-4`, then the bias kept
+  climbing to `+12` over the next 24 frames with the camera nearly still:
+  the picture lagged, then slid back. Every sprite, HUD included, moved by
+  the bias.
+- **Fix:** `glide` now keeps a zero bias in a room narrower than two margins
+  (`range < 2 * extra`) and clamps each margin to the authored extent, which
+  is the `bars` geometry. Wider rooms, `shift`, `bars`, and `reflect` are
+  unchanged. Tests: the 16:10 glide cases for a `$0120` room now expect the
+  camera-locked geometry, plus the `$0118` bonus geometry and a `$0134` room
+  (exactly two margins) that still glides.
+- **Verified (headless, release quick save, 60 Right then 60 Left):** bias 0
+  on every frame at 16:10, 16:9, and 21:9; at 16:9 the native 256 columns of
+  every sampled frame (every 4th of 161) are pixel-identical to the 4:3 run;
+  every frame and the WRAM/VRAM/CGRAM/OAM hashes are identical to
+  `DKC3_WIDESCREEN_EDGE=bars`; with `DKC3_CULL_WIDEN=0` the 16:9 WRAM hash
+  equals the 4:3 hash. The right margin blanks 43 to 19 columns as the camera
+  moves west, as the clamp predicts. All 30 CTest checks pass. The 4:3 path
+  is unchanged by construction (the branch requires `extra > 0`).
+- **Open:** at the west wall the left margin still shows 24 columns of
+  continuous dock and sky where the clamp asks for none (19 black columns
+  remain); `bars` shows the same, so it predates this change and its source
+  layer is not yet identified. The black bars themselves are the honest
+  answer for a room the map does not extend.
+- **Unverified:** the live desktop app, other bonus rooms, ordinary levels at
+  a wall in a live run (covered only by the unchanged unit cases), macOS.
+
+## 2026-11-22 - second bonus room still slides in widescreen (glide in short rooms)
+
+- **Symptom:** in the same level's other bonus room (the reported release
+  quick save, a "Collect the Stars!" room), the background kept moving after
+  the player stopped in widescreen, as in the first bonus room.
+- **Measurement:** camera range `$0100..$0180` (128 pixels). That is wider
+  than two 16:9 margins (86), so the previous narrow-room lock did not
+  apply, but shorter than the glide's two releases (2 x 43 x 8 = 688). The
+  pins held the presented center inside `[$012B, $0155]`, 42 pixels for 128
+  of camera travel, so the target bias moved about two pixels for every
+  three of camera. On a 16:9 replay (90 frames Right, 90 Left) the bias went
+  from `-43` and was still climbing one pixel a frame at `+15` with the
+  camera parked at `$0102`, 15 frames after it stopped.
+- **Fix:** under `glide`, a room shorter than `2 * extra * 8` pixels uses a
+  wall shift of `range / 16` (none when narrower than two margins), released
+  at the usual one pixel per eight, without the pins; margins clamp to the
+  authored extent. Both releases then fit in the room, so the bias changes
+  at most one pixel per eight of camera travel and never outruns the
+  one-pixel-per-frame limit. Rooms of `2 * extra * 8` pixels or more,
+  `shift`, `bars`, and `reflect` are unchanged. Tests: 16:10 short rooms of
+  52 and 128 pixels, and a 416-pixel room that still glides in full.
+- **Verified (headless, release quick save):** at 16:9 the bias moves from
+  `-8` to `+8` in steps of at most one, stops when the camera stops, and
+  the native 256 columns of all 56 sampled frames match the 4:3 run pixel
+  for pixel at the biased offset. 16:10 gives the same `-8..+8`, and 21:9
+  (two margins = 190 > 128) stays at bias 0. With `DKC3_CULL_WIDEN=0` the
+  16:9 WRAM hash equals the 4:3 hash. The first bonus room's frames and
+  hashes are unchanged from the previous fix. All 30 CTest checks pass.
+- **Unverified:** the live desktop app, the bonus rooms of later
+  levels, macOS.
+
+## 2026-11-22 - stale pixels beyond a wall in widescreen margins (bonus rooms)
+
+- **Symptom:** in the first level's 128-pixel bonus room (reported release
+  quick save, unpaused), walking right to the east wall drew the room's last
+  columns correctly, but past them the right margin showed a slanted,
+  repeated strip of sky, dock, and lake that changed as the camera moved
+  vertically.
+- **Measurement:** walking right (input mask `80`, hex) took the camera to
+  `$0180` while camera Y fell from `$01B4` to `$01CD`. The clamp
+  (`Dkc3VideoMarginsForBias`) gave a right margin of 8 columns, yet 35
+  columns past the native window held content. Layer-isolated renders all,
+  including empty BG4 and OBJ, showed the same diagonal boundary, so the
+  pixels did not come from a layer. The runtime PPU writes only
+  `[-extraLeftCur, 256 + extraRightCur)` on ordinary lines and nothing clears
+  the rest of the host row, so each column the margin gave up while the
+  camera reached the wall kept the pixels of the last frame that drew it,
+  frozen at a different camera height: the shear. A run started at the wall
+  is black there, which is why a fresh restore did not show it.
+- **Fix:** `Dkc3VideoClearOutsideMargins` blacks the columns outside the
+  clamped span, and the adapter calls it right after
+  `PpuSetExtraSideSpace`, before the frame's lines render. Lines that
+  composite the full budget (HUD split, anchor bands, repeat bands, forced
+  blank) still write the whole row and overwrite it. No runtime patch. Unit
+  test for left, right, none, and a too-narrow row.
+- **Verified (headless):** on the reported save at 16:10, 16:9, and 21:9,
+  every pixel that changed against the previous build is now black and lies
+  outside the clamped span (16:9: columns 307..341). The native 256 columns
+  of all 98 sampled 16:9 frames still match the 4:3 run at the biased offset.
+  On the first bonus room's save, the only change is the 24 leftover west-wall
+  columns (19..42) becoming black, which settles that entry's open item; its
+  memory hashes are unchanged. An ordinary level save (walk right, left,
+  jump) renders identically to the previous build at 16:9 and 21:9. All 30
+  CTest checks pass.
+- **Unverified:** the live desktop app, other bonus rooms, macOS.
+
+## 2026-11-22 - the overworld fills the wide view
+
+- **Request:** the reported release quick save is on the Northern
+  Kremisphere overworld (boat by Funky's Rentals), where every wide aspect
+  showed the native frame between black margins.
+- **Why it was black:** every widened path keys on the level main-loop
+  vector (`$4E` = `$B3:8076`). The overworld runs `$B4:B179`, so it took the
+  bounded-screen branch.
+- **Measurements (headless, the reported save):** Mode 1; BG1 a 64x32 map at
+  `$7800`, BG2 a 32x32 water map at `$6C00` whose scroll HDMA varies per
+  line, BG3 a 64x32 map at `$7000` at BG1's scroll; vscroll `$11F` throughout.
+  The overworld camera is the level camera word `$196D`, `$100` ahead of
+  BG1HOFS. Holding each direction for 600 frames took the camera across
+  `$150..$200`, and not one word of the three tilemaps or of the BG1/BG3
+  character data changed: the whole 512-pixel map is resident, spanning
+  world `$100..$300`. `$200` is the east bound (the native right edge
+  reaches the map end); `$150` was the boat meeting land, so the west bound
+  is assumed to be the map's first column, `$100`. While the boat moves,
+  `$196D` leads the latched BG1HOFS by up to two pixels.
+- **Change:** `Dkc3VideoIsResidentOverworld` admits the scene (the vector,
+  Mode 1, BG1 64 columns by 32 rows rendered within eight pixels of the
+  camera less `$100` and not past `$200`, every other enabled 64-column
+  layer at BG1's phase, every enabled layer 32 rows, no shared tilemap
+  pages, and `DKC3_CULL_WIDEN` not `0`). The adapter
+  (`Dkc3PresentOverworld`) then hashes every page of the enabled tilemaps
+  and widens only on a frame whose hash equals the previous frame's. A
+  change while the picture is displayed latches black margins until the
+  scene is left (a streamed map would show stale ring columns), and a change
+  under forced blank or zero brightness only restarts the proof. Margins
+  render BG1-BG3 straight from VRAM: BG1 and BG3 are the resident picture,
+  and BG2's 32-column wrap at 256 pixels is the hardware's. Each margin is
+  clamped to the map at the rendered scroll (`Dkc3VideoOverworldMargins`),
+  under every edge policy, and the columns outside it are cleared.
+- **No glide here:** a first version reused the level glide. The PPU's
+  presentation bias moves sprites, but on this raw path nothing moves the
+  backgrounds with them (levels get that from the world store), so a
+  4-pixel bias put the boat and rocks 4 pixels off the map in the native
+  center. The overworld is camera-locked at bias 0; at the east bound the
+  right margin is black. A runtime hunk that excluded margin-only sprites
+  from the 32/34 line limits was tried while chasing that symptom and
+  removed: this frame shows 15 sprites, nowhere near either limit.
+- **Verified (headless):** at 4:3 the frame, WRAM, VRAM, CGRAM, and OAM
+  hashes of a 30-frame run and of 600-frame Left and Right holds are
+  identical to the build before the change. At 16:10, 16:9, and 21:9 the
+  native 256 columns equal the 4:3 frame on every frame 2..29, and the WRAM
+  hash equals 4:3. On a 300-frame Right, 500-frame Left run (camera `$1A0`
+  to `$200` to `$150`, every eighth frame), the native center matched 4:3
+  in all 100 sampled frames, no frame fell back to black margins, and in
+  BG1-only renders all 5,943 margin columns inside the map equal the
+  native BG1 column at the same world x (offsets derived from the frames,
+  not the leading camera word); all 1,388 margin columns outside the map
+  are black. Only the first frame after the restore (the hash's first
+  sample) shows black margins. With `DKC3_CULL_WIDEN=0` the margins are
+  black and WRAM equals 4:3. Unit tests cover the gate, the camera lead,
+  the east bound, the nine-bit scroll, and the clamp under all four edge
+  policies. All 30 CTest checks pass; the desktop and SDL apps build.
+- **Open - overworld sprite window:** the cartridge keeps overworld objects
+  in OAM only about 45-48 pixels past each native edge. A signpost left OAM
+  when its left edge passed x 302-304, and a 32-pixel rock when its left
+  edge passed about x -56, with 18 of its pixels still inside a 16:9 left
+  margin. At 16:9 a sprite can therefore vanish in a margin's outer pixels;
+  at 21:9 (margins to 351) the signpost vanishes about 47 pixels inside
+  the right margin. Widening that window needs the routine located in the
+  disassembly; nothing was widened.
+- **Unverified:** the live desktop app, other overworld screens and the
+  per-world maps (they keep black margins unless they pass the gate and
+  the static-map proof), the real west bound, transitions into and out of
+  the overworld in a live session, and macOS.
+
+## 2026-11-22 - right margin cut off around a mill elevator (camera regions)
+
+- **Symptom:** in the reported release quick save (SHA-256
+  `30a0ee89...bd00`, level word `$00C0` = `$002A`, 16:9 with `glide`), the
+  Kongs stand by an elevator at the foot of a shaft. Riding it up to the
+  platform that leads right, the right margin showed misaligned blocks of
+  other rooms, with a hard seam at world `$02A0`/`$02C0` and a dark brick
+  patch on the plaster wall. The left margin showed only 17 columns.
+- **Measurement:** the camera stays at x `$0190` through the shaft while
+  the glide held bias `+25`. Its walls were `$0100` and `$04BC` = `$0A00`,
+  so it slid toward a west wall 144 pixels away and gave the right margin
+  all 43 columns plus the bias. Those columns decode correctly from the
+  level map (every margin cell matched), but no camera position shows them.
+  The cartridge confines the camera with a table of camera regions that
+  `$B7:D4B1` builds in WRAM from `$FD:C25B`. Edges are at `$995A`
+  (left), `$9A5A` (right edge of the last screen), `$9B5A` (top), and
+  `$9C5A` (bottom), indexed by region x 2. Entry 0 is the whole level.
+  `$9D5A` holds flags (low byte) and the right neighbour (high byte);
+  `$9E5A` holds two left neighbours. `$0478` is the current region x 2: 2 in
+  the floor room, 6 in the shaft, and 4 at the top in this replay. Here the
+  floor room is x `$0110..$0290`, the shaft `$0190..$0290` (exactly one
+  screen, no side links), the top room `$0190..$0290` linked right to
+  `$0290..$0418` and on east. The clamp at `$B7:DB90..DCAD` widens the span
+  into a linked neighbour only while it overlaps the target rows (`$049F`)
+  by `$38`, or while the player (`$047B`) is near a neighbour flagged `$80`;
+  `$20` never joins, and `$B7:E0ED` also tries the region after the link
+  when that region names the current one as a left neighbour. The joined
+  bounds live in `$0466..$046C` only inside the clamp; the same words hold
+  camera velocities at the end of a frame.
+- **Fix:** `Dkc3VideoCameraRegionSpan` returns the current region's span
+  continued through its left and right links (stopping at a missing link or
+  a `$20` neighbour), and the adapter uses it as the glide's walls and the
+  margin clamp, the native window always inside. Entry 0, a malformed
+  offset, or a region narrower than one screen keeps the old bounds. The map
+  hold still overrides the west wall. `reflect` keeps the level-wide wall.
+  A first version also applied the cartridge's `$38` row-overlap and `$80`
+  player gates. On the Squeals on Wheels save (`7542f1de...`) a left
+  neighbour dropped out during a descent and the 16:9 bias swung from -38
+  to -20 and back over 30 frames. Those gates change with vertical travel,
+  so the span ignores them and moves only when `$0478` does.
+- **Verified (headless, private ROM, previous build as reference):**
+  - 4:3 frame, WRAM, VRAM, CGRAM, and OAM hashes are identical to the
+    previous build on a 480-frame elevator replay (unpause, jump onto the
+    lift, ride to the top), a 500-frame Squeals on Wheels walk, and an
+    1,800-frame boot. The 16:9 boot is identical too.
+  - Elevator replay: the bias is 0 through the shaft at 16:10, 16:9, and
+    21:9, and both margins are black. At the foot of the shaft it is -8 at
+    16:9, and the right margin shows the floor room up to `$0290`. Once
+    `$0478` becomes the top room, the right margin opens onto the platform
+    and the bias ramps one pixel a frame to 36 at 16:9 (21 at 16:10, 84 at
+    21:9). There are no direction reversals. One step of more than one pixel
+    at 16:10 and 16:9 is the settle on the first frames after the restore.
+  - The native 256 columns equal the 4:3 frame at the biased offset on 45 of
+    59 sampled frames in each aspect. The other 14 differ only in the top
+    room's DK barrel, which swings with a different phase because widened
+    activation starts it earlier. The previous build has the same 14 frames.
+  - With `DKC3_CULL_WIDEN=0`, the WRAM and OAM hashes at 16:9 and 21:9
+    equal 4:3.
+  - Squeals on Wheels: the bias differs by a steady 3 pixels or less near
+    the east end, where the camera parks at the region wall `$09C0`
+    (`$04BC` is `$09D8`). The swing is gone. WRAM differs at 16:9 because
+    the widened cull windows follow the bias.
+  - Unit tests cover the shaft, an eastward chain, a westward link, the
+    `$20` and `$80` flags, the second east candidate, and invalid input.
+    All 30 CTest checks pass; the desktop and SDL apps build.
+- **Unverified:** the live desktop app, other levels' region tables
+  (bonus rooms, vertical levels, boss arenas), any level where `$0478`
+  points at a region whose links the cartridge never uses, and macOS.
+
+## 2026-11-22 - the overworld keeps its margins after the hovercraft
+
+- **Symptom:** a later release quick save, taken after the hovercraft is
+  bought at Funky's, showed black margins on the overworld again.
+- **Cause:** the gate still passed (same Mode 1 maps at `$7800`, `$6C00`,
+  `$7000`), but the static-map proof latched. The hovercraft opens the map
+  north of the original screen, and the camera now climbs (vscroll `$11F`
+  down to `$AF` in the replay). The game streams tilemap rows ahead of it.
+  Driving each of the eight directions for 900 frames, up-right latched at
+  frame 101 (first row write) and up-left at frame 884.
+- **Measurement:** per-frame VRAM diffs over a 2,550-frame path through
+  every direction. All 44 layer-frames with writes changed words in both
+  256-pixel pages. Each write is a 32-word run per page that starts one word
+  into a row, so its last word lands in column 0 (and 32) of the next row.
+  At most one changed row per frame was on screen: the run's tail. A game
+  streaming columns would touch every shown row instead.
+- **Change:** the whole-map hash is replaced by a per-row comparison with
+  the previous drawn frame's copy (`Dkc3OverworldMapsResident`). A frame
+  passes when each enabled layer's changed rows include at most
+  `kDkc3OverworldShownRowWrites` (2) rows that the frame shows
+  (`Dkc3VideoOverworldWritesAreRows`, `Dkc3VideoTilemapRowVisible`). A
+  layer whose vertical scroll register an active HDMA channel writes
+  (`Dkc3VideoHdmaVerticalScrollLayers`: `$210E`, `$2110`, `$2112` by
+  transfer mode) counts every changed row as shown. Other writes while
+  displayed still latch black margins. The code landed in `c9b28d6`
+  together with the camera-region change.
+- **Verification (headless, the hovercraft save):**
+  - No direction latched. Along the 2,550-frame path, 2,547 of 2,548
+    overworld frames widened at 16:9 and at 21:9; the remaining frame is
+    the first after the restore. In 50 sampled frames per aspect, the west
+    margin was never black. East columns were black only where the camera
+    stood at or near the map's east bound (`$200`), as the clamp requires.
+  - A tilemap oracle keyed each cell by world column and row from the
+    tiles the native 256 columns showed in any frame. 542,317 of 596,541
+    BG1 margin cells at 16:9 matched it, 50,483 were never shown in the
+    center, and 3,741 (18 distinct cells) disagreed. The 18 are cells the
+    initial screen drew one way and a streamed row later drew another way.
+    The margin shows the streamed VRAM, which is what the native view shows
+    at that spot after streaming.
+  - Unit tests cover row visibility at `$11F`, `$0`, `$100`, and one-line
+    edges; the measured row-streaming shapes; column-shaped writes; and
+    HDMA vertical-scroll detection for modes 0, 1, 2, and 4. All 30 CTest
+    checks pass.
+- **Found, not fixed:** in the headless replay, native 4:3 shows garbled
+  tiles in the rows streamed north of the original screen (from about frame
+  700), identically with `DKC3_CULL_WIDEN=0`. The user verified the fix in
+  the desktop app at this save and saw no garbling there, so this may be
+  specific to the headless host or the scripted replay. Not investigated.
+- **Unverified:** 4:3 byte-identity was not re-measured against the
+  previous build (the new path runs only when widescreen is on). The user
+  verified the margins in the desktop app at this save. Unverified: other
+  overworld maps and macOS.
+
+## 2026-11-23 - PR 17 review follow-ups (bias policy switch, overworld notes)
+
+- **Changes:**
+  - `runner/dkc3_game.c`: the presented bias re-snaps when the widescreen
+    edge policy changes (for example `shift` to `glide` from the menu).
+    Before, it eased one pixel per frame from the old policy's bias, so the
+    background and HUD slid for up to a margin's worth of frames.
+  - `runner/dkc3_video.h`: the overworld comment now separates the
+    measured two-pixel forward camera lead from the accepted
+    `kDkc3OverworldCameraLead` of eight pixels either way, which is
+    tolerance, not measurement; and it states the write contract as
+    `Dkc3VideoOverworldWritesAreRows` implements it (hidden rows, or at most
+    `kDkc3OverworldShownRowWrites` shown rows per frame).
+  - `tests/test_dkc3_video.c`: the right-margin clear case checks all four
+    bytes of each pixel.
+  - `docs/WIDESCREEN_GUIDE.md` 6.5 and `README.md`: the one-pixel limit is
+    stated as a per-frame bound; README claims are narrowed to what this log
+    records (bonus rooms verified only in the first level, the overworld
+    west bound assumed, the headless-only garbling at the hovercraft save,
+    linked regions stopping at a missing link or a `$20` neighbour).
+- **Not changed:** the overworld gate counts changed rows rather than
+  validating each row's write shape. The host sees only the word-level diff
+  against the previous frame, so a streamed row whose new words partly
+  equal the old ones shows as a partial row; a shape check on the diff
+  would reject real streaming. A sound check needs VRAM write spans from
+  the runtime, which this host does not record. The map is fully resident,
+  so a shown-row write outside the native columns is still map content the
+  camera would show on arrival; the risk is a game using margin cells as
+  scratch, which has not been observed. Open.
+- **Verified:** Python unit tests 27/27 and the full Windows Release CTest
+  suite 30/30, with every target (including `DKC3RecompSDL.exe`) rebuilt.
+  The policy-switch re-snap was not exercised in the app.
+
+## 2026-11-22 - KONG letter tracker and map badges
+
+- **Feature:** the host records, per save file, every level whose four
+  K-O-N-G letters have been collected, and draws "KONG" beside that
+  level's name on its world map. A world's name on the Northern
+  Kremisphere gets the same badge once all five of its levels are
+  recorded.
+- **Save compatibility:** the cartridge never saves KONG letters; they
+  exist only in WRAM while a level runs. The tracker keeps its own
+  sidecar, `saves/kong_letters.dat` (112 bytes: `DKC3KONG`, version 1,
+  three 32-byte level bitmaps, FNV-1a), and only reads SRAM. `save.srm`
+  stays exactly what the cartridge writes and remains portable to other
+  emulators. Losing or deleting the sidecar loses only the badges.
+- **Cartridge facts (from the private ROM; addresses only):**
+  - `$05D7` bits 0-3 are K, O, N, G. The pickup at `$BB:CD3A` sets its
+    bit with TSB and calls the life award (`$B8:8084`) when `$05D7 + 1`
+    has a zero low nibble. A star barrel copies the byte to `$05C3`
+    (`$BB:9B2F`) and a respawn restores it (`$BB:9AF6`); leaving a level
+    clears it (`$BB:A270`, `$BB:A32A`). Bit 4 is a different collectible
+    (`$BB:D216`) and is ignored.
+  - `$00C0` is the level number. Entering a bonus room parks it in
+    `$04E6` and sets `$04EA` (`$BB:A2EE`..`$A2F9`); returning restores it
+    and clears `$04EA` (`$BB:A38B`..`$A396`). The tracker credits `$00C0`
+    when it is a KONG level, else the parked parent while `$04EA` is set.
+  - `$04C8` is the file slot: `$80:91CB` indexes the SRAM table at
+    `$80:9171` (`$6062`, `$62EC`, `$6576`, so SRAM offsets `$062`, `$2EC`,
+    `$576`, `$28A` bytes each) with it.
+  - A slot is valid ($80:9141) when its word at +4, bit 0 ignored, is
+    `$52`, `$152`, or `$252`, and the words at +0 and +2 equal the 16-bit
+    sum (0 becoming 1) and XOR of the words from +6 to `$288` (`$80:9177`).
+    The file select's erase zeroes only the word at +0 and leaves the
+    rest of the slot.
+  - Maps: `$05E5` is the world (0 is the Northern Kremisphere) and `$05E7`
+    the node under the Kongs. The world descriptor is the word at
+    `$B4:CFB9 + 2 * world` (`$B4:B0C5`), its node table the word at
+    descriptor + 6, a node 11 bytes with the destination at +1
+    (`$B4:B804`). On a world map a destination `>= $1D` is a level
+    (`$B4:B37B`); on the Kremisphere `$40|w` opens world `w`
+    (`$B4:B31F`). Reading all eight tables gives five levels per world,
+    `$25`-`$4C` in all, and the bosses `$1D`-`$24`. Byte 0 bit 7 is not a
+    level/non-level flag: Razor Ridge's boss node has it clear.
+  - The idle map's main loop is `$B4:B179` on world maps and the
+    Kremisphere alike; a level runs `$B3:8076`.
+  - The map's name text is pure `#FFFF00` with a black outline on native
+    rows 201-214.
+- **Changes:**
+  - `runner/dkc3_kong_tracker.{h,c}`: the tracker (flags, sidecar format
+    and atomic replace, frame observation, SRAM copy/erase following, ROM
+    node tables, world completion, map badge choice, node-settle wait,
+    badge drawing). It takes WRAM, ROM, SRAM, and frame pointers, so it is
+    unit-tested without a ROM.
+  - `runner/dkc3_game.{h,c}`: `Dkc3KongTrackingEnable(path)`; observation
+    and SRAM sync after every game frame, saving the sidecar on any
+    change; the badge drawn into the rendered frame at the end of
+    `Dkc3DrawPpuFrame`. Inert until a host enables it.
+  - `runner/desktop_main.c`, `runner/sdl_main.c`: enable it with
+    `saves/kong_letters.dat` after loading `save.srm` (not when SRAM
+    persistence is disabled). `DKC3_KONG_BADGES=0` hides the badges but
+    keeps recording.
+  - `runner/headless_main.c`: `DKC3_KONG_TRACKER=<file>` opts in; off by
+    default, so headless hashes are unchanged.
+  - `tests/test_dkc3_kong_tracker.c`, `CMakeLists.txt`: unit test
+    `dkc3_kong_tracker`; the module is linked into all three game
+    targets.
+- **Badge placement:** the badge is a 7x7 font doubled to the name's 14
+  rows, yellow with a black outline, one game space (10 px) right of the
+  rightmost name pixel found in rows 201-214 of the whole frame, so it
+  follows the name in every aspect; with no room it is centred above the
+  name. Nothing is drawn when no name text is on screen.
+- **Node-settle wait:** `$05E7` switches to the destination the frame the
+  Kongs set off, while the departing name is still erasing. The first
+  version drew the badge on "WRINKLY'S SAVE CAVE" for frames 1302-1304 of
+  the walk below. The badge now waits for the map to stay idle on one
+  node for 16 game frames; the departing name is gone within 6, and the
+  next name appeared 64 frames after the node changed.
+- **Verified (Windows x64 Release, private ROM, user's `save.srm`, file
+  1 "MATTT" in Kremwood Forest):**
+  - `test_dkc3_kong_tracker` and the Release unit label: 26/26 passed.
+    `DKC3Recomp.exe`, `DKC3RecompSDL.exe`, and the headless host build;
+    no new warnings.
+  - Sidecar flagging `$32`: after walking left from the cave, "RIVERSIDE
+    RACE" shows the badge at frame 1700; the cave and "BARREL SHIELD
+    BUST-UP!" (`$30`, unflagged) do not.
+  - Walk cave to Barrel Shield Bust-Up and back with `$30` flagged,
+    rendered with and without the tracker every 2 frames from 1280 to
+    1918: the frames differ only for 1366-1604, the frames that show
+    "BARREL SHIELD BUST-UP!".
+  - Leaving Kremwood Forest (Right from Barrel Shield Bust-Up) reaches the
+    Kremisphere at node 5 (destination `$42`). With `$30 $32 $29 $2F $34`
+    flagged, "KREMWOOD FOREST" shows the badge at 4:3 and 16:9; with
+    `$34` missing, the frame is byte-identical to a run without the
+    tracker.
+  - Recording: the user's quick save in level `$29` (file slot 0) holds
+    K and O (`$05D7 = 3`) and writes no sidecar; forcing `$05D7 = $0F`
+    for one frame records exactly `$29` for slot 0.
+  - File select, driven by scripted input: Erase on file 1 zeroes SRAM
+    `$062`-`$063` only and the tracker drops slot 0's flags; Copy of file
+    1 to file 2 gives slot 1 the same flags.
+- **Unverified:**
+  - Collecting real letters in play; recording was shown with a poked
+    `$05D7`, not by touching the four letter sprites, and not in a bonus
+    room (the parent-level path is unit-tested only).
+  - The desktop and SDL apps were built but not run; macOS not built.
+  - Worlds other than Kremwood Forest were not visited; their level
+    lists come from the ROM tables above. Krematoa (the Lost World) and
+    Kremisphere destinations other than `$41`-`$48` were not looked at
+    in play.
+  - Two-player modes and the Banana Bird and Brothers Bear screens.
+
+### Settings checkbox for the KONG badges
+
+- **Feature:** the overlay's Settings tab has a "Gameplay" section with
+  **KONG letter badges on the map**, on by default. It shows or hides the
+  badges while the menu is open; recording continues either way.
+- **Changes:**
+  - `runner/desktop_launcher.{h,c}`: `Dkc3LauncherKongBadges` and
+    `Dkc3LauncherSetKongBadges`, default 1, persisted in `launcher.cfg` as
+    `KongBadges`, beside `HapticsEnabled`.
+  - `runner/desktop_overlay.cpp`: the checkbox.
+  - `runner/dkc3_game.{h,c}`: `Dkc3KongSetBadgesVisible`.
+  - `runner/desktop_main.c`, `runner/sdl_main.c`: after enabling the
+    tracker, a set `DKC3_KONG_BADGES` overrides the saved choice and is
+    remembered, as `DKC3_HAPTICS` is; the value is pushed to the game at
+    start and on every `ApplyOverlaySettings` call.
+  - `tests/test_desktop_launcher_settings.c`: default on, saved `0`
+    restored, `KongBadges=0` written.
+- **Verified:** the Windows Release suite passed 31/31, including
+  `desktop_launcher_settings`, `dkc3_kong_tracker`, and the SDL aspect
+  smoke tests; `DKC3Recomp.exe` and the headless host rebuilt.
+  `DKC3RecompSDL.exe` was relinked once the running app was closed. The live app had shown the badges working before the
+  checkbox was added; the checkbox itself has not been clicked in the app.
+
+## 2026-11-23 - KONG letter tracker review follow-ups (PR 17)
+
+- **Changes:**
+  - `runner/dkc3_kong_tracker.c`:
+    - `Dkc3KongTrackerSaveFile` replaces the sidecar in one step
+      (`MoveFileExA` with `MOVEFILE_REPLACE_EXISTING` on Windows, `rename`
+      elsewhere) instead of deleting it first, so a failed replace keeps
+      the recorded flags.
+    - `Dkc3KongWorldLevels` tracks uniqueness in a local array, so a
+      `capacity` smaller than the level count, or `NULL, 0`, no longer reads
+      past the caller's buffer.
+    - SRAM copy detection: when several slots hold the image a slot was
+      just copied to, the source is ambiguous (for example, a slot copied
+      earlier and then played without saving). The copy now takes only the
+      levels every candidate has, instead of the first candidate's flags.
+      Slots whose image did not change in the same sync are preferred as
+      sources, so copying one slot onto both others at once gives each the
+      source's flags rather than the intersection with the other
+      destination's old flags; changed slots are used only when no
+      unchanged one holds the image (a slot saved and copied in one sync),
+      and then only if they held a file before the sync: a slot that was
+      blank cannot be the source, so the saved source keeps its flags
+      instead of taking the new copy's empty ones. Two slots that both held
+      files, both changed, and now match remain ambiguous and are
+      intersected.
+      The file select's chosen source is not read, so this stays a
+      conservative guess, not exact.
+  - `runner/desktop_overlay.cpp`: "Restore All Settings to Defaults" turns
+    the KONG badges back on.
+  - `runner/dkc3_game.c`: an over-long sidecar path is reported as such,
+    and the unreadable-file warning no longer says "ignoring", since the
+    headless host stops on it.
+  - `runner/headless_main.c`: the headless host keeps failing closed (exit
+    21) on an unusable `DKC3_KONG_TRACKER` file, now stated in a comment
+    and message; the desktop and SDL hosts carry on with empty flags.
+  - `tests/test_dkc3_kong_tracker.c`: version and size rejection are
+    tested independently with a recomputed checksum; ambiguous copies and
+    a short or absent output buffer are covered.
+
+## 2026-11-23 - KONG letters kept for files played through quick saves
+
+- **Problem (reported):** the tracker cleared the flags of every slot
+  without a valid SRAM file when it adopted the battery save at launch.
+  A file played only through quick saves never gets a valid slot, so its
+  letters were lost on the next launch. Quick saves also carry the
+  cartridge SRAM (`cart_saveload` serialises `cart->ram`, which is
+  `g_sram`), so loading one taken before the file was saved in game made
+  the slot invalid again, and the tracker read that as an erase. It
+  could likewise read two slots left identical by a quick load as a copy.
+- **Fix:**
+  - Adopting SRAM never clears flags, at launch or anywhere else.
+  - Copy and erase are followed only while the file select runs (main
+    loop `$80:9586`); the earlier erase and copy runs never left it.
+    Outside it, an SRAM change is an in-game save or a quick load and is
+    only adopted.
+  - `Dkc3OnStateLoaded` calls `Dkc3KongTrackerForgetSram`, so the first
+    sync after any quick load (or rewind) adopts the restored SRAM even if
+    it lands in the file select.
+  - `Dkc3KongTrackerSyncSram` takes `follow_edits`; the adapter passes
+    `Dkc3KongInFileSelect`.
+- **Trade-off:** a file played only through quick saves keeps its letters
+  until its slot is erased in the file select. If its slot is never saved
+  and a new game is started there, the new game inherits those letters;
+  erasing the slot first clears them.
+- **Verified (Windows x64 Release, private ROM, user's `save.srm`):**
+  - `test_dkc3_kong_tracker` passes, with new cases: adoption keeps
+    invalid slots' flags; an older quick load invalidating a slot, or
+    leaving two slots identical, changes nothing; a forget-then-sync in
+    the file select only adopts; a real erase still clears.
+  - Headless: flags on slots 1 and 2 (no valid save in `save.srm`)
+    survive boot into the file select (the previous build cleared them at
+    launch). Erasing file 1 in the file select still clears slot 0 and
+    leaves slots 1 and 2. Loading the user's in-level quick save leaves
+    all flags as they were.
+- **Unverified:** a quick load in the desktop app, and rewind, both of
+  which reach the same `Dkc3OnStateLoaded` hook.
+
+## 2026-11-23 - Ripsaw Rage: forest through a trunk in the right margin (clamped BG3 windows)
+
+- **Symptom:** in the reported release quick save (SHA-256
+  `7ef87487...0de5`, level word `$00C0` = `$002E`, Ripsaw Rage, paused,
+  16:9 with `reflect` in the user's `launcher.cfg`), the right side of the
+  wide view looked wrong: the far forest (BG3) showed through the next
+  tree trunk's hollow, and the trunk was split by a column of forest.
+- **Measurement:** the margin terrain was correct. BG1 margin cells
+  matched the decode (434 of 434), and a pixel oracle against the native
+  view of the same world columns (4:3, camera `$0211`) agreed on BG1.
+  BG2 and BG3 are static 32-column maps; neither tilemap changed over a
+  200-frame walk. The difference was the hardware windows. `windowsel`
+  `$00a00aa0` with `main_window=$04` masks BG3 inside W1 or W2. Along a walk
+  right, W2's left edge tracked world `$02D8` exactly (`[249,255]` at
+  camera `$01DF`, `[226,255]` at `$01F6`, `[199,255]` at `$0211`), and W1's
+  right edge tracked `$0227`. The writer is `$B3:C0F4` (the only caller of
+  `$B3:9741` is `$B3:9637`, Barrel Shield Bust-Up's fixed trunks). It loads
+  W1 = [`$0158`, `$0227`] and W2 = [`$02D8`, `$03A7`] into DP `$1A`-`$20`
+  (another pair of spans for other levels), subtracts `$196D`, and clamps
+  each edge to 0..255 (W1L only for negatives). At the save's camera
+  `$01C7`, W2 is unclamped `[273, 480]` and written `[255, 255]`. The
+  parked-window rule (Barrel Shield Bust-Up) correctly treats that as
+  empty, so nothing masked BG3 in the right margin from world `$02D8`.
+- **Fix:**
+  - `scripts/apply_dkc3_widescreen_overrides.py` (`adapt_trunk_windows`):
+    calls `Dkc3RecordTrunkWindows(cpu->D)` right after the `$2129` write
+    in block `$B3:C1B1`. Fails closed if the block or the write moves.
+  - `Dkc3VideoUnclampedTrunkWindows` (`runner/dkc3_video.c`) returns each
+    window's unclamped screen edges and accepts a window only when the
+    registers equal the clamp of those edges.
+  - `runner/dkc3_game.c` keeps the record while the level word is
+    unchanged and hands it to the PPU on terrain-ready wide frames
+    (`Dkc3ApplyTrunkWindows`); a state load clears it, and
+    `DKC3_CULL_WIDEN=0` disables it. `DKC3_TRUNK_WINDOW_TRACE=1` prints
+    every record.
+  - `cmake/runtime-patches/ppu.hunks`: `Dkc3PpuSetWsWindowUnclamped` plus a
+    step at the end of `@@ window-presentation-bias` that replaces a
+    window's edges with the unclamped ones (minus the presentation bias,
+    clamped to the layer's span) while margins are active and that
+    window's registers still hold the recorded values.
+  - The routine runs before the camera update, so a record trails the
+    camera by one frame, exactly as the registers it writes do. A first
+    version also required the camera to equal the recorded one. That
+    dropped the masks when the game was paused one frame after the camera
+    settled, so the check was removed.
+- **Verified (Windows x64 Release, private ROM, previous build as reference):**
+  - 4:3: every sampled frame of a 200-frame replay (unpause, walk right)
+    and the final frame, WRAM, VRAM, CGRAM, and OAM hashes are identical
+    to the previous build. An 1,800-frame boot is identical too. At 16:9
+    and 21:9 the memory hashes are identical (no guest change).
+  - Only margin pixels change: from the trunk's edge (x 304-309 at 16:9,
+    356-361 at 21:9) to the right edge while the trunk is off the native
+    screen (frames 8-40), and the left margin at frame 180, after the first
+    trunk leaves to the west.
+  - Pixel oracle: each changed pixel mapped through camera plus
+    `extra - bias` to the 4:3 frame that shows the same world spot. With
+    the known 3-pixel camera-word registration (the same best shift on
+    unchanged columns), 470 of 470 covered pixels at frame 8 match the
+    native view. The previous build matched 0 of them. Without the shift,
+    16:9 frames 8-180 match on 1,828 of 4,647 covered pixels and 21:9 on
+    4,077 of 7,884, against 0 for the previous build.
+  - Unpause, then pause again: the mask stays on every paused frame.
+  - With `DKC3_CULL_WIDEN=0`, every 16:9 frame equals the previous build.
+  - Python unit tests 29/29; full Release CTest 31/31. New cases: the
+    decoder (save, on-screen trunk, foreign register, W1L low byte,
+    null), the override placement and two fail-closed anchors, and the
+    runtime hunk.
+- **Open:** a freshly restored save taken while paused (the reported one)
+  still shows the old margin until the first unpaused frame. The routine
+  does not run during a pause and its spans are not in WRAM, so there is
+  no proven source until it runs. The `$B3:9741` trunks (Barrel Shield
+  Bust-Up) get no window at all when off screen; they are untouched.
+- **Unverified:** the live desktop app (the SDL host's hidden screenshot
+  can only show the paused save, which is unchanged), the other span set
+  and the levels that use it, the rest of Ripsaw Rage, 16:10, and macOS.
+
+## 2026-11-23 - Ripsaw Rage: bark blocks under a hollow's platform (kept, faithful)
+
+- **Report:** a later release quick save (SHA-256 `51d1be9a...395a3d`, level
+  `$002E`, camera `$026F`,`$107E`, 16:9) showed stair-stepped 8-pixel blocks
+  of bark under the tree platform in the right margin. The previous build
+  draws the same picture, so the trunk-window change did not cause it.
+- **Measurement:**
+  - Removing BG2 (`SNESRECOMP_LAYER_MASK=29`) removes the blocks. The bark
+    is BG2's main band, the static 32x32 map at `$7800` (HDMA band lines
+    1-206, separate from the saw band's `$7400`). Its VRAM did not change
+    over a 190-frame walk.
+  - BG1 there holds tile entry `$0000` at world tiles (109..111, 575) and
+    (111, 576). Character 0 at `$2000` is all zero, so the entry is
+    transparent. The cartridge's own ring holds the same `$0000` when those
+    cells are native (camera `$02C0`), and the decode matches it cell for
+    cell.
+  - Natively, BG2 never shows through those cells. Over a walk from camera
+    `$026F` to its stop at `$02C0` (the region wall), a render without BG2
+    differs from the full render by 0 pixels there, and the area is black
+    (BG3 masked by the trunk window, BG2 empty).
+  - In the margin, BG2 wraps at 256 pixels as hardware does. The bark in
+    the holes equals, pixel for pixel, the BG2 trunk at the native left
+    edge (columns 0-25) on the same lines.
+- **Decision (owner):** keep it. A wider console would draw exactly this:
+  the holes are authored, and only the native camera range keeps them away
+  from BG2's trunk. Blacking out transparent BG1 cells inside a trunk
+  window was offered and declined, because it would invent content the
+  hardware does not draw.
+
+## 2026-11-23 - review follow-ups: KONG baseline at quick load, trunk-window notes
+
+- **Changes:**
+  - `runner/dkc3_game.c` (`Dkc3OnStateLoaded`): the KONG tracker adopts the
+    restored SRAM as its baseline inside the load hook (the runtime's
+    `snes_saveload` has already restored it), instead of invalidating the
+    baseline for the next frame to adopt. Before, a copy or erase made in
+    the first file-select frame after a quick load was adopted unseen and
+    its letters never followed. With tracking off it still only forgets.
+  - `runner/dkc3_game.h`: `Dkc3RecordTrunkWindows`'s comment lists what it
+    actually reads (the DP edges, camera X and level number from WRAM, and
+    the PPU window registers).
+  - `README.md`: a `kong_letters.dat` that fails its checks at launch is
+    treated as empty, which drops every file's letters.
+- **Not changed:** cubic reported that `@@ window-presentation-bias` calls
+  `PpuWsWindowUnclamped` before it is declared. In the patched `ppu.c`
+  (regenerated from the current hunks) the helper is defined at line 543,
+  before both calls at 703-704; the hunk file's order is not the order in
+  `ppu.c`.
+- **Verified:** Python unit tests 29/29 and the Windows Release CTest
+  suite 31/31 with every target rebuilt.
+- **Unverified:** a quick load followed by a copy or erase on its first
+  file-select frame in the app.
+
+## 2026-11-25 - presented bias may cancel the camera's motion (DKC2Recomp port)
+
+- **Source:** DKC2Recomp commit `d59c6127` ("Stop the widescreen view
+  overshooting the walls of small rooms"). There, in a room whose camera
+  scrolls 128 pixels, the pins let the 16:9 view move 42 pixels while the
+  presented bias stepped one pixel a frame and the camera's look-ahead moved
+  2-4, so the view ran up to 18 pixels past the east pin (a clamped black
+  strip) and slid back after every turn.
+- **DKC3 exposure:** DKC3 already avoids the short-room case under `glide`
+  (2026-11-22: rooms shorter than `2 * extra * 8` take a reduced, unpinned
+  shift). The pins still bind, and the target bias then tracks the camera,
+  under `shift` at every wall, and under `glide` when a camera region or a
+  west hold changes the bounds mid-level. In those frames the one-pixel step
+  lags the camera exactly as in DKC2.
+- **Change:** `Dkc3VideoStepPresentationBias` (`runner/dkc3_video.c`) keeps
+  the one-pixel step toward the target and also allows a step as large as
+  this frame's camera motion, only against it. `Dkc3DrawPpuFrame` records the
+  camera X it last stepped at (`s_bias_camera_x`). The settle frames, the
+  re-snap on a policy change, and the margins for a chosen bias are
+  unchanged. The cartridge camera and WRAM are unchanged; 4:3 has no bias.
+- **Tests:** `test_dkc3_video` checks the DKC2 cases: a camera moving 4 right
+  into a pinned east wall leaves the view still; a still camera, or one moving
+  with the step, keeps the one-pixel glide; no overshoot of the target.
+- **Verified:** Windows Release build; CTest 31/31.
+- **Unverified:** no replay measurement. The only local quick save
+  (`saves/dkc3s0.sav`) boots to the Rare logo when restored by the headless
+  runner, so no scene at a pinned wall was replayed before/after, and the
+  saved-scene corpus and cave replay are not on this host. The live desktop
+  app, `shift` at a wall, and region-change frames under `glide` are
+  unverified.
+
+## 2026-11-25 - left margin popping at a camera-region change (shaft entry)
+
+- **Symptom:** in the owner's release quick save (`saves/dkc3s0.sav`,
+  SHA-256 `b959c9b4...bb82`, level word `$00C0` = `$003E`, 16:9, `glide`),
+  the Kongs stand where a pipe corridor meets a one-screen shaft. Without
+  input the whole 43-column left margin flips between black and terrain:
+  black on replay frames 2-17, full 18-45, black 46-127, full from 128.
+- **Measurement:** the presentation walls (new `region=`, `walls=`, and
+  `margins=` fields on `DKC3_PREFILL_TRACE`) follow `$0478`. Region 14 (the
+  corridor, `$02C0..$03A8`, narrower than a screen) is rejected by
+  `Dkc3VideoCameraRegionSpan`, so the level bounds apply and both margins
+  are 43. Region 15 (the shaft, `$02C0..$03C0`, no side links) bounds both
+  walls at `$02C0`. When `$0478` became 15 on frame 46 the camera was still
+  at `$0295`, converging on the shaft, and the old code clamped the west
+  wall to the camera: the margin went from 43 to 0 in one frame although
+  the native window itself still showed 43 columns west of the wall. On
+  frame 128 region 16 (linked west through 9 and 2 to `$0100`) opened it
+  from 0 to 43 in one frame.
+- **Change:** `Dkc3VideoRegionScrollBounds` (`runner/dkc3_video.c`)
+  replaces the inline clamp. A camera outside its region's span gets the
+  wall reflected about it, so the margin equals the distance the camera has
+  left to travel and closes as it arrives. `Dkc3VideoLimitMarginGrowth`
+  then caps how fast a margin may open: the view's own motion away from
+  that side plus `kDkc3VideoMarginOpenRate` (2) pixels a frame, so a wall
+  fixed in the world keeps pace and a wall that jumps outward wipes the
+  margin open. Narrowing is never limited. The limiter is off until the
+  bias has settled and while terrain is not ready (a restore or level start
+  still opens at once), and `DKC3_CULL_WIDEN=0` disables it. Bias, culls,
+  and the cartridge state are unchanged.
+- **Result:** on the same 400-frame replay the margins now open 2 pixels a
+  frame on frame 18 (both sides open by frame 39), close one pixel per pixel
+  of camera travel from frame 46 to 107, and the left margin opens again 2
+  pixels a frame from frame 128. A montage of every fourth frame shows no
+  margin-wide jumps.
+- **Verified (headless, private ROM, previous build as reference):** final
+  frame, WRAM, VRAM, CGRAM, and OAM hashes identical on the 400-frame replay
+  at 4:3, 16:9, and 21:9 with `DKC3_CULL_WIDEN` on and off, and on an
+  1,800-frame boot at 4:3 and 16:9. `test_dkc3_video` covers the reflected
+  walls (west, east, level clamp) and the growth limit. Windows Release
+  CTest 31/31. The test source also lost seven stray carriage returns inside
+  `fprintf` literals that MSVC read as line breaks.
+- **Unverified:** the saved-scene corpus and cave replay are not on this
+  host, so the mill elevator (2026-11-22) and Squeals on Wheels states were
+  not replayed against this change. The live desktop app was rebuilt but
+  not played at this spot.
+
+## 2026-11-25 - rocks popping into the right margin (wall rule inside camera reach)
+
+- **Symptom:** in the owner's release quick save (`saves/dkc3s0.sav`,
+  SHA-256 `89ec2329...524421f`, level word `$00C0` = `$0038`, a waterfall
+  level, 16:9, `glide`), blocks of rock and grass appeared in the right
+  margin over the waterfall and vanished again. With no input the camera
+  drifts from `$022A` to `$0220`; the blocks appear on replay frame 40, the
+  first frame at `$0220`, and stay while the camera sits there.
+- **Measurement:**
+  - Layer isolation: the blocks are BG1 (terrain), not the waterfall's BG2.
+    BG2's decoded source verifies on every frame (992 or 1024 cells).
+  - The world store equals the decode in every margin cell
+    (`margin_matching=420/420`), and the row stride is 64 bytes at 100% on
+    every frame (new `stride=` field on `DKC3_PREFILL_TRACE`). Yet the
+    expected entry for world tile (105, 280) is `$3A79` at phase 544 and
+    `$0000` at 548. The WRAM map at `$7F:0000` is unchanged.
+  - `DKC3_TERRAIN_FILL_MAP=2`: at phase 544 the cartridge's last tile is
+    99, so its edge metatile is column 16 (the right edge of a tree trunk,
+    full and backed by full), and column 17, the open gap between two
+    trunks, is void on the visible rows. `Dkc3VideoFindStructuralWallSource`
+    treats the trunk as a wall and `Dkc3WallChainMetatile` fills the gap
+    with the trunk's successors. At phase 548 the edge metatile is 17 itself
+    and the rule finds no wall. The rule ports DKC2's mine and shaft cases,
+    where void beside a wall is never shown natively.
+  - Native oracle: the 4:3 run walking right shows that gap empty when it
+    reaches the window (camera `$0259`). The current camera region (2)
+    bounds the camera at `$0100..$0380`, so the native window can reach world
+    x `$0100..$047F`, and the gap (`$0320..$0357`) lies inside it.
+- **Change:** `Dkc3VideoTileInCameraReach` (`runner/dkc3_video.c`) is true
+  for a tile wholly inside `[minimum, maximum + 256)` of the frame's camera
+  scroll bounds (the region walls, or a west hold). `Dkc3DrawPpuFrame`
+  records those bounds, and the prefill applies the structural
+  continuation and the held-wall mirror only to margin tiles outside that
+  reach. Inside it the decoded map stands, as it does on the console once
+  the camera arrives. Bias, margins, culls, and the cartridge state are
+  unchanged.
+- **Verified (headless, private ROM, previous build as reference):**
+  - A 360-frame replay (idle, right, idle, left) and an 1,800-frame boot at
+    4:3, 16:9, and 21:9: the WRAM, VRAM, CGRAM, and OAM hashes are identical
+    in every run. 4:3 frames are identical, and the boot's final frame is
+    identical at every aspect.
+  - 16:9 replay, every frame: pixels change only in the right margin
+    (x 295-341) on frames 40-66 and 328-359 and the left margin (x 0-46) on
+    frames 85-96 and 268-280. Those are the frames where the rule had
+    invented content beside the same two trunks.
+  - Pixel oracle on BG1 alone against the native 4:3 view of the same
+    world columns: the left margin at replay frame 86 matches on 9,000 of
+    9,000 pixels (previous build 4,852). The right margin at frame 59
+    matches on 8,619 of 10,152 at the best registration (previous build
+    1,047). The remainder sits along the trunk's edge, a registration
+    residue between a static and a walking run. A zoomed crop shows the
+    same trunk edge, gap, and ledge.
+  - `test_dkc3_video` covers the reach (inside, both ends, a west hold, an
+    unaligned wall, inverted bounds). Python unit tests 29/29, and Windows
+    Release CTest 31/31 with every target rebuilt (one smoke run timed out
+    while a second CTest ran beside it, then passed alone).
+- **Risk:** inside the region's span the rule no longer continues a wall
+  that holds the player while the camera could still scroll on. DKC3's
+  regions bound its rooms, and the west hold keeps its own bound, so that
+  case should be rare. But the region span ignores the cartridge's vertical
+  overlap gates, and a rejected region (narrower than a screen) falls back
+  to the level clamp, where nearly every column is in reach.
+- **Unverified:** the saved-scene corpus and cave replay are not on this
+  host, so the mill elevator, Squeals on Wheels, and bonus-room states
+  were not replayed against this change, and no DKC3 scene where the wall
+  rule is needed was available to confirm it still fires. 16:10, the live
+  desktop app (rebuilt, not played here), and macOS are unverified.
+
+## 2026-11-26 - Assist Tools / Cheats option: spawn Squawks or Enguarde crates while paused
+
+- **Feature:** Added an opt-in, default-off **Spawn animal buddy crates from
+  pause menu** checkbox under the overlay's **Assist Tools / Cheats** tab
+  (gated behind **Enable Assist Tools / Cheats**, persisted as
+  `PauseCrateSpawn` in `launcher.cfg`, reset to off by **Restore All Settings
+  to Defaults**, and also selectable in headless runs via
+  `DKC3_PAUSE_CRATE_SPAWN=1`).
+- **Cartridge facts verified from generated code and ROM:**
+  - In-level gameplay runs `$B3:8076` at `$004E..$0050`; in-game pause sets
+    `$05AF` bit 6 (`$0040`, `$80:8A6D..$80:8B0B`).
+  - `$04DA` holds the active player's newly-pressed SNES buttons each frame
+    even while paused (Up = `$0800`, Down = `$0400`, Start = `$1000`).
+  - `$04F9` points to the active Kong/player sprite record (`+$12` world X,
+    `+$16` world Y). Non-Kong sprite slots span `$0954..$1412` (stride `$6E`,
+    free when `+$00 == 0`).
+  - `animal_buddy_box_main` (`$B8:EE88`, sprite type `$0250`) uses bank `$FF`
+    init-scripts `$FF:65A7` for a Squawks crate (`+$5C = $023C`) and
+    `$FF:6590` for an Enguarde crate (`+$5C = $0238`), executed through
+    `apply_spawn_script_to_slot_direct` (`$BB:8FF1`).
+- **Implementation:** `runner/dkc3_animal_crate_cheat.{h,c}` provides ROM-free
+  detection and slot preparation; `Dkc3RunOneFrame` in `runner/dkc3_game.c`
+  invokes `apply_spawn_script_to_slot_direct_M0X0` with saved/restored CPU
+  and DP scratch state when enabled, paused in a level, Start is not newly
+  pressed, and Up or Down is newly pressed. Both `runner/sdl_main.c` and
+  `runner/desktop_main.c` sync the setting with `assist_tools`.
+- **Verified:**
+  - ROM-free unit tests: `test_dkc3_animal_crate_cheat` (env default-off,
+    gating, Up -> Squawks `$65A7`, Down -> Enguarde `$6590`, slot allocation,
+    full-table and invalid-pointer fail-closed) and
+    `test_desktop_launcher_settings` (`PauseCrateSpawn` default-off and
+    persistence).
+  - Windows x64 Release build (`dkc3_snesrecomp_headless`,
+    `DKC3RecompSDL.exe`, `DKC3Recomp.exe`) and full CTest suite: 32/32 passed.
+  - Headless ROM verification against a paused level quick save (`$0029`,
+    `flags=$40C0`, `kong=$0878`): with `DKC3_PAUSE_CRATE_SPAWN=0`, Up/Down
+    spawned nothing; with `DKC3_PAUSE_CRATE_SPAWN=1`, Up spawned a Squawks
+    crate (`type=$0250`, `+$5C=$023C`) and Down spawned an Enguarde crate
+    (`type=$0250`, `+$5C=$0238`) at the active Kong's position, and unpausing
+    for 35 frames completed cleanly (`rc=0`) with the Squawks crate active
+    (`state=1`) and Enguarde (`$0238`) hatched at the player's position.
+- **Follow-up fix (Squawks miscoloring on palette overflow & Squawks dismount):**
+  - **Root causes:**
+    1. When all 8 SNES OBJ hardware palette slots (`$073C..$074B`) are occupied
+       at the moment a spawned Squawks or Enguarde hatches (for example in
+       widescreen where more objects are active), `request_palette_direct`
+       (`$BB:95E6`) overflows to palette 0 (`$0F` effect palette) and records
+       `$0018` in `$1D4B`. Mounting Squawks then swaps `+$1E` OAM attributes
+       between the active Kong slot (`$04F9`, which becomes Squawks's sprite
+       with `pal=0`) and the buddy slot (`DP $007C`, which becomes the hanging
+       Kong with `pal != 0`). That broke widescreen overflow tracking (which
+       had been attached to the buddy slot) and left Squawks miscolored even
+       after a hardware palette slot later freed up.
+    2. In vanilla DKC3, `$B8:CC29` dispatches the `X` button (`$0040`) through
+       the jump table `$B8:CF2F,X` (`X = $04DE`). Enguarde/Ellie/Squitter map
+       to `$B8:D229` (the standard animal-buddy dismount routine), whereas
+       Squawks (`mode $1D`, `$04DE = $3A`, table entry `$B8:CF69`, ROM
+       `0x38CF69`) maps to `$B8:D228` (`RTS`), intentionally preventing
+       dismounting from Squawks.
+  - **Changes:**
+    - `runner/dkc3_animal_crate_cheat.{h,c}` and `runner/dkc3_game.c`: added
+      `Dkc3AnimalBuddyPaletteIdForType()` (`$0238` Enguarde -> `$0017`;
+      `$023C` Squawks -> `$001E` if `$0777 & $0010` else `$0018`),
+      `Dkc3DetectAnimalBuddyPaletteRepair()`, and
+      `Dkc3RunAnimalBuddyPaletteRepair()`. While `pause_crate_spawn` is
+      enabled, if a mounted or unmounted Squawks/Enguarde is stuck on `pal=0`
+      and a hardware slot in `$073C..$074B` is free (or already holds its
+      palette ID), the host invokes `request_palette_direct_M0X0` (`$BB:95C8`),
+      updates the sprite's `+$1E` palette bits, and decrements `$074C`
+      (`ref[0]`) if `> 1`.
+    - `runner/dkc3_game.c` (`Dkc3SyncWidescreenObjPalettes`): when all 8
+      hardware slots remain full in widescreen and `DP $007C` points to a
+      mounted Squawks/Enguarde whose active Kong slot (`0` or `1`) is on
+      `pal=0`, attach the buddy's palette ID to `s_sprite_overflow_pal[kong]`
+      so the extended OBJ palette table draws Squawks accurately immediately.
+    - `runner/dkc3_game.c` (`Dkc3PatchSquawksDismount`): toggles ROM offset
+      `0x38CF69` (`$B8:CF69`) between `$D228` (vanilla `RTS`) when disabled and
+      `$D229` (standard `X`-button dismount) when `pause_crate_spawn` is
+      enabled, failing closed if the expected bytes are not present.
+  - **Verified (Windows x64 Release, private ROM):**
+    - Extended `tests/test_dkc3_animal_crate_cheat.c` with 5 ROM-free unit
+      tests covering mounted Squawks repair, Quawks flag (`$0777 & $0010`),
+      full-table fail-closed, unmounted Enguarde slot reuse, and disabled
+      fail-closed.
+    - Rebuilt `test_dkc3_animal_crate_cheat`, `dkc3_snesrecomp_headless`,
+      `DKC3RecompSDL.exe`, and `DKC3Recomp.exe`; full CTest suite: 32/32 passed.
+    - Headless ROM E2E on `saves/dkc3s0.sav` (`DKC3_PAUSE_CRATE_SPAWN=1`):
+      spawning Squawks crate while paused, unpausing, jumping to hatch and
+      mount Squawks (`$7C=$0D32`, `mode=$3A`, `kong=$0878 st=63 pal=4`,
+      `pal0018=[(4, 1)]`), then tapping `X` (`0x200` for 2 frames) cleanly
+      dismounts (`$7C=$0000`, `mode=$04`, `kong=$0878 st=01 pal=1`, Squawks
+      hovering at `$0D32 st=00 pal=4`, `rc=0`).
+- **All-buddy selector and pause HUD update (2026-11-26):**
+  - Replaced Up/Down direct spawning with **Left/Right** selection across all
+    five `animal_buddy_box` bank `$FF` spawn scripts (`$FF:6586` Ellie
+    `$0234` / palette `$0016`, `$FF:6590` Enguarde `$0238` / `$0017`,
+    `$FF:659D` Squitter `$0240` / `$0019`, `$FF:65A7` Squawks `$023C` /
+    `$0018` or Quawks `$001E`, `$FF:65B1` Parry `$0244` / `$001A`) and **B**
+    (`$8000` in `$04DA`) to spawn the selected crate. Extended
+    `Dkc3AnimalBuddyPaletteIdForType()` to cover all five animal buddies.
+  - Added `Dkc3PauseCrateHudLabel()` (`runner/dkc3_game.{h,c}`) and
+    `Dkc3DesktopOverlaySetPauseBanner()` (`runner/desktop_overlay.{h,cpp}`,
+    wired in `runner/sdl_main.c` and `runner/desktop_main.c`) to draw the
+    selected animal buddy name (`< Name >`) in a centered pill at the bottom
+    middle of the screen while paused in a level with the cheat enabled.
+  - **Verified (Windows x64 Release, private ROM):**
+    - Updated `tests/test_dkc3_animal_crate_cheat.c` (all 5 crate names/scripts,
+      Left/Right wrap, `B`-button spawn, palette IDs for all 5 buddies + Quawks).
+    - Rebuilt `test_dkc3_animal_crate_cheat`, `dkc3_snesrecomp_headless`,
+      `DKC3RecompSDL.exe`, and `DKC3Recomp.exe` cleanly; full CTest: 32/32
+      passed.
+    - Headless ROM verification on `saves/dkc3s0.sav`: cycling Right + B
+      spawned all five crates (`Ellie`, `Enguarde`, `Squitter`, `Squawks`,
+      `Parry`) in order when enabled and none when disabled; wrapping Left from
+      `Ellie` to `Parry`, pressing B, and unpausing hatched Parry cleanly
+      (`rc=0`).
+- **Unverified:** interactive visual check of the bottom-middle HUD pill in
+  the live desktop app, macOS rebuild, and spawning/dismounting across all
+  levels/water states.
+
+## 2026-11-27 - black margins in a one-screen rope shaft (kept by decision)
+
+- **Report:** in the release quick save (SHA-256 `d33c5659...064d`, level
+  word `$00C0` = `$0041`, 16:9 with `glide`), the Kongs hang on the ropes of a
+  cliff shaft. Both margins are black although the cliff looks continuous.
+- **Measurement:** the camera is at `[$01E8,$1A09]` in region `$0478` = `$2C`
+  (index 22, x `$01E8..$02E8`, exactly one screen, no side links). The trace
+  reads `walls=[01e8,01e8] margins=[0,0] bias=0` with every margin cell
+  present and matching the decode, so the camera-region clamp
+  (2026-11-22) closes the margins on purpose. On the same rows, region 12
+  (x `$0100..$01E0`) ends 8 pixels to the west and region 35
+  (x `$0300..$0400`) starts 24 pixels to the east.
+- **Counterfactual (temporary, uncommitted headless build that skipped
+  `Dkc3VideoCameraRegionSpan`):** the walls became `[0100,0300]`, the margins
+  `[43,43]` at 16:9 and `[95,95]` at 21:9, and the bias 3. The native 256
+  columns were pixel-identical to the 4:3 frame at that offset. Both margins
+  show continuous cliff art with the ropes carried through. At 21:9 the right
+  margin also shows region 35's rope rows, a barrel, and enemies, which the
+  cartridge shows only once the camera reaches that room.
+- **Decision (owner):** keep the margins black. The region table does not
+  distinguish this shaft from the mill elevator shaft, whose neighbouring
+  rooms do not line up. Any rule that opens one-screen regions needs its own
+  structural evidence (for example flanking regions on the same rows within
+  a few pixels, with terrain continuous at the seam). It must also be judged
+  against the elevator, Squeals on Wheels, and bonus-room states.
+- The temporary switch was reverted and the headless runner rebuilt. The
+  rebuilt runner again reports `margins=[0,0]` for this save.
+
+## 2026-11-27 - bear coin drawn orange after a quick load (overflow recovery)
+
+- **Report:** in the release quick save (SHA-256 `acee01f7...e411b`, level
+  word `$00C0` = `$0045`, 16:9), Kiddy rides an Ellie in a cave and the
+  spinning coin to the right of the Kongs loads in corrupted.
+- **Measurement:**
+  - The coin is slot 2 (`$0954`), type `$0284`, handler `$BB:D24E`
+    (`bear_coin_main`). Its OAM attribute `$20E0` selects palette 0. The
+    hardware palette table `$073C` is `[$0F,$01,$02,$74,$1C,$6D,$00,$16]`,
+    and Ellie's `$16` is one of them, so the coin's request overflowed to the
+    common `$0F` palette. At 4:3 the coin's tiles show through `$0F` as
+    red/white/yellow noise, which is the cartridge's own fallback.
+  - At 16:9 `DKC3_EXT_PAL_TRACE` shows the coin tracked as `2=0071`. A quick
+    save does not carry the overflow hook's associations, so the 8-frame
+    load recovery attached `$1D4B` (the most recent overflow, `$0071`, an
+    orange ramp) to the only palette-0 dynamic sprite in OAM. The orange coin
+    is that wrong palette.
+  - All four bank-`$FF` init scripts that set type `$0284` (`$FF:6235`,
+    `$624E`, `$6264`, `$627D`) request palette `$00C8` with command `$FC`.
+    Drawing the coin's VRAM tiles through `$00C8` gives a clean silver bear
+    coin. Through `$0071` they are orange and through `$000F` they are noise.
+  - Init-script format, from the ROM: `$BB:8FF1` runs scripts with DB =
+    `$FF`. `$BB:9005` writes commands below `$EF` to field `D+op`, and the
+    table at `$BB:9018` sends `$FF` (`$9062`), `$FE` (`$9071`), `$FC`
+    (`$9119`, `JSR $95C8` request_palette_direct), `$FB` (`$9137`), and `$FA`
+    (`$917E`) through `$9002`, which advances three bytes. `$EF` (`$9041`)
+    and `$F0` (`$9048`, which also sets priority 2 but keeps the palette
+    bits) end a script.
+- **Change:** `Dkc3VideoInitScriptPaletteForType` (`runner/dkc3_video.c`)
+  walks every bank-`$FF` run that opens with `$FF type` using only those
+  commands. It returns the palette only if every run reaches a terminator
+  and requests the same palette exactly once. An unknown command (such as
+  the `$F9` sub-script call), a missing terminator, no palette, or a
+  disagreement returns 0. On the release ROM 66 types have an answer,
+  including Kongs `$022C`/`$0230` -> `$01`/`$02` and Ellie `$0234` -> `$16`,
+  which match the hardware slots. In `Dkc3SyncWidescreenObjPalettes`
+  (`runner/dkc3_game.c`) the load recovery first attaches that palette to
+  each palette-0 dynamic sprite whose type has one (unless it is `$0F`).
+  The `$1D4B` fallback now considers only sprites whose type the scripts do
+  not settle. The live overflow hook, the 4:3 path, and guest memory are
+  unchanged.
+- **Verified (headless, private ROM, previous build as reference):**
+  - The save, 300 frames at 4:3, 16:9, and 21:9: WRAM, VRAM, CGRAM, and OAM
+    hashes are identical in every aspect, and every 4:3 frame is identical.
+    At 16:9 and 21:9, 299 of 301 frames differ, only inside the coin's box
+    (x 279-302 / 331-354, y 55-85). The trace now reads `2=00c8`, and a
+    crop strip shows the silver bear coin spinning.
+  - 1,800-frame boot at 4:3 and 16:9: frame, WRAM, VRAM, CGRAM, and OAM
+    hashes identical.
+  - `test_dkc3_video` covers the lookup: two scripts with `$EF` and `$F0`
+    ends, an absent type, and refutation by a disagreeing palette, no
+    palette, two palettes, an `$F9` call, and an unterminated run. Windows
+    Release CTest 32/32.
+- **Not changed (faithful):** at 4:3 the coin keeps the cartridge's `$0F`
+  fallback until it respawns. The overflow comes from the eighth palette
+  slot being taken, here most likely by an Ellie the pause crate spawner put
+  in a level that does not budget for her (not confirmed: the save does not
+  record how Ellie arrived).
+- **Unverified:** the saved-scene corpus and cave replay are not on this
+  host. A sprite type that switches palette after its init script runs
+  could be recovered with its initial palette for the rest of its life. The
+  live desktop app was rebuilt but not played at this spot, and macOS is
+  unverified.
+
+## 2026-11-27 - Assist Tools / Cheats option: show hidden objects
+
+- **Report:** in the release quick save `saves/dkc3s0.sav` (Kongs on a
+  cliff ledge, 4:3), an invisible coin sits above the Kongs. Request: an
+  assist option, off by default, that draws invisible objects.
+- **Measurement:**
+  - The coin is slot 3 (`$09C2`), type `$0284`, handler `$BB:D24E`
+    (`bear_coin_main`), OAM attribute `$2760` (palette 3, holding `$00C8`
+    with one reference), graphic `+$24` = `$274C`, and render word
+    `+$26` = `$C000`. Its behavior still runs: it animates and is collected
+    on contact.
+  - The sprite renderer loop at `$B7:8857` reads `+$26` at `$B7:8908`.
+    With bit 15 clear it draws at `$B7:8910` (camera-relative). With bit 15
+    set, `$B7:89C4` shifts the word. If bit 14 is also set it jumps to
+    `$B7:89E5`, which copies `+$20` to `+$22` and draws nothing. Otherwise
+    bits 1-4 index the variant table at `$B7:89CF`; variant 0 (`$B7:89EE`)
+    is a screen-space draw. In bank `$B7`, `$B7:8908` is the only
+    `LDA $0026,Y` that gates drawing; the other eight read the palette bits.
+  - The block holding that read (trace `$B7:8904`) is inlined into twelve
+    generated units: `CODE_B78857` and every renderer variant that loops
+    back to the top.
+- **Change:**
+  - `adapt_hidden_sprite_reveal` in
+    `scripts/apply_dkc3_widescreen_overrides.py` wraps that one `+$26` read
+    in every `$B7:8904` block as
+    `Dkc3RevealHiddenSpriteFlags(word, cpu->Y)`. It fails closed if no
+    block is found or a block has a different number of `+$26,Y` reads
+    than one. On the release ROM it wraps all twelve.
+  - `Dkc3ShowHiddenRenderFlags` (`runner/dkc3_show_hidden.c`) returns the
+    word unchanged unless the option is on and `(word & $C000) == $C000`.
+    It then clears bit 15, so the sprite takes the normal camera-relative
+    draw. The Kong slots `$0878`/`$08E6` and the ridden buddy's slot
+    (DP `$7C`) stay hidden, because the game draws those sprites on the
+    Kong slot. Guest memory is never written by the helper.
+  - The option is **Assist Tools / Cheats > Show hidden objects**, off by
+    default, saved as `ShowHiddenObjects` in `launcher.cfg`, and only on
+    while **Enable Assist Tools / Cheats** is on.
+    `DKC3_SHOW_HIDDEN_OBJECTS=1` turns it on for headless runs.
+- **Verified (headless, private ROM, Windows Release):**
+  - The quick save with the option off, 4 frames: frame, WRAM, VRAM,
+    CGRAM, and OAM hashes are identical to the previous build.
+  - With the option on, 30 frames: only the box x 140-155, y 22-48
+    differs. It is the coin, drawn as OAM 23-26 (tiles `$160`-`$164`,
+    palette 3). Frames 30/34/38/42 show the silver bear coin spinning.
+    That matches the `$00C8` palette noted in the overflow entry above.
+    WRAM differs in 47 bytes: the slot's `+$20`/`+$22`, the OAM buffer,
+    and renderer scratch, which is what any drawn sprite writes.
+  - `test_dkc3_show_hidden` covers the env parse, the reveal, untouched
+    normal/variant/bit-14-only words, and the Kong and ridden-buddy
+    exclusions. `test_desktop_launcher_settings` covers the default and the
+    round trip. `test_apply_dkc3_widescreen_overrides` covers the wrap in
+    each renderer fixture, idempotence, and both fail-closed cases.
+    Windows Release CTest 33/33.
+- **Unverified:**
+  - Other hidden sprite types were not surveyed. The option shows any
+    non-Kong slot the game hides this way, and one that never asked for
+    VRAM or a palette could draw with whatever those slots hold.
+  - The live desktop app was rebuilt but not played. The saved-scene
+    corpus, cave replay, and macOS are not checked.
+  - The overlay checkbox was not exercised in a window.
+
+## 2026-11-27 - Fix world-map crash with Show hidden objects on
+
+- **Symptom:** after finishing a level, once the world-map icons start
+  flashing, the runtime stopped with `FATAL: native runtime stopped
+  unexpectedly` (`resume_pc = $8089a0` / `$8089a3`; diagnostic bundles
+  `diagnostic_bundle_20261128_004643_26796`, `..._010916_27536`, and
+  `..._011308_13872`). The owner reproduced it from a fresh release quick save.
+- **Measurement (headless, private ROM, Windows Release):**
+  - The quick save fails at host frame 390 with `DKC3_SHOW_HIDDEN_OBJECTS=1`
+    in 4:3 and 16:9, with or without the crate spawner. With the option off
+    it completes 1,800 frames.
+  - Every frame ends in `$80:8992`, which reads the OAM write pointer from
+    DP `$82`, stores `$F0FF` and steps X by 4 until X equals `$0400`. Both
+    resume PCs lie in that loop, so `$82` was left past `$0400` or
+    misaligned and the loop never ends.
+  - On the map (main loop vector DP `$4E` = `$B4:B179`) the reveal unhid
+    three slots: two type `$00A4` icons (`+$1E` = `$0920`, graphics `+$24` =
+    `$0596`/`$059B`) and the controller in slot `$1034`, type `$0198`, with
+    `+$1E` = `$3000` (priority only: tile base 0, palette 0) and `+$24`
+    counting `$0001`, `$0101`, `$0201`, ... . `+$24` is the graphic id the
+    renderer reads at `$B7:8885`, so the controller was drawn from frame
+    data that was never a graphic.
+  - The bear coin this option was made for has `+$1E` = `$2760` and real
+    graphic ids `$2733`-`$2747`, in a level (`$4E` = `$B3:8076`).
+- **Change:**
+  - `Dkc3ShowHiddenSlotEligible` (`runner/dkc3_show_hidden.c`) allows a
+    reveal only when the main loop vector is `$B3:8076` (the level check the
+    crate spawner also uses) and the slot's OAM attribute `+$1E` has a
+    nonzero tile base or palette (`& $0FFF`). `Dkc3RevealHiddenSpriteFlags`
+    returns the word unchanged otherwise.
+  - `test_dkc3_show_hidden` covers the level, world-map, priority-only,
+    empty, palette-only, and tile-only cases.
+- **Verified (headless, private ROM, Windows Release):**
+  - The owner's crash quick save, 1,800 frames, 16:9 with the crate spawner
+    and 4:3 without: completes, and frame, WRAM, VRAM, CGRAM, and OAM hashes
+    are identical with the option on and off.
+  - The cliff quick save, 30 frames, 4:3: option on still draws the silver
+    bear coin (the only frame difference is the box x 157-180, y 22-50).
+  - Python unit tests 31/31; Windows Release CTest 33/33.
+- **Unverified:**
+  - Other hidden types inside levels are still not surveyed. A level slot
+    that holds a tile base or palette but no real graphic would still be
+    drawn. The saved-scene corpus and cave replay are not on this host.
+  - The live desktop app was rebuilt but not played through this map
+    transition. macOS is not checked.
+
+## 2026-11-27 - KAOS arena (level `$23`) stayed pillarboxed
+
+- **Symptom:** the owner's release quick save (SHA-256
+  `dcf29db3504b0c86b0ba610132a1a633fb96617b84082013770e879d29c46fd0`)
+  shows the KAOS arena with black margins at every wide aspect (app at
+  16:9, glide edges).
+- **Measurement (headless, private ROM, Windows Release):**
+  - Level `$23`, Mode 1, maps BG1 `$78` (32x32), BG2 `$71` (64x32), BG3
+    `$7C` (32x32), camera `$0170,$0100`, region 1, terrain stream base
+    `$1969` = `$7800`.
+  - Layer isolation: BG2 is the whole room, one static 512-pixel plane the
+    band classifier already accepts (`P71` on every frame). BG1 is KAOS's
+    body, scrolled independently. BG3 is the bounded sky.
+  - The stream base points at BG1's 32-column map, which is not a wide
+    layer, so `Dkc3VideoTerrainLayer` finds no owner, terrain readiness stays
+    false, and the not-ready path blacks out both margins.
+  - KAOS's body reaches the native left edge (BG1 scroll `$67`). HDMA
+    channel 2 writes window 1 (`$2126/$2127`, mode 1, direct) per scanline,
+    and BG1 uses window 1 inverted on the main screen (`W12SEL` low nibble
+    `$3`, `TMW` bit 0). On the body's lines the window is the body map's
+    256-pixel extent clamped to the screen: `[6,255]` at scroll 250,
+    `[0,153]` at scroll 103. The cartridge clips the body's wrap with it.
+- **Change:**
+  - `Dkc3VideoUsesKaosArenaPlane` gates on level `$23`, Mode 1, maps
+    `$78/$71/$7C`, every band of BG2 classified as a plane, and
+    `DKC3_CULL_WIDEN`. On the not-ready path the arena draws BG2 raw over the
+    physical span (plane band policy), repeats BG3 at its hardware period,
+    and does not blank the margins. Readiness stays false, so culling,
+    camera, and bias are native.
+  - `Dkc3VideoKaosArenaMargins` limits each margin to BG2's 512-pixel map,
+    so the view never shows the plane's wrap. Beyond it is black: up to
+    25 px at 21:9 at the west end of the fight.
+  - `Dkc3VideoKaosBodyWindow` scans the window-1 HDMA table for the pair
+    that matches BG1's scroll (within 2 px) and returns the unclamped
+    extent. The PPU then gets it through `Dkc3PpuSetWsWindowUnclamped`
+    (applied after the trunk-window reset) and BG1 joins the wide mask, so
+    the body continues into a margin and its wrap stays hidden. With no
+    match, BG1 stays inside the native window.
+  - `test_dkc3_video` covers the scene gate, the margins at both plane ends,
+    and the window scan, including rejection.
+- **Verified (headless, private ROM, Windows Release):**
+  - 1,803-frame replay (Start, walk right and left, jump, idle), sampled
+    every 6 frames against the previous binary: 4:3 frames and final frame,
+    WRAM, VRAM, CGRAM, and OAM hashes are identical. At 16:10, 16:9, and
+    21:9 only the frame hash changes. Every sampled wide frame's native
+    256 columns equal the 4:3 frame. With `DKC3_CULL_WIDEN=0`, every sampled
+    frame and every hash equals the previous binary.
+  - Margin oracle, 600-frame replay at 21:9: for 10,120 BG2 margin columns,
+    each one equals a native column showing the same plane x on another
+    frame. The 214 residual columns all come from frames with the camera
+    moving, where the band trace's scroll trails the rendered one by 1 to 2
+    px. With that shift every one matches.
+  - BG1-only render over the 1,803 frames: the body forms a single run of at
+    most 256 columns in every frame (no copy). In 413 of 451 samples it
+    extends into a margin.
+  - The Squeals on Wheels quick save and an older release state are
+    bit-identical, old vs new, at 16:9 and 21:9 over 601 frames.
+  - Windows Release CTest 33/33.
+- **Unverified:**
+  - Only this save and a 30-second segment of the fight were checked, not
+    later phases or the fight's end. A phase with other maps or no matching
+    window pair falls back to black margins or a native-only body.
+  - The live desktop app was rebuilt but not played. The saved-scene corpus,
+    cave replay, and macOS are not on this host.
+  - The Windows smoke tests (`supplied_rom_windows_*_smoke`, save/load on)
+    wrote over `build-windows/Release/saves/dkc3s0.sav`, because the SDL host
+    anchors saves to the executable's folder. The owner's save was restored
+    from a copy taken first. Those tests still need an isolated save
+    directory.
+
+## 2026-11-27 - Windows smoke tests isolated from the release saves
+
+- **Problem:** the `supplied_rom_windows_*_smoke` tests run the release
+  `dkc3_snesrecomp_sdl.exe` with save/load on. The SDL host anchors its
+  working directory to the executable's folder, so each run rewrote
+  `build-windows/Release/saves/dkc3s0.sav`, and also `launcher.cfg` and
+  `rom.cfg` there.
+- **Change:** on Windows and Linux the SDL host now honours `DKC3_USER_DIR`,
+  as the macOS host already did. When it is set, the host creates that one
+  directory (its parent must exist), enters it instead of the executable
+  folder, and keeps reading launcher assets from the executable folder.
+  When it is unset, nothing changes. Each Windows smoke test sets its own
+  `build-windows/windows-test-user-<aspect>` directory.
+- **Verified:** Release rebuilt; CTest 33/33 passed. SHA-256 of every file
+  in `Release/saves` plus `Release/launcher.cfg` and `Release/rom.cfg` is
+  identical before and after the run, and the quick state, config and
+  diagnostics land in the per-aspect test directories.
+- **Unverified:** the Linux build of this path; nothing tests the
+  `DKC3_USER_DIR` failure messages.
+
+## 2026-11-27 - KAOS arena, K. Roolenstein phase, back to 4:3
+
+- **Symptom:** a later release quick save of the level `$23` fight (K.
+  Roolenstein on foot) was pillarboxed again.
+- **Measured:** Mode 1, `bgXsc=[71,7c,7c]`, main `$15`; the band classifier
+  proves BG1 a static `$71` plane on every band; `$1969` is still `$7800`,
+  so no layer owns a terrain stream. The room plane moved from BG2 to BG1 and
+  BG2/BG3 now share the 32-column map `$7C`. The first gate required
+  `[78,71,7c]`, so it rejected this phase. Over a 1,100-frame replay, BG1
+  scroll stayed in 41..137 (the plane never wraps), and whenever the window
+  left edge was non-zero, BG1 scroll + W1/W2 left = 75 exactly. The
+  cartridge's own windows keep BG2/BG3 off the room's west wall, and the
+  runtime's pinned-edge expansion carries them into the margins.
+- **Change:** `Dkc3VideoKaosArenaPlaneLayer` replaces the boolean gate and
+  returns the room's layer: 1 for `[78,71,7c]`, 0 for `[71,7c,7c]`, and only
+  when that layer's plane count equals the band count. For layer 0 the host
+  draws BG1 raw, bounded to the plane's `[0,512)` from BG1's scroll, and
+  repeats BG2 and BG3 at their hardware period. The KAOS branch is
+  unchanged.
+- **Verified** (headless, 183 frames sampled every 6 over 1,100, against the
+  previous binary):
+  - 4:3 frames are identical.
+  - The native centre of 16:10, 16:9, and 21:9 equals 4:3 in all 732
+    checks.
+  - WRAM/VRAM/CGRAM/OAM are identical across aspects.
+  - `DKC3_CULL_WIDEN=0` at 21:9 is identical.
+  - The KAOS-phase save replay is identical at 16:9 and 21:9.
+  - Unit tests and CTest 33/33 pass; release saves are unchanged.
+- **Limits:** at the west end (BG1 scroll 41), 21:9 shows 54 black columns
+  left of plane column 0 (16:9: 2), by the same plane-end rule as the KAOS
+  phase.
+- **Unverified:** the live app; any later phase or defeat sequence with
+  other maps.
+
+## 2026-11-27 - K. Roolenstein phase: floor effects cut off in the left margin
+
+- **Symptom:** the owner's release quick save (SHA-256
+  `fde3da52cd78dc2eb20ed6132a76d537751df88f221fac48313634aa46f1b8da`, level
+  `$23`, K. Roolenstein phase, camera `$01F8`) shows the left side cut off
+  at 16:9: the floor electricity and haze stop at native x 0.
+- **Measured (headless, private ROM, Windows Release):**
+  - Layer isolation (`SNESRECOMP_LAYER_MASK`): BG2 (subscreen, added) is the
+    electricity, BG3 (main) the haze and sky. At 16:9 the left margin has
+    neither, and BG2 leaves a stray 8-column sliver in the right margin.
+  - `W12SEL` = `$0C30`: BG2 uses window 1 inverted (sub only), BG3 window 2
+    inverted (main only). No HDMA writes the window registers in this phase.
+  - The previous change repeated BG2/BG3 at 256 pixels. The left margin was
+    copied from native columns 213..255, which window 1 (`[0,188]`) and
+    window 2 (`[0,100]`) hide, so it came out empty; the right margin copied
+    columns 0..7, which the windows show, past the window's own east edge.
+  - Over a 900-frame replay (walk left, right, left), camera + right edge is
+    692 (W1) and 604 (W2) on 741 of 764 windowed frames, 1-3 px less on the
+    rest while the camera moves. With BG1 scroll = camera - 256, the windows
+    are room x `[75, 436]` (W1) and `[75, 348]` (W2), matching the earlier
+    measurement BG1 scroll + left = 75.
+- **Change:**
+  - `Dkc3VideoKaosRoomWindow` (`runner/dkc3_video.c`) returns a window's
+    unclamped span from its registers and BG1 scroll. A register pinned at 0
+    or 255 takes the room edge (`75 - s`, `east - s`), only if that lies at
+    or past the same screen edge; an unpinned register must be within 2 px
+    of the room edge. Otherwise it returns false.
+  - In the layer-0 arena branch, when both windows pass, BG2 and BG3 join the
+    wide mask (BG3 widened from line 1) and are drawn into the margins from
+    their 32-column map, the hardware wrap; the repeat is off. Both
+    unclamped spans go to `Dkc3PpuSetWsWindowUnclamped` after the trunk
+    window reset. If either fails, BG2/BG3 stay inside the native window.
+  - `test_dkc3_video` covers pinned left, pinned right, the 2 px tolerance,
+    and rejection.
+- **Verified** (900-frame replay from the save, sampled every 6 frames,
+  against the previous binary):
+  - 4:3 frames and all hashes are identical.
+  - At 16:10, 16:9, and 21:9, 127 of 150 sampled frames change (the
+    others are the closing transition). WRAM/VRAM/CGRAM/OAM hashes are
+    identical, and the native centre equals 4:3 in 450/450 checks.
+  - `DKC3_CULL_WIDEN=0` at 21:9 is identical.
+  - At 16:9 and 21:9 the electricity and haze now run unbroken across the
+    left margin.
+  - Windows Release CTest 33/33. Release saves unchanged.
+- **Unverified:** the replay never brings the west wall into a margin
+  (camera stayed in `$01D1..$01F8`), so the pinned-left case with the wall
+  on screen in a margin is covered only by the unit test. The KAOS-phase
+  save is not on this host, but that branch is unchanged. The live app was
+  rebuilt but not played.
+
+## 2026-11-27 - Show hidden objects drew the defeated K. Rool in the floor
+
+- **Symptom:** in a release quick save at the end of the level `$23` fight,
+  K. Rool stood half inside the floor.
+- **Measured (headless):** `launcher.cfg` had `ShowHiddenObjects=1`. K.
+  Rool is slot `$09C2`, type `$0118`, `+$1E` = `$26C0`, graphic `$8019`.
+  The game hides him after the fight with `+$26` = `$C000` and leaves his
+  last frame and position in place. With the option off, his 16 OAM
+  entries (palette 3, priority 2, y 176-227) are gone from the second
+  frame after the load. With it on, they are still drawn at frame 59. The
+  priority-2 sprite sits over the low-priority floor tiles below row 191,
+  as Mode 1 orders them. This is not a widescreen effect: 4:3 and the
+  native centre of 16:9 match.
+- **Change:** `Dkc3ShowHiddenTypeEligible` (`runner/dkc3_show_hidden.c`)
+  refuses type `$0118`, and `Dkc3RevealHiddenSpriteFlags` checks the slot's
+  `+$00` type after the existing level and attribute checks.
+- **Verified:**
+  - With the option on, frame 60 of the save is byte-identical to the
+    option-off frame and has no K. Rool sprites; the previous build drew 16.
+  - With the option off, 600 frames match the previous build at 16:9.
+  - `test_dkc3_show_hidden` covers both types; CTest 33/33 passes; release
+    saves are unchanged.
+- **Unverified:** the bear-coin reveal was not replayed (no coin save at
+  hand; only the unit test covers type `$0284`). Other hidden types are
+  still not surveyed, so another object hidden after leaving play could be
+  drawn the same way.
+
+## 2026-11-27 - Pause crate selector no longer appears during the credits
+
+- **Report:** with **Spawn animal buddy crates from pause menu** on, the
+  ending credits showed the `< Ellie >` selector pill between scenes, as if
+  paused.
+- **Measurement (release quick save in the credits):** the credits run on
+  the level main loop (`$004E` = `$B3:8076`, level word `$00C0` = `$000D` /
+  `$000B`) with `$05AF` = `$80C0`, so the frozen bit (`$0040`) the cheat
+  read as "paused" is set while the credit text is shown. Bit 15 (`$8000`)
+  stays set through the whole credits and is clear in a player pause
+  (`$40C0` in the earlier paused level save); `$BB:A19F` returns early on
+  it.
+- **Change:** `Dkc3IsPauseCrateMenuActive` also requires `$05AF & $8000`
+  clear. That gate covers the HUD pill, Left/Right selection and B
+  spawning.
+- **Verified:** new unit cases (`$80C0` fails closed and does not move the
+  selection; `$40C0` is still accepted); full CTest 33/33. Headless run
+  of the credits save for 60 frames with B, Right, B pressed: WRAM is
+  byte-identical with `DKC3_PAUSE_CRATE_SPAWN=0` and `=1`, and no
+  `$0250` crate slot exists.
+- **Unverified:** a live pause inside a level was not replayed after this
+  change (the paused level save was overwritten by the credits save; the
+  unit test covers it). Whether the title attract demo also sets bit 15
+  was not checked. `DKC3RecompSDL.exe` did not relink because it was
+  running; `DKC3Recomp.exe` and the headless runner were rebuilt.

@@ -142,7 +142,8 @@ int main(void) {
           0x86ae, NULL, 0x8000, 0x100, NULL, NULL))
       return fprintf(stderr, "FAIL: waterfall mismatch and fine-scroll gates\n"), 1;
   }
-  uint16_t placement_cells[3] = {0xffff, 0xffff, 0xffff};
+  uint16_t placement_cells[kDkc3VideoPlacementScanMaxCells] = {
+      0xffff, 0xffff, 0xffff, 0xffff, 0xffff};
   if (!Dkc3VideoUsesUnderwaterSubscreenTint(
           0x09, 0x04, 0x13, 0x04, 0x00, 0x00000300, 0x00, 0xff,
           0x02, 0x64, 0x0000) ||
@@ -205,8 +206,14 @@ int main(void) {
       Dkc3VideoGetAspect() != kDkc3VideoAspectNative ||
       Dkc3VideoWidth() != kDkc3VideoNativeWidth ||
       Dkc3VideoExtra() != 0 ||
+      Dkc3VideoSpawnLead() != 0 ||
+      Dkc3VideoSpriteCullLead() != 0 ||
       Dkc3VideoExpandCullLeft(0x20) != 0x20 ||
       Dkc3VideoExpandCullSpan(0x140) != 0x140 ||
+      Dkc3VideoExpandSpawnLeft(0x20) != 0x20 ||
+      Dkc3VideoExpandSpawnSpan(0x140) != 0x140 ||
+      Dkc3VideoExpandSpriteCullLeft(0x30) != 0x30 ||
+      Dkc3VideoExpandSpriteCullSpan(0x160) != 0x160 ||
       Dkc3VideoPlacementScanCells(2, 64, placement_cells) != 1 ||
       placement_cells[0] != 2 ||
       Dkc3VideoPromoteOamXHigh(0x0120) != 0x0120 ||
@@ -249,6 +256,107 @@ int main(void) {
       opt[word] = 0;
     }
 #undef SNOW
+  }
+  {
+    uint8_t maps[4] = {0x78, 0x71, 0x7c, 0};
+    const int on_bg2[2] = {0, 1}, on_bg2x3[2] = {0, 3}, on_bg1[2] = {1, 0};
+    const int none[2] = {0, 0}, partial[2] = {0, 2};
+    if (Dkc3VideoKaosArenaPlaneLayer(true, 0x23, 1, maps, on_bg2, 1) != 1 ||
+        Dkc3VideoKaosArenaPlaneLayer(true, 0x23, 0x09, maps, on_bg2x3, 3) !=
+            1 ||
+        Dkc3VideoKaosArenaPlaneLayer(false, 0x23, 1, maps, on_bg2, 1) != -1 ||
+        Dkc3VideoKaosArenaPlaneLayer(true, 0x20, 1, maps, on_bg2, 1) != -1 ||
+        Dkc3VideoKaosArenaPlaneLayer(true, 0x23, 2, maps, on_bg2, 1) != -1 ||
+        Dkc3VideoKaosArenaPlaneLayer(true, 0x23, 1, maps, none, 1) != -1 ||
+        Dkc3VideoKaosArenaPlaneLayer(true, 0x23, 1, maps, on_bg1, 1) != -1 ||
+        Dkc3VideoKaosArenaPlaneLayer(true, 0x23, 1, maps, partial, 3) != -1 ||
+        Dkc3VideoKaosArenaPlaneLayer(true, 0x23, 1, maps, none, 0) != -1 ||
+        Dkc3VideoKaosArenaPlaneLayer(true, 0x23, 1, maps, NULL, 1) != -1 ||
+        Dkc3VideoKaosArenaPlaneLayer(true, 0x23, 1, NULL, on_bg2, 1) != -1)
+      return fprintf(stderr, "FAIL: KAOS arena scene gate\n"), 1;
+    for (int layer = 0; layer < 3; layer++) {
+      maps[layer] ^= 1;
+      if (Dkc3VideoKaosArenaPlaneLayer(true, 0x23, 1, maps, on_bg2, 1) != -1)
+        return fprintf(stderr, "FAIL: KAOS arena map gate\n"), 1;
+      maps[layer] ^= 1;
+    }
+    /* K. Roolenstein: the room moves to BG1; BG2 and BG3 share $7C. */
+    uint8_t rool[4] = {0x71, 0x7c, 0x7c, 0};
+    if (Dkc3VideoKaosArenaPlaneLayer(true, 0x23, 1, rool, on_bg1, 1) != 0 ||
+        Dkc3VideoKaosArenaPlaneLayer(true, 0x23, 1, rool, on_bg2, 1) != -1 ||
+        Dkc3VideoKaosArenaPlaneLayer(true, 0x22, 1, rool, on_bg1, 1) != -1)
+      return fprintf(stderr, "FAIL: K. Roolenstein arena gate\n"), 1;
+    for (int layer = 0; layer < 3; layer++) {
+      rool[layer] ^= 1;
+      if (Dkc3VideoKaosArenaPlaneLayer(true, 0x23, 1, rool, on_bg1, 1) != -1)
+        return fprintf(stderr, "FAIL: K. Roolenstein map gate\n"), 1;
+      rool[layer] ^= 1;
+    }
+    int left = -1, right = -1;
+    Dkc3VideoKaosArenaMargins(0x0070, 43, &left, &right);
+    if (left != 43 || right != 43)
+      return fprintf(stderr, "FAIL: KAOS arena interior margins\n"), 1;
+    Dkc3VideoKaosArenaMargins(0x0008, 95, &left, &right);
+    if (left != 8 || right != 95)
+      return fprintf(stderr, "FAIL: KAOS arena west margin\n"), 1;
+    Dkc3VideoKaosArenaMargins(0x00f8, 95, &left, &right);
+    if (left != 95 || right != 8)
+      return fprintf(stderr, "FAIL: KAOS arena east margin\n"), 1;
+    Dkc3VideoKaosArenaMargins(0x0120, 43, &left, &right);
+    if (left != 43 || right != 0)
+      return fprintf(stderr, "FAIL: KAOS arena wrapped native window\n"), 1;
+    /* Body map starting left of the screen (scroll 103): a direct entry
+     * of other lines, then a repeat entry whose second pair is the body's. */
+    const uint8_t left_table[] = {0x20, 5, 255, 0x82, 5, 255, 0, 153, 0};
+    uint8_t rl = 0, rr = 0;
+    if (!Dkc3VideoKaosBodyWindow(left_table, sizeof left_table, 103, &rl,
+                                 &rr, &left, &right) ||
+        rl != 0 || rr != 153 || left != -102 || right != 153)
+      return fprintf(stderr, "FAIL: KAOS body window left extent\n"), 1;
+    /* Body map starting inside the screen (scroll 250). */
+    const uint8_t right_table[] = {0x40, 6, 255, 0};
+    if (!Dkc3VideoKaosBodyWindow(right_table, sizeof right_table, 0x3fa, &rl,
+                                 &rr, &left, &right) ||
+        rl != 6 || rr != 255 || left != 6 || right != 261)
+      return fprintf(stderr, "FAIL: KAOS body window right extent\n"), 1;
+    /* No consistent pair, a zero scroll, a truncated table, and a null
+     * table are all rejected. */
+    const uint8_t other_table[] = {0x40, 5, 255, 0x10, 0, 255, 0};
+    if (Dkc3VideoKaosBodyWindow(other_table, sizeof other_table, 103, &rl,
+                                &rr, &left, &right) ||
+        Dkc3VideoKaosBodyWindow(right_table, sizeof right_table, 0x400, &rl,
+                                &rr, &left, &right) ||
+        Dkc3VideoKaosBodyWindow(left_table, 4, 103, &rl, &rr, &left,
+                                &right) ||
+        Dkc3VideoKaosBodyWindow(NULL, 8, 103, &rl, &rr, &left, &right))
+      return fprintf(stderr, "FAIL: KAOS body window rejection\n"), 1;
+    /* K. Roolenstein room windows. Scroll 248: both left edges pinned at 0
+     * (the west wall is off screen), right edges room-anchored. */
+    if (!Dkc3VideoKaosRoomWindow(0, 188, 248, kDkc3KaosRoomWindowWest,
+                                 kDkc3KaosRoomWindow1East, &left, &right) ||
+        left != 75 - 248 || right != 188)
+      return fprintf(stderr, "FAIL: KAOS room window pinned left\n"), 1;
+    /* Scroll 41: the wall is on screen, the east end past it. */
+    if (!Dkc3VideoKaosRoomWindow(34, 255, 41, kDkc3KaosRoomWindowWest,
+                                 kDkc3KaosRoomWindow2East, &left, &right) ||
+        left != 34 || right != 348 - 41)
+      return fprintf(stderr, "FAIL: KAOS room window pinned right\n"), 1;
+    /* Within two pixels of a trailing scroll is accepted as written. */
+    if (!Dkc3VideoKaosRoomWindow(0, 190, 248, kDkc3KaosRoomWindowWest,
+                                 kDkc3KaosRoomWindow1East, &left, &right) ||
+        right != 190)
+      return fprintf(stderr, "FAIL: KAOS room window tolerance\n"), 1;
+    /* A pinned edge the room places on screen, an unpinned edge off the
+     * room's anchor, and an empty window are rejected. */
+    if (Dkc3VideoKaosRoomWindow(0, 188, 60, kDkc3KaosRoomWindowWest,
+                                kDkc3KaosRoomWindow1East, &left, &right) ||
+        Dkc3VideoKaosRoomWindow(0, 255, 248, kDkc3KaosRoomWindowWest,
+                                kDkc3KaosRoomWindow1East, &left, &right) ||
+        Dkc3VideoKaosRoomWindow(0, 150, 248, kDkc3KaosRoomWindowWest,
+                                kDkc3KaosRoomWindow1East, &left, &right) ||
+        Dkc3VideoKaosRoomWindow(20, 10, 248, kDkc3KaosRoomWindowWest,
+                                kDkc3KaosRoomWindow1East, &left, &right))
+      return fprintf(stderr, "FAIL: KAOS room window rejection\n"), 1;
   }
   if (kDkc3VideoAspectNative != 0 || kDkc3VideoAspect16x10 != 1 ||
       kDkc3VideoAspect16x9 != 2 || kDkc3VideoAspect21x9 != 3 ||
@@ -365,6 +473,179 @@ int main(void) {
     if (left != 10 || right != 26) {
       fprintf(stderr, "FAIL: margins for a chosen bias (%d %d)\n", left,
               right);
+      return 1;
+    }
+    /* A camera inside its region takes the region's walls; one still
+     * converging on a region it just entered (the shaft at $02C0..$03C0
+     * with the camera at $0295) gets the wall reflected about it, so the
+     * margin is the 43 pixels left to travel, capped at 16:10's 26, instead
+     * of zero. */
+    {
+      uint16_t lower = 0, upper = 0;
+      Dkc3VideoRegionScrollBounds(0x02c0, 0x02c0, 0x03c0, 0x0a00, &lower,
+                                  &upper);
+      if (lower != 0x02c0 || upper != 0x02c0) {
+        fprintf(stderr, "FAIL: region bounds inside (%04x %04x)\n", lower,
+                upper);
+        return 1;
+      }
+      Dkc3VideoRegionScrollBounds(0x0295, 0x02c0, 0x03c0, 0x0a00, &lower,
+                                  &upper);
+      Dkc3VideoMarginsForBias(0x0295, lower, upper, 0, &left, &right);
+      if (lower != 0x026a || upper != 0x02c0 || left != 26 || right != 26) {
+        fprintf(stderr, "FAIL: region bounds converging west (%04x %04x %d %d)\n",
+                lower, upper, left, right);
+        return 1;
+      }
+      Dkc3VideoRegionScrollBounds(0x02b8, 0x02c0, 0x03c0, 0x0a00, &lower,
+                                  &upper);
+      Dkc3VideoMarginsForBias(0x02b8, lower, upper, 0, &left, &right);
+      if (left != 8 || right != 8) {
+        fprintf(stderr, "FAIL: region margin closes with travel (%d %d)\n",
+                left, right);
+        return 1;
+      }
+      Dkc3VideoRegionScrollBounds(0x0300, 0x0100, 0x02e0, 0x0a00, &lower,
+                                  &upper);
+      if (lower != 0x0100 || upper != 0x0420) {
+        fprintf(stderr, "FAIL: region bounds converging east (%04x %04x)\n",
+                lower, upper);
+        return 1;
+      }
+      Dkc3VideoRegionScrollBounds(0x0110, 0x0200, 0x0400, 0x0300, &lower,
+                                  &upper);
+      if (lower != 0x0100 || upper != 0x0300) {
+        fprintf(stderr, "FAIL: region bounds clamp to the level (%04x %04x)\n",
+                lower, upper);
+        return 1;
+      }
+    }
+    /* A wall that jumps outward opens its margin at the bounded rate; a
+     * wall fixed in the world keeps pace with the view moving away from
+     * it; narrowing is immediate. */
+    if (Dkc3VideoLimitMarginGrowth(0, 43, 0) != kDkc3VideoMarginOpenRate ||
+        Dkc3VideoLimitMarginGrowth(10, 43, 4) !=
+            10 + 4 + kDkc3VideoMarginOpenRate ||
+        Dkc3VideoLimitMarginGrowth(10, 43, -4) !=
+            10 + kDkc3VideoMarginOpenRate ||
+        Dkc3VideoLimitMarginGrowth(10, 13, 3) != 13 ||
+        Dkc3VideoLimitMarginGrowth(43, 0, 0) != 0) {
+      fprintf(stderr, "FAIL: margin growth limit\n");
+      return 1;
+    }
+    /* The bias steps one pixel toward its target, and may also cancel
+     * the camera's own motion this frame, never add to it: a camera
+     * scrolling 4 pixels right into a pinned east wall leaves the view
+     * still, and a still camera or one moving with the step keeps the
+     * one-pixel glide. */
+    if (Dkc3VideoStepPresentationBias(-20, -43, 4) != -25 ||
+        Dkc3VideoStepPresentationBias(-20, -22, 4) != -22 ||
+        Dkc3VideoStepPresentationBias(-20, -43, 0) != -21 ||
+        Dkc3VideoStepPresentationBias(-20, -43, -4) != -21 ||
+        Dkc3VideoStepPresentationBias(20, 43, -3) != 24 ||
+        Dkc3VideoStepPresentationBias(20, 43, 3) != 21 ||
+        Dkc3VideoStepPresentationBias(5, 5, 9) != 5) {
+      fprintf(stderr, "FAIL: presentation bias step\n");
+      return 1;
+    }
+    /* Camera regions shaped like the reported elevator level: a floor room
+     * (1), a shaft exactly one screen wide above it (3), the room at the
+     * shaft's top (2), and the corridor east of that room (4, then 5). */
+    static uint8_t wram[0x10000];
+    memset(wram, 0, sizeof wram);
+    const struct {
+      unsigned index;
+      uint16_t left, right, top, bottom;
+      uint8_t flags, right_link, left_link0, left_link1;
+    } regions[] = {
+        {1, 0x0110, 0x0290, 0x0828, 0x0908, 0x00, 0, 0, 0},
+        {2, 0x0190, 0x0290, 0x0128, 0x0208, 0x05, 4, 0, 0},
+        {3, 0x0190, 0x0290, 0x0208, 0x0828, 0x01, 0, 0, 0},
+        {4, 0x0290, 0x0418, 0x0128, 0x0208, 0x04, 5, 2, 0},
+        {5, 0x0418, 0x0598, 0x0128, 0x0220, 0x04, 0, 4, 0},
+    };
+    for (size_t n = 0; n < sizeof regions / sizeof regions[0]; n++) {
+      const unsigned at = regions[n].index * 2u;
+      const uint16_t words[4] = {regions[n].left, regions[n].right,
+                                 regions[n].top, regions[n].bottom};
+      for (unsigned k = 0; k < 4; k++) {
+        wram[0x995a + k * 0x100 + at] = (uint8_t)words[k];
+        wram[0x995a + k * 0x100 + at + 1] = (uint8_t)(words[k] >> 8);
+      }
+      wram[0x9d5a + at] = regions[n].flags;
+      wram[0x9d5b + at] = regions[n].right_link;
+      wram[0x9e5a + at] = regions[n].left_link0;
+      wram[0x9e5b + at] = regions[n].left_link1;
+    }
+    uint16_t span_left = 0, span_right = 0;
+    /* The shaft has no side links: its span is its own screen. */
+    if (!Dkc3VideoCameraRegionSpan(wram, 6, &span_left, &span_right) ||
+        span_left != 0x0190 || span_right != 0x0290) {
+      fprintf(stderr, "FAIL: shaft region span (%04x %04x)\n", span_left,
+              span_right);
+      return 1;
+    }
+    /* The top room chains east through 4 and 5; from the corridor, the
+     * west link reaches back to the top room. */
+    if (!Dkc3VideoCameraRegionSpan(wram, 4, &span_left, &span_right) ||
+        span_left != 0x0190 || span_right != 0x0598) {
+      fprintf(stderr, "FAIL: top room region span (%04x %04x)\n", span_left,
+              span_right);
+      return 1;
+    }
+    if (!Dkc3VideoCameraRegionSpan(wram, 8, &span_left, &span_right) ||
+        span_left != 0x0190 || span_right != 0x0598) {
+      fprintf(stderr, "FAIL: corridor region span (%04x %04x)\n", span_left,
+              span_right);
+      return 1;
+    }
+    /* A closed ($20) neighbour ends the span; a player-gated ($80) one
+     * does not, so the bound never moves with the player. */
+    wram[0x9d5a + 8] = 0x24;
+    Dkc3VideoCameraRegionSpan(wram, 4, &span_left, &span_right);
+    const uint16_t closed_right = span_right;
+    wram[0x9d5a + 8] = 0x84;
+    Dkc3VideoCameraRegionSpan(wram, 4, &span_left, &span_right);
+    if (closed_right != 0x0290 || span_right != 0x0598) {
+      fprintf(stderr, "FAIL: region flags (%04x %04x)\n", closed_right,
+              span_right);
+      return 1;
+    }
+    wram[0x9d5a + 8] = 0x04;
+    /* The second east candidate: the region after the link, when it names
+     * this region as a left neighbour ($B7:E0ED). The shaft linked here
+     * does not widen the top room. */
+    wram[0x9d5b + 4] = 3;
+    Dkc3VideoCameraRegionSpan(wram, 4, &span_left, &span_right);
+    if (span_right != 0x0598) {
+      fprintf(stderr, "FAIL: second east candidate (%04x)\n", span_right);
+      return 1;
+    }
+    wram[0x9e5a + 8] = 0;
+    Dkc3VideoCameraRegionSpan(wram, 4, &span_left, &span_right);
+    if (span_right != 0x0290) {
+      fprintf(stderr, "FAIL: unnamed second candidate (%04x)\n", span_right);
+      return 1;
+    }
+    /* No current region (entry 0), an odd or out-of-range offset, or a
+     * region narrower than a screen keeps the level-wide bounds. */
+    wram[0x9a5a + 2] = 0x00;
+    wram[0x9a5b + 2] = 0x02;
+    if (Dkc3VideoCameraRegionSpan(wram, 0, NULL, NULL) ||
+        Dkc3VideoCameraRegionSpan(wram, 5, NULL, NULL) ||
+        Dkc3VideoCameraRegionSpan(wram, 0x100, NULL, NULL) ||
+        Dkc3VideoCameraRegionSpan(wram, 2, NULL, NULL) ||
+        Dkc3VideoCameraRegionSpan(NULL, 6, NULL, NULL)) {
+      fprintf(stderr, "FAIL: region span without a usable region\n");
+      return 1;
+    }
+    /* The shaft's one-screen span is a room narrower than two margins:
+     * no glide, both margins black. */
+    Dkc3VideoPresentationMarginsBounded(0x0190, 0x0190, 0x0190, &bias, &left,
+                                        &right);
+    if (bias != 0 || left != 0 || right != 0) {
+      fprintf(stderr, "FAIL: one-screen region margins (%d %d %d)\n", bias,
+              left, right);
       return 1;
     }
     /* The hold itself over a synthetic map: two empty columns beside the
@@ -518,14 +799,113 @@ int main(void) {
       !CheckMargins(0x0800 - 208, 0x0800, 0, 26, 26) ||
       !CheckMargins(0x0800 - 8, 0x0800, -25, 26, 26) ||
       !CheckMargins(0x0800, 0x0800, -26, 26, 26) ||
-      !CheckMargins(0x0100, 0x0120, 16, 16, 16) ||
-      !CheckMargins(0x0120, 0x0120, -16, 16, 16) ||
       !CheckMargins(0x0100, 0x0100, 0, 0, 0) ||
       !CheckMargins(0x0100, 0x00ff, 0, 26, 26) ||
       !CheckMargins(0x0900, 0x0800, -26, 26, 0) ||
       !CheckMargins(0x0080, 0x0800, 26, 0, 26)) {
     fprintf(stderr, "FAIL: 16:10 glide margins\n");
     return 1;
+  }
+  /* glide in a room narrower than two margins (the bonus room of the first
+   * level travels 24 pixels, $0100-$0118): the view stays locked
+   * to the cartridge camera and each margin is clamped to the room, so the
+   * background scrolls exactly as the native frame does. */
+  if (!CheckMargins(0x0100, 0x0120, 0, 0, 26) ||
+      !CheckMargins(0x0110, 0x0120, 0, 16, 16) ||
+      !CheckMargins(0x0120, 0x0120, 0, 26, 0) ||
+      !CheckMargins(0x0100, 0x0118, 0, 0, 24) ||
+      !CheckMargins(0x010c, 0x0118, 0, 12, 12) ||
+      !CheckMargins(0x0118, 0x0118, 0, 24, 0)) {
+    fprintf(stderr, "FAIL: 16:10 glide in a narrow room\n");
+    return 1;
+  }
+  /* glide in a room shorter than its two releases (2 * 26 * 8 = 416 pixels
+   * at 16:10; the first level's second bonus room travels 128): the wall
+   * shift shrinks to range / 16 so both releases fit at one pixel per
+   * eight, no pin forces the bias to track the camera, and each margin is
+   * clamped to the room. A room of exactly 416 pixels glides in full. */
+  if (!CheckMargins(0x0100, 0x0134, 3, 3, 26) ||
+      !CheckMargins(0x0134, 0x0134, -3, 26, 3) ||
+      !CheckMargins(0x0100, 0x0180, 8, 8, 26) ||
+      !CheckMargins(0x0108, 0x0180, 7, 15, 26) ||
+      !CheckMargins(0x0140, 0x0180, 0, 26, 26) ||
+      !CheckMargins(0x0178, 0x0180, -7, 26, 15) ||
+      !CheckMargins(0x0180, 0x0180, -8, 26, 8) ||
+      !CheckMargins(0x0100, 0x02a0, 26, 26, 26) ||
+      !CheckMargins(0x02a0, 0x02a0, -26, 26, 26)) {
+    fprintf(stderr, "FAIL: 16:10 glide in a short room\n");
+    return 1;
+  }
+  /* Columns outside the live span are cleared; the span and other rows'
+   * padding are untouched. 16:10 rows are 308 pixels: a left margin of 10
+   * leaves 16 dead columns, a right margin of 26 leaves none. */
+  {
+    enum { kRows = 3, kPitch = 308 * 4 + 8 };
+    static uint8_t buffer[kRows * kPitch];
+    memset(buffer, 0xab, sizeof buffer);
+    Dkc3VideoClearOutsideMargins(buffer, kPitch, 308, kRows, 26, 10, 26);
+    bool ok = true;
+    for (int y = 0; y < kRows && ok; y++) {
+      const uint8_t *row = buffer + (size_t)y * kPitch;
+      for (int x = 0; x < 308 && ok; x++) {
+        const uint8_t expected = x < 16 ? 0 : 0xab;
+        for (int b = 0; b < 4; b++)
+          ok = ok && row[x * 4 + b] == expected;
+      }
+      for (int b = 308 * 4; b < kPitch; b++)
+        ok = ok && row[b] == 0xab;
+    }
+    memset(buffer, 0xab, sizeof buffer);
+    Dkc3VideoClearOutsideMargins(buffer, kPitch, 308, kRows, 26, 26, 3);
+    for (int y = 0; y < kRows && ok; y++) {
+      const uint8_t *row = buffer + (size_t)y * kPitch;
+      for (int x = 0; x < 308; x++) {
+        const uint8_t expected = x >= 308 - 23 ? 0 : 0xab;
+        for (int b = 0; b < 4; b++)
+          ok = ok && row[x * 4 + b] == expected;
+      }
+    }
+    memset(buffer, 0xab, sizeof buffer);
+    Dkc3VideoClearOutsideMargins(buffer, kPitch, 308, kRows, 26, 26, 26);
+    Dkc3VideoClearOutsideMargins(buffer, kPitch, 256, kRows, 26, 0, 0);
+    for (size_t i = 0; i < sizeof buffer; i++)
+      ok = ok && buffer[i] == 0xab;
+    if (!ok) {
+      fprintf(stderr, "FAIL: clear outside the live margins\n");
+      return 1;
+    }
+  }
+  /* $B3:C0F4's trunk windows. The Ripsaw Rage quick save: W2's trunk
+   * starts 273 pixels right of the camera, so the cartridge wrote it as
+   * [255, 255]; both windows are the clamp of their unclamped edges. */
+  {
+    const uint16_t world[4] = {0x0158, 0x0227, 0x02d8, 0x03a7};
+    int16_t edges[4];
+    const uint8_t save_regs[4] = {0, 96, 255, 255};
+    bool ok = Dkc3VideoUnclampedTrunkWindows(world, 0x01c7, save_regs,
+                                             edges) == 3u &&
+              edges[0] == -111 && edges[1] == 96 && edges[2] == 273 &&
+              edges[3] == 480;
+    /* The second trunk on screen (camera $0211). */
+    const uint8_t later_regs[4] = {0, 22, 199, 255};
+    ok = ok && Dkc3VideoUnclampedTrunkWindows(world, 0x0211, later_regs,
+                                              edges) == 3u &&
+         edges[2] == 199 && edges[3] == 406;
+    /* A register some other writer changed fails its window only. */
+    const uint8_t other_regs[4] = {0, 96, 255, 0};
+    ok = ok && Dkc3VideoUnclampedTrunkWindows(world, 0x01c7, other_regs,
+                                              edges) == 1u;
+    /* W1L is written as a low byte when past 255; that is not a clamp. */
+    const uint8_t wrapped_regs[4] = {0x18, 255, 255, 255};
+    ok = ok && Dkc3VideoUnclampedTrunkWindows(world, 0x0040, wrapped_regs,
+                                              edges) == 2u &&
+         edges[0] == 280;
+    ok = ok && Dkc3VideoUnclampedTrunkWindows(NULL, 0, save_regs, edges) ==
+                   0u;
+    if (!ok) {
+      fprintf(stderr, "FAIL: unclamped trunk windows\n");
+      return 1;
+    }
   }
   {
     const int lhs = Dkc3VideoWidth() * 7 * 10;
@@ -541,13 +921,85 @@ int main(void) {
   Dkc3VideoSetWidescreen(true);
   Dkc3VideoSetEdgePolicy(kDkc3VideoEdgeShift);
   if (Dkc3VideoTerrainReady() ||
+      Dkc3VideoSpawnLead() != 0 ||
+      Dkc3VideoSpriteCullLead() != 0 ||
       Dkc3VideoExpandCullLeft(0x20) != 0x20 ||
       Dkc3VideoExpandCullSpan(0x140) != 0x140 ||
+      Dkc3VideoExpandSpawnLeft(0x20) != 0x20 ||
+      Dkc3VideoExpandSpawnSpan(0x140) != 0x140 ||
+      Dkc3VideoExpandSpriteCullLeft(0x30) != 0x30 ||
+      Dkc3VideoExpandSpriteCullSpan(0x160) != 0x160 ||
       Dkc3VideoPromoteOamXHigh(0x0120) != 0x0120) {
     fprintf(stderr, "FAIL: object bounds widened before terrain was ready\n");
     return 1;
   }
   Dkc3VideoSetTerrainReady(true);
+  {
+    /* Widescreen spawn and sprite-renderer lead: 16:9 gets the full configured
+     * lead (default 48 px, clamped to [0, 64]) on standard DATA_BBA8BE rows
+     * (< $60 / < $1C0) and on sprite renderer culls, while already-wide rows
+     * ($60/$1C0 and $F8/$2F0) skip extra lead to prevent unsigned underflow. */
+    Dkc3VideoSetSpawnLead(kDkc3VideoDefaultSpawnLead);
+    Dkc3VideoSetPresentationBias(0);
+    if (Dkc3VideoSpawnLead() != 48 ||
+        Dkc3VideoSpriteCullLead() != 48 ||
+        Dkc3VideoExpandSpawnLeft(0x10) != 0x10 + 43 + 48 ||
+        Dkc3VideoExpandSpawnSpan(0x120) != 0x120 + 86 + 96 ||
+        Dkc3VideoExpandSpawnLeft(0x18) != 0x18 + 43 + 48 ||
+        Dkc3VideoExpandSpawnSpan(0x130) != 0x130 + 86 + 96 ||
+        Dkc3VideoExpandSpawnLeft(0x20) != 0x20 + 43 + 48 ||
+        Dkc3VideoExpandSpawnSpan(0x140) != 0x140 + 86 + 96 ||
+        Dkc3VideoExpandSpawnLeft(0x28) != 0x28 + 43 + 48 ||
+        Dkc3VideoExpandSpawnSpan(0x150) != 0x150 + 86 + 96 ||
+        Dkc3VideoExpandSpawnLeft(0x40) != 0x40 + 43 + 48 ||
+        Dkc3VideoExpandSpawnSpan(0x1a0) != 0x1a0 + 86 + 96 ||
+        /* Already-wide rows skip extra lead, keeping exact extra/bias. */
+        Dkc3VideoExpandSpawnLeft(0x60) != 0x60 + 43 ||
+        Dkc3VideoExpandSpawnSpan(0x1c0) != 0x1c0 + 86 ||
+        Dkc3VideoExpandSpawnLeft(0xf8) != 0xf8 + 43 ||
+        Dkc3VideoExpandSpawnSpan(0x2f0) != 0x2f0 + 86 ||
+        /* Sprite renderer culls match the lead at 16:9 (74 px safe OAM cap). */
+        Dkc3VideoExpandSpriteCullLeft(0x30) != 0x30 + 43 + 48 ||
+        Dkc3VideoExpandSpriteCullSpan(0x160) != 0x160 + 86 + 96 ||
+        Dkc3VideoExpandSpriteCullLeft(0x10) != 0x10 + 43 + 48 ||
+        Dkc3VideoExpandSpriteCullSpan(0x120) != 0x120 + 86 + 96) {
+      fprintf(stderr, "FAIL: 16:9 spawn and sprite-cull lead\n");
+      return 1;
+    }
+    /* Bias shifts the spawn and sprite-cull windows asymmetrically while
+     * preserving the 8-pixel spawn/despawn hysteresis. */
+    Dkc3VideoSetPresentationBias(43);
+    if (Dkc3VideoExpandSpawnLeft(0x20) != 0x20 + 48 ||
+        Dkc3VideoExpandSpawnSpan(0x140) != 0x140 + 86 + 96 ||
+        Dkc3VideoExpandSpawnLeft(0x28) - Dkc3VideoExpandSpawnLeft(0x20) != 8 ||
+        Dkc3VideoExpandSpriteCullLeft(0x30) != 0x30 + 48 ||
+        Dkc3VideoExpandSpriteCullSpan(0x160) != 0x160 + 86 + 96) {
+      fprintf(stderr, "FAIL: biased 16:9 spawn and sprite-cull lead\n");
+      return 1;
+    }
+    Dkc3VideoSetPresentationBias(-43);
+    if (Dkc3VideoExpandSpawnLeft(0x20) != 0x20 + 86 + 48 ||
+        Dkc3VideoExpandSpriteCullLeft(0x30) != 0x30 + 86 + 48) {
+      fprintf(stderr, "FAIL: negative-bias 16:9 spawn and sprite-cull lead\n");
+      return 1;
+    }
+    /* Setter clamping. */
+    Dkc3VideoSetPresentationBias(0);
+    Dkc3VideoSetSpawnLead(-10);
+    if (Dkc3VideoSpawnLead() != 0 || Dkc3VideoSpriteCullLead() != 0 ||
+        Dkc3VideoExpandSpawnLeft(0x20) != 0x4b ||
+        Dkc3VideoExpandSpriteCullLeft(0x30) != 0x5b) {
+      fprintf(stderr, "FAIL: zero/negative spawn lead clamp\n");
+      return 1;
+    }
+    Dkc3VideoSetSpawnLead(200);
+    if (Dkc3VideoSpawnLead() != kDkc3VideoMaxSpawnLead ||
+        Dkc3VideoSpriteCullLead() != kDkc3VideoMaxSpawnLead) {
+      fprintf(stderr, "FAIL: upper spawn lead clamp\n");
+      return 1;
+    }
+    Dkc3VideoSetSpawnLead(kDkc3VideoDefaultSpawnLead);
+  }
   if (!Dkc3VideoIsWidescreen() ||
       !Dkc3VideoTerrainReady() ||
       Dkc3VideoWidth() != kDkc3VideoWidescreenWidth ||
@@ -558,16 +1010,28 @@ int main(void) {
       Dkc3VideoExpandCullSpan(0x160) != 0x1b6 ||
       /* A presentation bias moves the presented window: the left slack
        * shrinks by a positive bias (none left at the left wall) and grows
-       * by a negative one; the span keeps both margins either way. */
+       * by a negative one; the span keeps both margins either way. The
+       * static banana/star walk subtracts camera + right and adds back the
+       * full $10F span, so Span($10F) - Right($100) must equal Left($0F)
+       * at every bias. */
       (Dkc3VideoSetPresentationBias(43),
        Dkc3VideoExpandCullLeft(0x20) != 0x20 ||
        Dkc3VideoExpandCullSpan(0x140) != 0x196 ||
+       Dkc3VideoExpandCullRight(0x100) != 0x156 ||
+       Dkc3VideoExpandCullSpan(0x10f) - Dkc3VideoExpandCullRight(0x100) !=
+           Dkc3VideoExpandCullLeft(0x0f) ||
        Dkc3VideoPresentationBias() != 43) ||
       (Dkc3VideoSetPresentationBias(-43),
        Dkc3VideoExpandCullLeft(0x20) != 0x76 ||
-       Dkc3VideoExpandCullSpan(0x140) != 0x196) ||
+       Dkc3VideoExpandCullSpan(0x140) != 0x196 ||
+       Dkc3VideoExpandCullRight(0x100) != 0x100 ||
+       Dkc3VideoExpandCullSpan(0x10f) - Dkc3VideoExpandCullRight(0x100) !=
+           Dkc3VideoExpandCullLeft(0x0f)) ||
       (Dkc3VideoSetPresentationBias(0),
-       Dkc3VideoExpandCullLeft(0x20) != 0x4b) ||
+       Dkc3VideoExpandCullLeft(0x20) != 0x4b ||
+       Dkc3VideoExpandCullRight(0x100) != 0x12b ||
+       Dkc3VideoExpandCullSpan(0x10f) - Dkc3VideoExpandCullRight(0x100) !=
+           Dkc3VideoExpandCullLeft(0x0f)) ||
       Dkc3VideoPromoteOamXHigh(0x00ff) != 0x00ff ||
       Dkc3VideoPromoteOamXHigh(0x0100) != 0x8100 ||
       Dkc3VideoPromoteOamXHigh(0x012a) != 0x812a ||
@@ -587,6 +1051,27 @@ int main(void) {
     return 1;
   }
   Dkc3VideoSetEdgePolicy(kDkc3VideoEdgeReflect);
+
+  /* Camera reach for the structural wall rule. The waterfall save's region
+   * spans camera $0100..$0380, so the native window can reach world x
+   * $0100..$047F: the trunk gap at tiles 100-106 is inside it and keeps
+   * its decode. A west hold at $0200 puts tile 63 outside, tile 64 inside;
+   * the east end is tile 143 inside, 144 outside. */
+  if (!Dkc3VideoTileInCameraReach(100, 0x0100, 0x0380) ||
+      !Dkc3VideoTileInCameraReach(106, 0x0100, 0x0380) ||
+      !Dkc3VideoTileInCameraReach(32, 0x0100, 0x0380) ||
+      Dkc3VideoTileInCameraReach(31, 0x0100, 0x0380) ||
+      !Dkc3VideoTileInCameraReach(143, 0x0100, 0x0380) ||
+      Dkc3VideoTileInCameraReach(144, 0x0100, 0x0380) ||
+      Dkc3VideoTileInCameraReach(63, 0x0200, 0x0380) ||
+      !Dkc3VideoTileInCameraReach(64, 0x0200, 0x0380) ||
+      /* A tile straddling a wall that is not on a tile boundary is
+       * partly beyond it, so the wall rule may still treat it. */
+      Dkc3VideoTileInCameraReach(64, 0x0204, 0x0380) ||
+      Dkc3VideoTileInCameraReach(64, 0x0300, 0x0200)) {
+    fprintf(stderr, "FAIL: camera reach for the wall rule\n");
+    return 1;
+  }
 
   {
     /* Murky Mill puts a 32-column BG3 light plane on the main screen and
@@ -638,6 +1123,37 @@ int main(void) {
       kDkc3Video21x9Extra != 95 ||
       Dkc3VideoExpandCullLeft(0x20) != 0x7f ||
       Dkc3VideoExpandCullSpan(0x140) != 0x1fe ||
+      /* At 21:9, placement spawn still receives the configured lead (fitting
+       * within one 256-pixel neighbor bucket even at +95 wall bias), while
+       * the sprite renderer cull lead clamps to 0 so nine-bit OAM never wraps. */
+      Dkc3VideoSpawnLead() != kDkc3VideoDefaultSpawnLead ||
+      Dkc3VideoSpriteCullLead() != 0 ||
+      Dkc3VideoExpandSpawnLeft(0x20) != 0x7f + kDkc3VideoDefaultSpawnLead ||
+      Dkc3VideoExpandSpawnSpan(0x140) != 0x1fe + 2 * kDkc3VideoDefaultSpawnLead ||
+      Dkc3VideoExpandSpriteCullLeft(0x30) != 0x30 + 95 ||
+      Dkc3VideoExpandSpriteCullSpan(0x160) != 0x160 + 190 ||
+      /* At 21:9 with the 48 px spawn lead, wall bias + lead + 32 px
+       * asymmetric row slack can reach a second 256-pixel neighbor bucket,
+       * so the broad-phase scan expands to two cells per side (clamped to
+       * row bounds); with lead=0 it drops back to one neighbor per side. */
+      Dkc3VideoPlacementScanCells(6, 64, placement_cells) != 5 ||
+      placement_cells[0] != 6 || placement_cells[1] != 4 ||
+      placement_cells[2] != 8 || placement_cells[3] != 2 ||
+      placement_cells[4] != 10 ||
+      Dkc3VideoPlacementScanCells(2, 64, placement_cells) != 4 ||
+      placement_cells[0] != 2 || placement_cells[1] != 0 ||
+      placement_cells[2] != 4 || placement_cells[3] != 6 ||
+      Dkc3VideoPlacementScanCells(0, 64, placement_cells) != 3 ||
+      placement_cells[0] != 0 || placement_cells[1] != 2 ||
+      placement_cells[2] != 4 ||
+      Dkc3VideoPlacementScanCells(126, 64, placement_cells) != 3 ||
+      placement_cells[0] != 126 || placement_cells[1] != 124 ||
+      placement_cells[2] != 122 ||
+      (Dkc3VideoSetSpawnLead(0),
+       Dkc3VideoPlacementScanCells(6, 64, placement_cells) != 3 ||
+       placement_cells[0] != 6 || placement_cells[1] != 4 ||
+       placement_cells[2] != 8) ||
+      (Dkc3VideoSetSpawnLead(kDkc3VideoDefaultSpawnLead), false) ||
       !CheckMargins(0x0100, 0x0800, 0, 95, 95) ||
       !CheckMargins(0x0800, 0x0800, 0, 95, 95) ||
       Dkc3VideoPixelCount() !=
@@ -875,6 +1391,90 @@ int main(void) {
     if (Dkc3VideoSelectTerrainPhase(&bands, 0, 512, 356, 512, 9582, &h, &v) ||
         h != 512 || v != 356) {
       fprintf(stderr, "FAIL: a far dominant scroll was taken for the phase\n");
+      return 1;
+    }
+    /* Tidal Trouble on Enguarde: 32-row horizontal map stages v_scroll one
+     * 256-pixel page above camera_y (camera_y=$0218 -> v_scroll=23), while
+     * HDMA writes BG2HOFS from line 1. During a 7-8 px/frame charge, the
+     * frame-start register trails the rendered bands by >6 px. */
+    memset(&bands, 0, sizeof bands);
+    bands.count = 3;
+    bands.band[0].first_line = 1;   bands.band[0].last_line = 155;
+    bands.band[0].h_scroll[1] = 534; bands.band[0].v_scroll[1] = 23;
+    bands.band[1].first_line = 156; bands.band[1].last_line = 190;
+    bands.band[1].h_scroll[1] = 535; bands.band[1].v_scroll[1] = 23;
+    bands.band[2].first_line = 191; bands.band[2].last_line = 224;
+    bands.band[2].h_scroll[1] = 536; bands.band[2].v_scroll[1] = 23;
+    if (!Dkc3VideoSelectTerrainPhase(&bands, 1, 542, 23, 0x0a0fu, 0x0218u,
+                                     &h, &v) ||
+        h != 534 || v != 23) {
+      fprintf(stderr,
+              "FAIL: horizontal 32-row HDMA terrain phase during fast charge\n");
+      return 1;
+    }
+    /* Full-screen underwater ripple: three horizontal scroll values each
+     * cover under half the screen, but together share one terrain phase. */
+    bands.count = 3;
+    bands.band[0].first_line = 1;   bands.band[0].last_line = 60;
+    bands.band[0].h_scroll[1] = 533; bands.band[0].v_scroll[1] = 23;
+    bands.band[1].first_line = 61;  bands.band[1].last_line = 144;
+    bands.band[1].h_scroll[1] = 534; bands.band[1].v_scroll[1] = 23;
+    bands.band[2].first_line = 145; bands.band[2].last_line = 224;
+    bands.band[2].h_scroll[1] = 535; bands.band[2].v_scroll[1] = 23;
+    if (!Dkc3VideoSelectTerrainPhase(&bands, 1, 542, 23, 0x0a0fu, 0x0218u,
+                                     &h, &v) ||
+        h != 534 || v != 23) {
+      fprintf(stderr,
+              "FAIL: full-screen wavy ripple terrain phase selection\n");
+      return 1;
+    }
+    /* 32-row vertical wrap across 255 -> 0 during fast horizontal motion. */
+    bands.count = 1;
+    bands.band[0].first_line = 1;   bands.band[0].last_line = 224;
+    bands.band[0].h_scroll[1] = 534; bands.band[0].v_scroll[1] = 0;
+    if (!Dkc3VideoSelectTerrainPhase(&bands, 1, 542, 255, 0x0a0fu, 0x0201u,
+                                     &h, &v) ||
+        h != 534 || v != 0) {
+      fprintf(stderr, "FAIL: 32-row vertical wrap terrain phase selection\n");
+      return 1;
+    }
+    /* Frame-start register within lead of camera_h, but HDMA bands render
+     * on the opposite side of camera_h (>6 px from frame_h). */
+    bands.count = 1;
+    bands.band[0].first_line = 1;   bands.band[0].last_line = 224;
+    bands.band[0].h_scroll[1] = 525; bands.band[0].v_scroll[1] = 23;
+    if (!Dkc3VideoSelectTerrainPhase(&bands, 1, 533, 23, 0x0a0fu, 0x0018u,
+                                     &h, &v) ||
+        h != 525 || v != 23) {
+      fprintf(stderr,
+              "FAIL: stale frame-start register within camera lead replaced\n");
+      return 1;
+    }
+    /* A minority one-line HDMA band at the camera phase must not suppress
+     * a qualifying dominant-scroll fallback covering the rest of the frame. */
+    bands.count = 2;
+    bands.band[0].first_line = 1;   bands.band[0].last_line = 1;
+    bands.band[0].h_scroll[1] = 533; bands.band[0].v_scroll[1] = 23;
+    bands.band[1].first_line = 2;   bands.band[1].last_line = 224;
+    bands.band[1].h_scroll[1] = 520; bands.band[1].v_scroll[1] = 23;
+    if (!Dkc3VideoSelectTerrainPhase(&bands, 1, 533, 23, 0x0a0fu, 0x0018u,
+                                     &h, &v) ||
+        h != 520 || v != 23) {
+      fprintf(stderr,
+              "FAIL: one-line camera-phase band suppressed dominant fallback\n");
+      return 1;
+    }
+    /* The 8-bit vertical match is restricted to the first 256-pixel page
+     * (< 0x0100); a candidate far vertically whose low byte happens to match
+     * camera_y & 0xff must be rejected. */
+    bands.count = 1;
+    bands.band[0].first_line = 1;   bands.band[0].last_line = 224;
+    bands.band[0].h_scroll[1] = 520; bands.band[0].v_scroll[1] = 535;
+    if (Dkc3VideoSelectTerrainPhase(&bands, 1, 533, 535, 0x0a0fu, 0x0018u,
+                                    &h, &v) ||
+        h != 533 || v != 535) {
+      fprintf(stderr,
+              "FAIL: dominant_v >= 0x0100 matched via 8-bit low byte\n");
       return 1;
     }
   }
@@ -1369,6 +1969,199 @@ int main(void) {
       fprintf(stderr, "FAIL: invalid transparent 2bpp source was accepted\n");
       return 1;
     }
+  }
+
+  {
+    /* The overworld gate: Mode 1, BG1 64x32 at camera - $100, other wide
+     * layers at BG1's phase, every enabled layer 32 rows tall. */
+    Dkc3VideoSetAspect(kDkc3VideoAspect16x9);
+    Dkc3VideoSetWidescreen(true);
+    uint8_t maps[4] = {0x79, 0x6c, 0x71, 0x00};
+    uint16_t scroll[3] = {0x00a0, 0x01a2, 0x00a0};
+#define OVERWORLD(vector, mode, layers, camera) \
+    Dkc3VideoIsResidentOverworld(vector, mode, maps, layers, scroll, camera)
+    if (!OVERWORLD(0xb4b179, 0x09, 0x17, 0x01a0) ||
+        OVERWORLD(0xb38076, 0x09, 0x17, 0x01a0) ||
+        OVERWORLD(0xb4b179, 0x02, 0x17, 0x01a0) ||
+        OVERWORLD(0xb4b179, 0x09, 0x16, 0x01a0) ||
+        !OVERWORLD(0xb4b179, 0x09, 0x17, 0x01a2) ||
+        !OVERWORLD(0xb4b179, 0x09, 0x17, 0x0198) ||
+        !OVERWORLD(0xb4b179, 0x09, 0x17, 0x01a8) ||
+        OVERWORLD(0xb4b179, 0x09, 0x17, 0x0197) ||
+        OVERWORLD(0xb4b179, 0x09, 0x17, 0x01a9) ||
+        Dkc3VideoIsResidentOverworld(0xb4b179, 0x09, NULL, 0x17, scroll,
+                                     0x01a0))
+      return fprintf(stderr, "FAIL: overworld scene gate\n"), 1;
+    scroll[2] = 0x00a1;
+    if (OVERWORLD(0xb4b179, 0x09, 0x17, 0x01a0) ||
+        !OVERWORLD(0xb4b179, 0x09, 0x13, 0x01a0))
+      return fprintf(stderr, "FAIL: overworld BG3 phase gate\n"), 1;
+    scroll[2] = 0x00a0;
+    maps[0] = 0x78;
+    if (OVERWORLD(0xb4b179, 0x09, 0x17, 0x01a0))
+      return fprintf(stderr, "FAIL: overworld 32-column BG1 accepted\n"), 1;
+    maps[0] = 0x7b;
+    if (OVERWORLD(0xb4b179, 0x09, 0x17, 0x01a0))
+      return fprintf(stderr, "FAIL: overworld 64-row BG1 accepted\n"), 1;
+    maps[0] = 0x79;
+    maps[1] = 0x7c;
+    if (OVERWORLD(0xb4b179, 0x09, 0x17, 0x01a0))
+      return fprintf(stderr, "FAIL: overworld shared tilemap page\n"), 1;
+    maps[1] = 0x6c;
+    scroll[0] = 0x02a0;
+    scroll[2] = 0x02a0;
+    if (!OVERWORLD(0xb4b179, 0x09, 0x17, 0x01a0))
+      return fprintf(stderr, "FAIL: overworld scroll above nine bits\n"), 1;
+    /* Rendered past the last camera position, where the right margin would
+     * wrap to the map's west edge; the east bound itself still qualifies. */
+    scroll[0] = scroll[2] = 0x0101;
+    if (OVERWORLD(0xb4b179, 0x09, 0x17, 0x0201))
+      return fprintf(stderr, "FAIL: overworld past the east bound\n"), 1;
+    scroll[0] = scroll[2] = 0x0100;
+    if (!OVERWORLD(0xb4b179, 0x09, 0x17, 0x0202))
+      return fprintf(stderr, "FAIL: overworld at the east bound\n"), 1;
+    scroll[0] = scroll[2] = 0x00a0;
+    if (Dkc3VideoOverworldRenderedX(0x02a0) != 0x01a0 ||
+        Dkc3VideoOverworldRenderedX(0x0000) != 0x0100)
+      return fprintf(stderr, "FAIL: overworld rendered x\n"), 1;
+#undef OVERWORLD
+
+    /* Margins clamp to the resident map [$100, $300) under any policy;
+     * the view never takes a bias. */
+    static const struct {
+      uint16_t camera;
+      int left, right;
+    } cases[] = {
+        {0x01a0, 43, 43}, {0x0100, 0, 43}, {0x0110, 16, 43},
+        {0x0200, 43, 0},  {0x01f0, 43, 16}, {0x012b, 43, 43},
+    };
+    const Dkc3VideoEdgePolicy policies[] = {
+        kDkc3VideoEdgeGlide, kDkc3VideoEdgeShift, kDkc3VideoEdgeReflect,
+        kDkc3VideoEdgeBars};
+    for (size_t p = 0; p < sizeof policies / sizeof policies[0]; p++) {
+      Dkc3VideoSetEdgePolicy(policies[p]);
+      for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        int left = -1, right = -1;
+        Dkc3VideoOverworldMargins(cases[i].camera, &left, &right);
+        if (left != cases[i].left || right != cases[i].right) {
+          fprintf(stderr, "FAIL: overworld margins camera %04x: %d %d\n",
+                  cases[i].camera, left, right);
+          return 1;
+        }
+      }
+    }
+    Dkc3VideoSetEdgePolicy(kDkc3VideoEdgeGlide);
+
+    /* Rows the overworld streams into: at vscroll $11F the 224 shown lines
+     * start at row 3's last line (its first sits 249 lines down and only
+     * line 7 wraps to the top) and end in row 31; rows 0-2 hide. */
+    for (unsigned row = 0; row < 32; row++) {
+      const bool hidden = row <= 2;
+      if (Dkc3VideoTilemapRowVisible(0x011f, row) == hidden) {
+        fprintf(stderr, "FAIL: overworld row %u visibility at $11F\n", row);
+        return 1;
+      }
+    }
+    for (unsigned row = 0; row < 32; row++) {
+      const bool hidden = row >= 28;
+      if (Dkc3VideoTilemapRowVisible(0x0000, row) == hidden ||
+          Dkc3VideoTilemapRowVisible(0x0100, row) == hidden) {
+        fprintf(stderr, "FAIL: overworld row %u visibility at 0\n", row);
+        return 1;
+      }
+    }
+    /* Scrolled one line: row 0's last seven lines remain at the top, and
+     * row 28 enters at the bottom. */
+    if (!Dkc3VideoTilemapRowVisible(0x0001, 0) ||
+        !Dkc3VideoTilemapRowVisible(0x0001, 28) ||
+        Dkc3VideoTilemapRowVisible(0x0001, 29) ||
+        Dkc3VideoTilemapRowVisible(0x0008, 0))
+      return fprintf(stderr, "FAIL: overworld row visibility edges\n"), 1;
+
+    /* Row streaming as measured in the hovercraft run: at $11E rows 2
+     * (hidden) and 3 (its one-word tail, shown); at $11F rows 3 and 4,
+     * both shown. A column stripe touches every shown row. */
+    if (!Dkc3VideoOverworldWritesAreRows(0, 0x011f, false) ||
+        !Dkc3VideoOverworldWritesAreRows(0x0000000cu, 0x011e, false) ||
+        !Dkc3VideoOverworldWritesAreRows(0x00000018u, 0x011f, false) ||
+        !Dkc3VideoOverworldWritesAreRows(0x00000007u, 0x011f, false))
+      return fprintf(stderr, "FAIL: overworld row streaming refused\n"), 1;
+    if (Dkc3VideoOverworldWritesAreRows(0x00000038u, 0x011f, false) ||
+        Dkc3VideoOverworldWritesAreRows(0xfffffff8u, 0x011f, false) ||
+        Dkc3VideoOverworldWritesAreRows(0x00000007u, 0x011f, true))
+      return fprintf(stderr, "FAIL: overworld column writes accepted\n"), 1;
+
+    /* HDMA that writes a vertical scroll register ($0E BG1VOFS, $10
+     * BG2VOFS, $12 BG3VOFS) makes that layer's rows vary per line. The
+     * overworld's BG2HOFS channel (mode 2, $0F twice) does not; mode 1 at
+     * $0F reaches BG2VOFS, and mode 4 at $0D spans $0D-$10. */
+    {
+      uint8_t b_address[8] = {0x0f, 0x21, 0x21, 0x0f, 0x0d, 0x11, 0x12, 0x0e};
+      uint8_t mode[8] = {2, 3, 3, 1, 4, 0, 2, 0};
+      if (Dkc3VideoHdmaVerticalScrollLayers(0x07, b_address, mode) != 0)
+        return fprintf(stderr, "FAIL: overworld HDMA has no VOFS\n"), 1;
+      if (Dkc3VideoHdmaVerticalScrollLayers(0x08, b_address, mode) != 0x02)
+        return fprintf(stderr, "FAIL: HDMA mode 1 at $0F reaches $10\n"), 1;
+      if (Dkc3VideoHdmaVerticalScrollLayers(0x10, b_address, mode) != 0x03)
+        return fprintf(stderr, "FAIL: HDMA mode 4 at $0D spans $0D-$10\n"),
+               1;
+      if (Dkc3VideoHdmaVerticalScrollLayers(0x20, b_address, mode) != 0 ||
+          Dkc3VideoHdmaVerticalScrollLayers(0x40, b_address, mode) != 0x04 ||
+          Dkc3VideoHdmaVerticalScrollLayers(0x80, b_address, mode) != 0x01)
+        return fprintf(stderr, "FAIL: HDMA single-register VOFS\n"), 1;
+      if (Dkc3VideoHdmaVerticalScrollLayers(0xff, NULL, mode) != 0)
+        return fprintf(stderr, "FAIL: HDMA without addresses\n"), 1;
+    }
+  }
+
+  /* Init-script palette lookup on a synthetic bank (no cartridge bytes). */
+  {
+    static uint8_t bank[0x100];
+    const uint8_t two_scripts[] = {
+        0x12, 0x34, 0xef,                         /* tail of other data */
+        0xff, 0x84, 0x02, 0xfa, 0x48, 0x01, 0xfc, 0xc8, 0x00,
+        0xfe, 0x00, 0x20, 0x0e, 0xcc, 0x00, 0xef, /* ends with $EF */
+        0xff, 0x84, 0x02, 0xfc, 0xc8, 0x00, 0x3a, 0x00, 0x00,
+        0xf0,                                     /* ends with $F0 */
+        0xff, 0x34, 0x02, 0xfc, 0x16, 0x00, 0xef};
+    memset(bank, 0, sizeof bank);
+    memcpy(bank, two_scripts, sizeof two_scripts);
+    if (Dkc3VideoInitScriptPaletteForType(bank, sizeof bank, 0x0284) !=
+            0x00c8 ||
+        Dkc3VideoInitScriptPaletteForType(bank, sizeof bank, 0x0234) !=
+            0x0016)
+      return fprintf(stderr, "FAIL: init-script palette lookup\n"), 1;
+    if (Dkc3VideoInitScriptPaletteForType(bank, sizeof bank, 0x0238) != 0 ||
+        Dkc3VideoInitScriptPaletteForType(NULL, sizeof bank, 0x0284) != 0 ||
+        Dkc3VideoInitScriptPaletteForType(bank, sizeof bank, 0) != 0)
+      return fprintf(stderr, "FAIL: init-script palette absent type\n"), 1;
+
+    /* A disagreeing script, one without a palette, one with two, one that
+     * calls a sub-script ($F9), and one that runs off the bank each make
+     * the answer unknown. */
+    const struct {
+      uint8_t bytes[12];
+      size_t length;
+    } refuting[] = {
+        {{0xff, 0x84, 0x02, 0xfc, 0x71, 0x00, 0xef}, 7},
+        {{0xff, 0x84, 0x02, 0x3a, 0x00, 0x00, 0xef}, 7},
+        {{0xff, 0x84, 0x02, 0xfc, 0xc8, 0x00, 0xfc, 0xc8, 0x00, 0xef}, 10},
+        {{0xff, 0x84, 0x02, 0xf9, 0x6d, 0x65, 0xfc, 0xc8, 0x00, 0xef}, 10},
+    };
+    for (size_t i = 0; i < sizeof refuting / sizeof refuting[0]; i++) {
+      memset(bank, 0, sizeof bank);
+      memcpy(bank, two_scripts, sizeof two_scripts);
+      memcpy(bank + 0x80, refuting[i].bytes, refuting[i].length);
+      if (Dkc3VideoInitScriptPaletteForType(bank, sizeof bank, 0x0284) != 0)
+        return fprintf(stderr, "FAIL: init-script refutation %zu\n", i), 1;
+    }
+    memset(bank, 0, sizeof bank);
+    memcpy(bank, two_scripts, sizeof two_scripts);
+    const uint8_t unterminated[] = {0xff, 0x84, 0x02, 0xfc, 0xc8, 0x00};
+    memcpy(bank + sizeof bank - sizeof unterminated, unterminated,
+           sizeof unterminated);
+    if (Dkc3VideoInitScriptPaletteForType(bank, sizeof bank, 0x0284) != 0)
+      return fprintf(stderr, "FAIL: unterminated init script accepted\n"), 1;
   }
 
   Dkc3VideoSetWidescreen(false);

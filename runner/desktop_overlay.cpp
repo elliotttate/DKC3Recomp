@@ -16,6 +16,7 @@
 #include <windowsx.h>
 #endif
 
+#include <cfloat>
 #include <cstdio>
 #include <cstring>
 #include <new>
@@ -34,6 +35,7 @@ struct Dkc3DesktopOverlay {
   uint64_t last_counter;
   char status[128];
   char haptics_device[128];
+  char pause_banner[64];
   bool status_success;
   bool haptics_supported;
   bool initialized;
@@ -744,6 +746,20 @@ static void DrawSettingsPage(Dkc3DesktopOverlay *overlay) {
     settings.skip_launcher = skip ? 1 : 0;
 
   ImGui::Spacing();
+  ImGui::TextUnformatted("Gameplay");
+  ImGui::Separator();
+  bool kong_badges = Dkc3LauncherKongBadges() != 0;
+  if (ImGui::Checkbox("KONG letter badges on the map", &kong_badges))
+    Dkc3LauncherSetKongBadges(kong_badges ? 1 : 0);
+  ImGui::PushStyleColor(ImGuiCol_Text,
+                        ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+  ImGui::TextWrapped(
+      "Shows KONG beside levels whose four letters you have collected, and "
+      "beside a world once all its levels are done. Letters are recorded "
+      "either way.");
+  ImGui::PopStyleColor();
+
+  ImGui::Spacing();
   ImGui::TextUnformatted("Hotkeys");
   ImGui::Separator();
   ImGui::BulletText("Overlay: Escape (controller: Guide or Start+Back)");
@@ -762,6 +778,9 @@ static void DrawSettingsPage(Dkc3DesktopOverlay *overlay) {
   if (ImGui::Button("Restore All Settings to Defaults")) {
     Dkc3LauncherSettingsDefault(&overlay->settings);
     Dkc3LauncherSetHaptics(1);
+    Dkc3LauncherSetKongBadges(1);
+    Dkc3LauncherSetPauseCrateSpawn(0);
+    Dkc3LauncherSetShowHiddenObjects(0);
     Dkc3DesktopOverlayModelSetAssistTools(
         &overlay->model, overlay->settings.assist_tools != 0);
   }
@@ -800,6 +819,25 @@ static void DrawAssistPage(Dkc3DesktopOverlay *overlay) {
         &overlay->model, kDkc3OverlayActionLoadState);
   ImGui::Text("Slot file: saves/dkc3s%d.sav",
               overlay->model.selected_slot);
+  ImGui::Separator();
+  bool pause_crate_spawn = Dkc3LauncherPauseCrateSpawn() != 0;
+  if (ImGui::Checkbox("Spawn animal buddy crates from pause menu",
+                      &pause_crate_spawn))
+    Dkc3LauncherSetPauseCrateSpawn(pause_crate_spawn ? 1 : 0);
+  ImGui::PushStyleColor(ImGuiCol_Text,
+                        ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+  ImGui::TextWrapped(
+      "While paused in a level, press Left/Right to choose an animal buddy "
+      "crate and B to spawn it. Press X to dismount Squawks.");
+  ImGui::PopStyleColor();
+  bool show_hidden_objects = Dkc3LauncherShowHiddenObjects() != 0;
+  if (ImGui::Checkbox("Show hidden objects", &show_hidden_objects))
+    Dkc3LauncherSetShowHiddenObjects(show_hidden_objects ? 1 : 0);
+  ImGui::PushStyleColor(ImGuiCol_Text,
+                        ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+  ImGui::TextWrapped(
+      "Draws objects the game keeps invisible, such as hidden bear coins.");
+  ImGui::PopStyleColor();
   static const char *actions[] = {
       "Rewind", "Fast-forward", "Save state", "Load state"};
   ImGui::Separator();
@@ -1017,22 +1055,44 @@ static void DrawCreditsPage(void) {
       "curated list is supplied.");
 }
 
+extern "C" void Dkc3DesktopOverlaySetPauseBanner(Dkc3DesktopOverlay *overlay,
+                                                 const char *text) {
+  if (!overlay) return;
+  if (!text || !text[0]) {
+    overlay->pause_banner[0] = '\0';
+    return;
+  }
+  std::snprintf(overlay->pause_banner, sizeof overlay->pause_banner, "%s",
+                text);
+}
+
+extern "C" bool Dkc3DesktopOverlayHasPauseBanner(
+    const Dkc3DesktopOverlay *overlay) {
+  return overlay && overlay->pause_banner[0] != '\0';
+}
+
 extern "C" void Dkc3DesktopOverlayRenderOpenGl(
     void *overlay_pointer, int width, int height) {
   Dkc3DesktopOverlay *overlay =
       static_cast<Dkc3DesktopOverlay *>(overlay_pointer);
-  if (!overlay || !overlay->initialized || !overlay->model.open ||
-      width <= 0 || height <= 0)
+  if (!overlay || !overlay->initialized || width <= 0 || height <= 0)
+    return;
+  const bool draw_menu = overlay->model.open;
+  const bool draw_banner = !draw_menu && overlay->pause_banner[0] != '\0';
+  if (!draw_menu && !draw_banner)
     return;
 
   ImGui_ImplOpenGL3_NewFrame();
-  if (overlay->platform == kDkc3OverlayPlatformSdl) {
+  if (draw_menu && overlay->platform == kDkc3OverlayPlatformSdl) {
     ImGui_ImplSDL2_NewFrame();
     ImGui::NewFrame();
   } else {
     ImGuiIO &io = ImGui::GetIO();
     io.DisplaySize = ImVec2(static_cast<float>(width),
                             static_cast<float>(height));
+    /* width/height are framebuffer pixels; a scale left over from an
+     * earlier SDL menu frame (2 on HiDPI) would double the viewport. */
+    io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
     uint64_t counter = SDL_GetPerformanceCounter();
     uint64_t frequency = SDL_GetPerformanceFrequency();
     io.DeltaTime = overlay->last_counter && frequency
@@ -1045,6 +1105,44 @@ extern "C" void Dkc3DesktopOverlayRenderOpenGl(
   }
 
   const ImVec2 display_size = ImGui::GetIO().DisplaySize;
+  if (draw_banner) {
+    char label[96];
+    std::snprintf(label, sizeof label, "<  %s  >", overlay->pause_banner);
+    const char *hint = "Left/Right: Select   B: Spawn";
+    ImFont *font = ImGui::GetFont();
+    const float base_size = ImGui::GetFontSize();
+    const float title_size = base_size * 2.70f;
+    const float hint_size = base_size * 1.70f;
+    const ImVec2 title_sz =
+        font->CalcTextSizeA(title_size, FLT_MAX, 0.0f, label);
+    const ImVec2 hint_sz =
+        font->CalcTextSizeA(hint_size, FLT_MAX, 0.0f, hint);
+    const float pad_x = 40.0f;
+    const float pad_y = 20.0f;
+    const float gap = 8.0f;
+    const float box_w =
+        (title_sz.x > hint_sz.x ? title_sz.x : hint_sz.x) + pad_x * 2.0f;
+    const float box_h = title_sz.y + gap + hint_sz.y + pad_y * 2.0f;
+    const float bottom_margin = 32.0f;
+    const float x0 = (display_size.x - box_w) * 0.5f;
+    const float y1 = display_size.y - bottom_margin;
+    const float y0 = y1 - box_h;
+    ImDrawList *dl = ImGui::GetForegroundDrawList();
+    dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x0 + box_w, y1),
+                      IM_COL32(14, 14, 22, 215), 14.0f);
+    dl->AddRect(ImVec2(x0, y0), ImVec2(x0 + box_w, y1),
+                IM_COL32(180, 110, 255, 220), 14.0f, 0, 2.5f);
+    dl->AddText(font, title_size,
+                ImVec2(x0 + (box_w - title_sz.x) * 0.5f, y0 + pad_y),
+                IM_COL32(255, 235, 140, 255), label);
+    dl->AddText(font, hint_size,
+                ImVec2(x0 + (box_w - hint_sz.x) * 0.5f,
+                       y0 + pad_y + title_sz.y + gap),
+                IM_COL32(205, 205, 220, 230), hint);
+    ImGui::Render();
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    return;
+  }
   ImGui::GetBackgroundDrawList()->AddRectFilled(
       ImVec2(0.0f, 0.0f), display_size, IM_COL32(0, 0, 0, 150));
   float menu_width =

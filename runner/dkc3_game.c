@@ -1,5 +1,9 @@
 #include "dkc3_game.h"
+#include "dkc3_animal_crate_cheat.h"
+#include "dkc3_show_hidden.h"
 #include "dkc3_hdma.h"
+#include "dkc3_intro_skip.h"
+#include "dkc3_kong_tracker.h"
 #include "dkc3_video.h"
 #include "dkc3_facts.h"
 #include "dkc3_spc_music.h"
@@ -28,6 +32,13 @@ enum {
 };
 
 static bool s_cpu_initialized;
+static Dkc3KongTracker s_kong_tracker;
+static bool s_kong_tracking;
+static bool s_kong_badges;
+static bool s_pause_crate_spawn_enabled;
+static bool s_kong_map_settled;
+static Dkc3KongMapSettle s_kong_map_settle;
+static char s_kong_path[512];
 static uint32_t s_resume_pc = kDkc3ResetPc;
 static int s_last_lle_result = 1;
 static uint64_t s_next_frame_master;
@@ -89,25 +100,61 @@ static void Dkc3CheckWaterfallSource(uint8_t wide_mask, int terrain_layer) {
  * source rows, and the band classification. */
 static uint16_t s_terrain_phase_h;
 static uint16_t s_terrain_phase_v;
+/* The camera's scroll bounds this frame (the current region's walls, or a
+ * west hold): the structural wall rule continues walls only into margin
+ * columns outside the span those bounds let the native window reach. */
+static uint16_t s_reach_minimum_x;
+static uint16_t s_reach_maximum_x;
 static bool s_terrain_phase_from_band;
 static int s_plane_band_count[2];
 /* Per layer: the verified row offset of its alias bands this frame (0 none). */
 static int s_alias_offset_rows[2];
 /* The west hold the last prefill found in the level map (Dkc3VideoHoldWest):
  * the world x of the authored edge the player is held at, and the
- * presented bias, which moves at most one pixel per frame toward the
- * glide's target so a hold that appears or vanishes never snaps the
- * picture. Both reset with the world store. */
+ * presented bias, which moves one pixel per frame toward the glide's
+ * target (more only to cancel the camera's own motion, see
+ * Dkc3VideoStepPresentationBias) so a hold that appears or vanishes never
+ * snaps the picture. Both reset with the world store. */
 static bool s_hold_west_valid;
 static uint32_t s_hold_west_x;
 static bool s_bias_valid;
 static int s_bias_presented;
+/* The camera X the presented bias was last stepped at, so the step may
+ * cancel the camera's own motion (Dkc3VideoStepPresentationBias). */
+static uint16_t s_bias_camera_x;
 /* Frames since the presented bias was reset: within the first few the
  * bias snaps to its target rather than gliding, so a level that starts at
  * a hold opens already slid, as one that starts at the map's first page
  * does. */
 enum { kDkc3BiasSettleFrames = 4 };
 static uint32_t s_bias_frames;
+/* The margins last presented and the view position (camera plus bias)
+ * they were presented at, so a wall that jumps outward opens its margin at
+ * a bounded rate (Dkc3VideoLimitMarginGrowth). Valid only while the bias
+ * is settled and the terrain stayed ready, so a restore, a level start, or
+ * a store reset still opens at once. */
+static bool s_margin_valid;
+static int s_margin_left;
+static int s_margin_right;
+static int s_margin_view_x;
+/* The edge policy the presented bias was computed under. Changing it from
+ * the menu re-snaps the bias: easing from the old policy's bias would slide
+ * the background and the screen-fixed HUD for up to a margin's worth of
+ * frames. */
+static Dkc3VideoEdgePolicy s_bias_policy;
+/* The overworld's resident maps (Dkc3VideoIsResidentOverworld). Each drawn
+ * frame compares the enabled layers' tilemap words with the previous drawn
+ * frame's copy. Once the hovercraft opens the north, the game streams rows
+ * ahead of a climbing camera (Dkc3VideoOverworldWritesAreRows). Writes of
+ * any other shape while the picture is displayed mean the map is not
+ * resident after all: margins stay black until the scene is left. A change
+ * under forced blank or zero brightness, or a new layer layout, is a load
+ * and only restarts the proof. */
+static bool s_overworld_copy_valid;
+static uint8_t s_overworld_layers;
+static uint8_t s_overworld_sc[3];
+static uint16_t s_overworld_maps[3][0x800];
+static bool s_overworld_streams;
 /* The camera of the last prefill, for the hold's entry test: the player
  * stands within kDkc3HoldPlayerEdge pixels of the frame's west edge while
  * the camera does not move. The camera leads a walking player by about
@@ -602,6 +649,256 @@ enum {
   kDkc3NtscFrameMasterClocks = 1364 * 262,
 };
 
+static void Dkc3KongTrackFrame(void) {
+  if (!s_kong_tracking) return;
+  s_kong_map_settled =
+      Dkc3KongMapSettleUpdate(&s_kong_map_settle, g_ram, 0x20000u);
+  bool changed = Dkc3KongTrackerObserveFrame(&s_kong_tracker, g_ram, 0x20000u);
+  if (g_sram && g_sram_size > 0)
+    changed = Dkc3KongTrackerSyncSram(
+                  &s_kong_tracker, g_sram, (size_t)g_sram_size,
+                  Dkc3KongInFileSelect(g_ram, 0x20000u)) ||
+              changed;
+  if (changed || s_kong_tracker.dirty) {
+    /* A failed write stays dirty and is retried, but warns only once. */
+    static bool warned;
+    if (Dkc3KongTrackerSaveFile(&s_kong_tracker, s_kong_path)) {
+      s_kong_tracker.dirty = false;
+      warned = false;
+    } else if (!warned) {
+      fprintf(stderr, "warning: unable to write %s\n", s_kong_path);
+      warned = true;
+    }
+  }
+}
+
+bool Dkc3KongTrackingEnable(const char *path) {
+  Dkc3KongTrackerInit(&s_kong_tracker);
+  s_kong_tracking = false;
+  s_kong_map_settled = false;
+  memset(&s_kong_map_settle, 0, sizeof s_kong_map_settle);
+  if (!path || !*path) return false;
+  if (strlen(path) >= sizeof s_kong_path) {
+    fprintf(stderr, "warning: KONG letter path is too long: %.80s...\n", path);
+    return false;
+  }
+  snprintf(s_kong_path, sizeof s_kong_path, "%s", path);
+  const Dkc3KongLoadResult loaded =
+      Dkc3KongTrackerLoadFile(&s_kong_tracker, s_kong_path);
+  if (loaded == kDkc3KongLoadInvalid) {
+    fprintf(stderr, "warning: unreadable KONG letter file %s\n",
+            s_kong_path);
+    Dkc3KongTrackerInit(&s_kong_tracker);
+  }
+  s_kong_badges =
+      Dkc3KongBadgesEnabledFromEnv(getenv("DKC3_KONG_BADGES"));
+  s_kong_tracking = true;
+  /* Adopt the loaded battery save as the baseline for the file select's
+   * copy and erase. This never clears flags: a slot without a valid save
+   * may be a file played only through quick saves. */
+  if (g_sram && g_sram_size > 0)
+    (void)Dkc3KongTrackerSyncSram(&s_kong_tracker, g_sram,
+                                  (size_t)g_sram_size, false);
+  return loaded != kDkc3KongLoadInvalid;
+}
+
+void Dkc3KongSetBadgesVisible(bool visible) {
+  s_kong_badges = visible;
+}
+
+static Dkc3PauseCrateKind s_pause_crate_selected = kDkc3PauseCrateEllie;
+
+void Dkc3SetPauseCrateSpawnEnabled(bool enabled) {
+  s_pause_crate_spawn_enabled = enabled;
+}
+
+bool Dkc3PauseCrateSpawnEnabled(void) {
+  return s_pause_crate_spawn_enabled;
+}
+
+const char *Dkc3PauseCrateHudLabel(void) {
+  const bool enabled =
+      s_pause_crate_spawn_enabled ||
+      Dkc3PauseCrateSpawnEnabledFromEnv(getenv("DKC3_PAUSE_CRATE_SPAWN"));
+  if (!g_ram || !Dkc3IsPauseCrateMenuActive(g_ram, 0x20000u, enabled))
+    return NULL;
+  return Dkc3PauseCrateName(s_pause_crate_selected);
+}
+
+extern RecompReturn apply_spawn_script_to_slot_direct_M0X0(CpuState *cpu);
+extern RecompReturn request_palette_direct_M0X0(CpuState *cpu);
+
+/* In vanilla DKC3, $B8:CF2F[$1D] ($B8:CF69, ROM $38CF69) points to $B8:D228
+ * (RTS) so pressing X does not dismount Squawks, whereas Enguarde/Ellie/
+ * Squitter point to $B8:D229 (the standard X-button dismount routine). When
+ * the pause crate spawn cheat is enabled, redirect that interpreter-read table
+ * entry to $B8:D229 so the player can dismount Squawks with X; restore $B8:D228
+ * when disabled. Fails closed if the ROM bytes do not match. */
+static void Dkc3PatchSquawksDismount(bool enabled) {
+  static uint16_t applied_target = 0xD228u;
+  const uint16_t desired_target = enabled ? 0xD229u : 0xD228u;
+  if (desired_target == applied_target || !g_rom)
+    return;
+  enum { kSquawksXHandlerOffset = 0x38CF69u };
+  const uint32_t rom_size =
+      g_snes && g_snes->cart ? (uint32_t)g_snes->cart->romSize : 0u;
+  if (rom_size < kSquawksXHandlerOffset + 2u)
+    return;
+  uint8_t *rom = (uint8_t *)(uintptr_t)g_rom;
+  if (rom[kSquawksXHandlerOffset] != (uint8_t)(applied_target & 0xFFu) ||
+      rom[kSquawksXHandlerOffset + 1u] != (uint8_t)(applied_target >> 8))
+    return;
+  rom[kSquawksXHandlerOffset] = (uint8_t)(desired_target & 0xFFu);
+  rom[kSquawksXHandlerOffset + 1u] = (uint8_t)(desired_target >> 8);
+  applied_target = desired_target;
+}
+
+static void Dkc3RunAnimalBuddyPaletteRepair(bool enabled) {
+  Dkc3AnimalBuddyPaletteRepair repair;
+  if (!Dkc3DetectAnimalBuddyPaletteRepair(g_ram, 0x20000u, enabled, &repair))
+    return;
+
+  const uint8_t saved_req_lo = g_ram[kDkc3PauseCratePaletteReqAddr];
+  const uint8_t saved_req_hi = g_ram[kDkc3PauseCratePaletteReqAddr + 1u];
+  CpuState saved_cpu = g_cpu;
+  g_cpu.ram = g_ram;
+  g_cpu.P = (uint8_t)(g_cpu.P & ~(0x30u | 0x08u));
+  g_cpu.m_flag = 0;
+  g_cpu.x_flag = 0;
+  g_cpu._flag_D = 0;
+  g_cpu.D = 0x0000u;
+  g_cpu.DB = 0xBBu;
+  g_cpu.PB = 0xBBu;
+  g_cpu.A = repair.palette_id;
+  cpu_write8(&g_cpu, 0x00u, g_cpu.S, 0x95u);
+  g_cpu.S = (uint16_t)(g_cpu.S - 1u);
+  cpu_write8(&g_cpu, 0x00u, g_cpu.S, 0xC7u);
+  g_cpu.S = (uint16_t)(g_cpu.S - 1u);
+  g_cpu.host_return_valid = 2;
+  (void)request_palette_direct_M0X0(&g_cpu);
+
+  const uint8_t carry = g_cpu._flag_C;
+  const uint16_t pal_bits = (uint16_t)(g_cpu.A & 0x0E00u);
+  g_cpu = saved_cpu;
+  g_ram[kDkc3PauseCratePaletteReqAddr] = saved_req_lo;
+  g_ram[kDkc3PauseCratePaletteReqAddr + 1u] = saved_req_hi;
+
+  if (carry == 0u && pal_bits != 0u) {
+    const size_t oam_addr =
+        (size_t)repair.target_slot + kDkc3PauseCrateSpriteOamOffset;
+    const uint16_t old_oam =
+        (uint16_t)(g_ram[oam_addr] | ((uint16_t)g_ram[oam_addr + 1u] << 8));
+    const uint16_t new_oam = (uint16_t)((old_oam & ~0x0E00u) | pal_bits);
+    g_ram[oam_addr] = (uint8_t)(new_oam & 0xFFu);
+    g_ram[oam_addr + 1u] = (uint8_t)(new_oam >> 8);
+    /* Release the fallback reference on palette 0 if it is above baseline. */
+    const uint16_t ref0 = (uint16_t)(g_ram[kDkc3PauseCratePaletteSlotRefsAddr] |
+        ((uint16_t)g_ram[kDkc3PauseCratePaletteSlotRefsAddr + 1u] << 8));
+    if (ref0 > 1u) {
+      const uint16_t next_ref0 = (uint16_t)(ref0 - 1u);
+      g_ram[kDkc3PauseCratePaletteSlotRefsAddr] = (uint8_t)(next_ref0 & 0xFFu);
+      g_ram[kDkc3PauseCratePaletteSlotRefsAddr + 1u] = (uint8_t)(next_ref0 >> 8);
+    }
+  }
+}
+
+static void Dkc3RunPauseCrateSpawn(void) {
+  const bool enabled =
+      s_pause_crate_spawn_enabled ||
+      Dkc3PauseCrateSpawnEnabledFromEnv(getenv("DKC3_PAUSE_CRATE_SPAWN"));
+  Dkc3PatchSquawksDismount(enabled);
+  Dkc3RunAnimalBuddyPaletteRepair(enabled);
+  (void)Dkc3UpdatePauseCrateSelection(g_ram, 0x20000u, enabled,
+                                      &s_pause_crate_selected);
+  Dkc3PauseCrateRequest request;
+  if (!Dkc3DetectPauseCrateSpawn(g_ram, 0x20000u, enabled,
+                                 s_pause_crate_selected, &request))
+    return;
+
+  const uint8_t saved_dp76_lo = g_ram[kDkc3PauseCrateDpScratchSlotAddr];
+  const uint8_t saved_dp76_hi = g_ram[kDkc3PauseCrateDpScratchSlotAddr + 1u];
+  const uint8_t saved_dp42_lo = g_ram[kDkc3PauseCrateDpScratchTempAddr];
+  const uint8_t saved_dp42_hi = g_ram[kDkc3PauseCrateDpScratchTempAddr + 1u];
+  if (!Dkc3PreparePauseCrateSlot(g_ram, 0x20000u, &request))
+    return;
+
+  CpuState saved_cpu = g_cpu;
+  g_cpu.ram = g_ram;
+  g_cpu.P = (uint8_t)(g_cpu.P & ~(0x30u | 0x08u));
+  g_cpu.m_flag = 0;
+  g_cpu.x_flag = 0;
+  g_cpu._flag_D = 0;
+  g_cpu.D = 0x0000u;
+  g_cpu.DB = 0xBBu;
+  g_cpu.PB = 0xBBu;
+  g_cpu.X = request.slot;
+  g_cpu.Y = request.script_ptr;
+  cpu_write8(&g_cpu, 0x00u, g_cpu.S, 0xBBu);
+  g_cpu.S = (uint16_t)(g_cpu.S - 1u);
+  cpu_write8(&g_cpu, 0x00u, g_cpu.S, 0x8Fu);
+  g_cpu.S = (uint16_t)(g_cpu.S - 1u);
+  cpu_write8(&g_cpu, 0x00u, g_cpu.S, 0xF0u);
+  g_cpu.S = (uint16_t)(g_cpu.S - 1u);
+  g_cpu.host_return_valid = 3;
+  (void)apply_spawn_script_to_slot_direct_M0X0(&g_cpu);
+
+  g_cpu = saved_cpu;
+  g_ram[kDkc3PauseCrateDpScratchSlotAddr] = saved_dp76_lo;
+  g_ram[kDkc3PauseCrateDpScratchSlotAddr + 1u] = saved_dp76_hi;
+  g_ram[kDkc3PauseCrateDpScratchTempAddr] = saved_dp42_lo;
+  g_ram[kDkc3PauseCrateDpScratchTempAddr + 1u] = saved_dp42_hi;
+}
+
+static bool s_show_hidden_objects;
+static int s_show_hidden_env = -1;
+
+void Dkc3SetShowHiddenObjectsEnabled(bool enabled) {
+  s_show_hidden_objects = enabled;
+}
+
+bool Dkc3ShowHiddenObjectsEnabled(void) {
+  if (s_show_hidden_env < 0)
+    s_show_hidden_env =
+        Dkc3ShowHiddenEnabledFromEnv(getenv("DKC3_SHOW_HIDDEN_OBJECTS")) ? 1
+                                                                          : 0;
+  return s_show_hidden_objects || s_show_hidden_env != 0;
+}
+
+uint16_t Dkc3RevealHiddenSpriteFlags(uint16_t flags, uint16_t slot) {
+  if ((flags & kDkc3HiddenRenderMask) != kDkc3HiddenRenderMask ||
+      !Dkc3ShowHiddenObjectsEnabled() || !g_ram)
+    return flags;
+  const uint32_t main_loop_vector =
+      (uint32_t)g_ram[kDkc3HiddenMainLoopVectorAddr] |
+      ((uint32_t)g_ram[kDkc3HiddenMainLoopVectorAddr + 1u] << 8) |
+      ((uint32_t)g_ram[kDkc3HiddenMainLoopVectorAddr + 2u] << 16);
+  const size_t oam_addr = (size_t)slot + kDkc3HiddenSpriteOamOffset;
+  const uint16_t oam_attr =
+      (uint16_t)(g_ram[oam_addr] | ((uint16_t)g_ram[oam_addr + 1u] << 8));
+  if (!Dkc3ShowHiddenSlotEligible(main_loop_vector, oam_attr))
+    return flags;
+  const size_t type_addr = (size_t)slot + kDkc3HiddenSpriteTypeOffset;
+  if (!Dkc3ShowHiddenTypeEligible(
+          (uint16_t)(g_ram[type_addr] | ((uint16_t)g_ram[type_addr + 1u] << 8))))
+    return flags;
+  const uint16_t mounted_buddy =
+      (uint16_t)(g_ram[kDkc3HiddenMountedBuddyAddr] |
+                 ((uint16_t)g_ram[kDkc3HiddenMountedBuddyAddr + 1u] << 8));
+  return Dkc3ShowHiddenRenderFlags(flags, slot, mounted_buddy, true);
+}
+
+static void Dkc3KongDrawFrameBadge(void) {
+  if (!s_kong_tracking || !s_kong_badges || !s_kong_map_settled || !g_ppu ||
+      !g_snes || !g_snes->cart)
+    return;
+  if (Dkc3KongTrackerMapBadge(&s_kong_tracker, g_ram, 0x20000u, g_rom,
+                              (size_t)g_snes->cart->romSize) ==
+      kDkc3KongBadgeNone)
+    return;
+  (void)Dkc3KongDrawBadge(g_ppu->renderBuffer, (size_t)g_ppu->renderPitch,
+                          Dkc3VideoWidth(), kDkc3VideoHeight);
+}
+
 static void Dkc3RunOneFrame(void) {
   bool first_frame = !s_cpu_initialized;
   if (s_next_frame_master == 0) {
@@ -615,6 +912,19 @@ static void Dkc3RunOneFrame(void) {
   if (first_frame) {
     cpu_state_init(&g_cpu, g_ram);
     s_cpu_initialized = true;
+  }
+  if (!first_frame && g_snes) {
+    if (Dkc3ApplyIntroStartSkip(
+            g_ram, 0x20000u, g_snes->input1_currentState,
+            Dkc3IntroSkipEnabledFromEnv(getenv("DKC3_SKIP_INTRO_START")))) {
+      /* On real hardware, VBlank auto-joypad read shifts all 16 bits out of
+       * JOYSER0 ($4016), leaving subsequent reads returning 1 (controller
+       * present). When skipping State 0/1 before State 3 has polled 16 times,
+       * advance joypad1Index to 16 so $80:8B49 sees the plugged-in pad on the
+       * very first button poll. */
+      if (g_snes->autoJoyRead && g_snes->joypad1Index < 16u)
+        g_snes->joypad1Index = 16u;
+    }
   }
   if (!first_frame && g_snes->nmiEnabled) {
     /* DKC3's boot/intro NMI is a non-returning frame dispatcher. The handler
@@ -633,12 +943,15 @@ static void Dkc3RunOneFrame(void) {
   }
 
   interp_bridge_set_master_deadline(0);
+  if (!first_frame)
+    Dkc3RunPauseCrateSpawn();
   s_resume_pc = interp_bridge_lle_resume_pc();
   if (g_cpu.master_cycles < s_next_frame_master) {
     g_cpu.master_cycles = s_next_frame_master;
     snes_sync_master_clock(g_snes, g_cpu.master_cycles);
   }
   s_next_frame_master += kDkc3NtscFrameMasterClocks;
+  Dkc3KongTrackFrame();
 }
 
 static void Dkc3SaveExtra(SaveLoadInfo *sli) {
@@ -679,6 +992,9 @@ static void Dkc3LoadExtra(SaveLoadInfo *sli, uint32_t version) {
   g_memsel = snapshot.memsel;
 }
 
+static void Dkc3ResetSpritePaletteOverflow(void);
+static void Dkc3ResetTrunkWindows(void);
+
 static void Dkc3OnStateLoaded(uint32_t version) {
   (void)version;
   /* Pack selection belongs to the current host session, not the snapshot.
@@ -699,7 +1015,20 @@ static void Dkc3OnStateLoaded(uint32_t version) {
   s_hold_camera_valid = false;
   s_bias_valid = false;
   s_state_loaded_recently = !getenv("DKC3_LOAD_AS_LEVEL_START");
+  s_kong_map_settled = false;
+  memset(&s_kong_map_settle, 0, sizeof s_kong_map_settle);
+  /* A quick save carries the cartridge SRAM, already restored when this
+   * hook runs; adopt it now as the baseline rather than reading the
+   * difference as a copy or erase. Adopting here instead of on the next
+   * frame keeps a copy or erase made in that first file-select frame. */
+  if (s_kong_tracking && g_sram && g_sram_size > 0)
+    (void)Dkc3KongTrackerSyncSram(&s_kong_tracker, g_sram,
+                                  (size_t)g_sram_size, false);
+  else
+    Dkc3KongTrackerForgetSram(&s_kong_tracker);
   Dkc3VideoSetTerrainReady(false);
+  Dkc3ResetSpritePaletteOverflow();
+  Dkc3ResetTrunkWindows();
 }
 
 static const RtlGameInfo kDkc3GameInfo = {
@@ -726,16 +1055,390 @@ static uint16_t Dkc3ReadWram16(uint16_t address) {
          ((uint16_t)g_ram[(uint16_t)(address + 1u)] << 8);
 }
 
+enum {
+  kDkc3SpriteSlotCount = 24,
+  kDkc3SpriteTableBase = 0x0878u,
+  kDkc3SpriteSlotStride = 0x006Eu,
+  kDkc3WramPaletteReqId = 0x04EFu,
+  kDkc3WramPaletteSlotIds = 0x073Cu,
+  kDkc3WramPaletteTintedFlags = 0x0775u,
+  kDkc3WramPaletteLastOverflow = 0x1D4Bu,
+  kDkc3SpriteStaticTileBase = 0x01E0u,
+  kDkc3CommonPaletteId = 0x000Fu,
+  kDkc3BurstEffectSpriteType = 0x026Cu,
+  kDkc3WsExtObjMaxPalettes = 24,
+};
+
+enum { kDkc3OverflowRecoveryFrames = 8 };
+
+static uint16_t s_sprite_overflow_pal[kDkc3SpriteSlotCount];
+/* Frames left in which a $1D4B fallback captured before this session may be
+ * re-attached to a palette-0 sprite. Armed by a state load and by entering a
+ * wide aspect; consumed by the first attachment or when it runs out, so a
+ * stale $1D4B is never matched to an unrelated sprite later on. */
+static unsigned s_overflow_recovery_frames = 0;
+
+static void Dkc3ResetSpritePaletteOverflow(void) {
+  memset(s_sprite_overflow_pal, 0, sizeof s_sprite_overflow_pal);
+  s_overflow_recovery_frames = kDkc3OverflowRecoveryFrames;
+  Dkc3PpuClearWsExtObjPalettes();
+}
+
+void Dkc3RecordSpritePaletteOverflow(uint16_t direct_page) {
+  if (!Dkc3VideoIsWidescreen())
+    return;
+  const uint16_t palette_id = Dkc3ReadWram16(kDkc3WramPaletteReqId);
+  if (palette_id == 0 || palette_id == kDkc3CommonPaletteId)
+    return;
+  const uint16_t slot_addr =
+      Dkc3ReadWram16((uint16_t)(direct_page + 0x0076u));
+  if (slot_addr < kDkc3SpriteTableBase)
+    return;
+  const uint16_t offset = (uint16_t)(slot_addr - kDkc3SpriteTableBase);
+  if ((offset % kDkc3SpriteSlotStride) != 0)
+    return;
+  const unsigned slot = (unsigned)(offset / kDkc3SpriteSlotStride);
+  if (slot >= kDkc3SpriteSlotCount)
+    return;
+  s_sprite_overflow_pal[slot] = palette_id;
+}
+
+/* $B3:C0F4's trunk windows, recorded when the routine writes them and
+ * applied to every frame the PPU draws while the level and the window
+ * registers are still the ones recorded. The routine does not run while the
+ * game is paused; the registers stay put then, so the masks stay too. It
+ * runs before the frame's camera update, so its edges trail the camera by
+ * one frame exactly as the registers it writes do. A level change, a state
+ * load, or any other window write withdraws them. */
+static struct {
+  int16_t edges[4];
+  uint8_t regs[4];
+  uint16_t level;
+  unsigned mask;
+} s_trunk_windows;
+
+static void Dkc3ResetTrunkWindows(void) {
+  s_trunk_windows.mask = 0;
+  for (int window = 0; window < 2; window++)
+    Dkc3PpuSetWsWindowUnclamped(window, false, 0, 0, 0, 0);
+}
+
+void Dkc3RecordTrunkWindows(uint16_t direct_page) {
+  if (!Dkc3VideoIsWidescreen() || !g_ppu)
+    return;
+  uint16_t world[4];
+  for (int i = 0; i < 4; i++)
+    world[i] = Dkc3ReadWram16((uint16_t)(direct_page + 0x001Au + i * 2u));
+  const uint8_t regs[4] = {g_ppu->window1left, g_ppu->window1right,
+                           g_ppu->window2left, g_ppu->window2right};
+  const uint16_t camera = Dkc3ReadWram16(kDkc3WramCameraX);
+  s_trunk_windows.mask = Dkc3VideoUnclampedTrunkWindows(
+      world, camera, regs, s_trunk_windows.edges);
+  memcpy(s_trunk_windows.regs, regs, sizeof regs);
+  s_trunk_windows.level = Dkc3ReadWram16(kDkc3WramLevelNumber);
+  if (getenv("DKC3_TRUNK_WINDOW_TRACE"))
+    fprintf(stderr,
+            "trunk_windows world=[%04x,%04x,%04x,%04x] camera=%04x "
+            "regs=[%u,%u,%u,%u] edges=[%d,%d,%d,%d] mask=%u\n",
+            world[0], world[1], world[2], world[3], camera, regs[0],
+            regs[1], regs[2], regs[3], s_trunk_windows.edges[0],
+            s_trunk_windows.edges[1], s_trunk_windows.edges[2],
+            s_trunk_windows.edges[3], s_trunk_windows.mask);
+}
+
+/* Hand the recorded windows to the PPU for this frame, or withdraw them.
+ * `active` is false whenever the terrain path is not presenting margins.
+ * The PPU also drops a window whose registers change mid-frame. */
+static void Dkc3ApplyTrunkWindows(bool active) {
+  const bool live =
+      active && Dkc3VideoCullWidenEnabled() && s_trunk_windows.mask != 0 &&
+      s_trunk_windows.level == Dkc3ReadWram16(kDkc3WramLevelNumber);
+  for (int window = 0; window < 2; window++) {
+    const bool on = live && (s_trunk_windows.mask & (1u << window)) != 0;
+    Dkc3PpuSetWsWindowUnclamped(
+        window, on, s_trunk_windows.edges[window * 2],
+        s_trunk_windows.edges[window * 2 + 1],
+        s_trunk_windows.regs[window * 2],
+        s_trunk_windows.regs[window * 2 + 1]);
+  }
+}
+
+static bool Dkc3LoadSpritePaletteColors(uint16_t palette_id,
+                                        uint16_t out[16]) {
+  if (!out || !g_rom || !g_snes || !g_snes->cart || palette_id == 0)
+    return false;
+  const size_t rom_size = (size_t)g_snes->cart->romSize;
+  const size_t ptr_off = 0x3D3201u + (size_t)palette_id * 2u;
+  if (ptr_off + 2u > rom_size)
+    return false;
+  const uint16_t ptr = (uint16_t)g_rom[ptr_off] |
+                       ((uint16_t)g_rom[ptr_off + 1u] << 8);
+  out[0] = 0;
+  if ((Dkc3ReadWram16(kDkc3WramPaletteTintedFlags) & 0x8000u) != 0) {
+    const uint16_t wram_ptr = (uint16_t)(ptr - 0x341Bu + 0x3180u);
+    for (unsigned c = 0; c < 15u; c++) {
+      out[c + 1u] = Dkc3ReadWram16((uint16_t)(wram_ptr + c * 2u));
+    }
+    return true;
+  }
+  const size_t data_off = 0x3D0000u + (size_t)ptr;
+  if (data_off + 30u > rom_size)
+    return false;
+  for (unsigned c = 0; c < 15u; c++) {
+    const size_t o = data_off + (size_t)c * 2u;
+    out[c + 1u] = (uint16_t)g_rom[o] | ((uint16_t)g_rom[o + 1u] << 8);
+  }
+  return true;
+}
+
+/* The palette a sprite type's bank-$FF init scripts request, or 0. */
+static uint16_t Dkc3InitScriptPaletteForType(uint16_t sprite_type) {
+  enum { kInitScriptBankOffset = 0x3F0000u, kInitScriptBankSize = 0x10000u };
+  if (!g_rom || !g_snes || !g_snes->cart ||
+      (size_t)g_snes->cart->romSize <
+          (size_t)kInitScriptBankOffset + kInitScriptBankSize)
+    return 0;
+  return Dkc3VideoInitScriptPaletteForType(
+      g_rom + kInitScriptBankOffset, kInitScriptBankSize, sprite_type);
+}
+
+static uint16_t Dkc3SpriteTileRangeEnd(unsigned target_slot,
+                                       uint16_t tile_base) {
+  uint16_t tile_end = kDkc3SpriteStaticTileBase;
+  for (unsigned other = 0; other < kDkc3SpriteSlotCount; other++) {
+    if (other == target_slot)
+      continue;
+    const uint16_t base =
+        (uint16_t)(kDkc3SpriteTableBase + other * kDkc3SpriteSlotStride);
+    if (Dkc3ReadWram16(base) == 0)
+      continue;
+    const uint16_t oam_attr = Dkc3ReadWram16((uint16_t)(base + 0x1Eu));
+    if (oam_attr == 0)
+      continue;
+    const uint16_t other_base = (uint16_t)(oam_attr & 0x01FFu);
+    if (other_base > tile_base && other_base < tile_end)
+      tile_end = other_base;
+  }
+  return tile_end;
+}
+
+static void Dkc3SyncWidescreenObjPalettes(bool in_level) {
+  Dkc3PpuClearWsExtObjPalettes();
+  if (!Dkc3VideoIsWidescreen() || !in_level) {
+    /* Nothing is recorded at 4:3, so a tracked association would be stale by
+     * the time a wide aspect returns. Re-arm recovery for that return. */
+    memset(s_sprite_overflow_pal, 0, sizeof s_sprite_overflow_pal);
+    s_overflow_recovery_frames = in_level ? kDkc3OverflowRecoveryFrames : 0;
+    return;
+  }
+
+  /* Clear entries whose sprite slot despawned or received a real hardware
+   * palette (1..7). */
+  for (unsigned slot = 0; slot < kDkc3SpriteSlotCount; slot++) {
+    if (s_sprite_overflow_pal[slot] == 0)
+      continue;
+    const uint16_t base =
+        (uint16_t)(kDkc3SpriteTableBase + slot * kDkc3SpriteSlotStride);
+    const uint16_t type = Dkc3ReadWram16(base);
+    const uint16_t oam_attr = Dkc3ReadWram16((uint16_t)(base + 0x1Eu));
+    if (type == 0 || oam_attr == 0 || ((oam_attr >> 9) & 7u) != 0)
+      s_sprite_overflow_pal[slot] = 0;
+  }
+
+  /* If the active Kong is riding Squawks or Enguarde and inherited an
+   * overflowed palette 0 when DKC3 swapped OAM attributes on mount, ensure
+   * the extended widescreen palette table still serves the buddy's palette. */
+  {
+    const uint16_t mounted_buddy =
+        Dkc3ReadWram16(kDkc3PauseCrateDpMountedBuddyAddr);
+    const uint16_t active_kong =
+        Dkc3ReadWram16(kDkc3PauseCrateActiveKongAddr);
+    if (mounted_buddy >= kDkc3PauseCrateFirstFreeSlot &&
+        mounted_buddy < kDkc3PauseCrateSpriteTableEnd &&
+        ((mounted_buddy - kDkc3SpriteTableBase) % kDkc3SpriteSlotStride) == 0 &&
+        (active_kong == kDkc3SpriteTableBase ||
+         active_kong == kDkc3SpriteTableBase + kDkc3SpriteSlotStride)) {
+      const uint16_t buddy_type = Dkc3ReadWram16(mounted_buddy);
+      const uint16_t buddy_pal = Dkc3AnimalBuddyPaletteIdForType(
+          buddy_type, Dkc3ReadWram16(kDkc3PauseCrateLevelConfigFlagsAddr));
+      const unsigned kong_slot =
+          (unsigned)((active_kong - kDkc3SpriteTableBase) /
+                     kDkc3SpriteSlotStride);
+      const uint16_t kong_oam =
+          Dkc3ReadWram16((uint16_t)(active_kong + 0x1Eu));
+      if (buddy_pal != 0u && kong_slot < kDkc3SpriteSlotCount &&
+          kong_oam != 0u && ((kong_oam >> 9) & 7u) == 0u) {
+        s_sprite_overflow_pal[kong_slot] = buddy_pal;
+      }
+    }
+  }
+
+  /* Savestate recovery. The hook's associations are host state that a quick
+   * save does not carry, so after a load (or an aspect change) a dynamic
+   * sprite stuck on palette 0 has lost its palette. Only runs in the short
+   * window after a load or an aspect change: live overflows are recorded by
+   * the hook instead.
+   *
+   * First, a sprite whose type's init scripts all request one palette gets
+   * that palette. $1D4B names only the most recent overflow, which need not
+   * be this sprite's: a bear coin ($0284, palette $00C8) restored beside a
+   * later $0071 overflow was drawn orange. */
+  const uint16_t last_overflow = Dkc3ReadWram16(kDkc3WramPaletteLastOverflow);
+  const bool try_recovery = s_overflow_recovery_frames != 0;
+  if (try_recovery)
+    s_overflow_recovery_frames--;
+  bool type_known[kDkc3SpriteSlotCount];
+  memset(type_known, 0, sizeof type_known);
+  for (unsigned slot = 0; try_recovery && slot < kDkc3SpriteSlotCount;
+       slot++) {
+    const uint16_t base =
+        (uint16_t)(kDkc3SpriteTableBase + slot * kDkc3SpriteSlotStride);
+    const uint16_t type = Dkc3ReadWram16(base);
+    if (type == 0)
+      continue;
+    const uint16_t palette_id = Dkc3InitScriptPaletteForType(type);
+    if (palette_id == 0)
+      continue;
+    type_known[slot] = true;
+    if (s_sprite_overflow_pal[slot] != 0 ||
+        palette_id == kDkc3CommonPaletteId)
+      continue;
+    const uint16_t oam_attr = Dkc3ReadWram16((uint16_t)(base + 0x1Eu));
+    if (oam_attr == 0 || ((oam_attr >> 9) & 7u) != 0)
+      continue;
+    const uint16_t tile_base = (uint16_t)(oam_attr & 0x01FFu);
+    if (tile_base >= kDkc3SpriteStaticTileBase)
+      continue;
+    s_sprite_overflow_pal[slot] = palette_id;
+  }
+
+  /* Then, for a sprite whose type the scripts do not settle, fall back to
+   * $1D4B when it is not already loaded in hardware CGRAM or tracked on
+   * another slot. */
+  if (try_recovery && last_overflow != 0 &&
+      last_overflow != kDkc3CommonPaletteId) {
+    bool known = false;
+    for (unsigned p = 0; p < 8u; p++) {
+      if (Dkc3ReadWram16((uint16_t)(kDkc3WramPaletteSlotIds + p * 2u)) ==
+          last_overflow) {
+        known = true;
+        break;
+      }
+    }
+    for (unsigned slot = 0; !known && slot < kDkc3SpriteSlotCount; slot++) {
+      if (s_sprite_overflow_pal[slot] == last_overflow)
+        known = true;
+    }
+    if (!known) {
+      int best_slot = -1;
+      for (unsigned slot = 0; slot < kDkc3SpriteSlotCount; slot++) {
+        if (s_sprite_overflow_pal[slot] != 0 || type_known[slot])
+          continue;
+        const uint16_t base =
+            (uint16_t)(kDkc3SpriteTableBase + slot * kDkc3SpriteSlotStride);
+        const uint16_t type = Dkc3ReadWram16(base);
+        const uint16_t oam_attr = Dkc3ReadWram16((uint16_t)(base + 0x1Eu));
+        if (type == 0 || type == kDkc3BurstEffectSpriteType ||
+            oam_attr == 0 || ((oam_attr >> 9) & 7u) != 0)
+          continue;
+        const uint16_t tile_base = (uint16_t)(oam_attr & 0x01FFu);
+        if (tile_base >= kDkc3SpriteStaticTileBase)
+          continue;
+        const uint16_t tile_end = Dkc3SpriteTileRangeEnd(slot, tile_base);
+        bool in_oam = false;
+        for (unsigned i = 0; i < 128u; i++) {
+          const uint16_t oam1 = g_ppu->oam[i * 2u + 1u];
+          if (((oam1 >> 9) & 7u) == 0) {
+            const uint16_t tile = (uint16_t)(oam1 & 0x01FFu);
+            if (tile >= tile_base && tile < tile_end) {
+              in_oam = true;
+              break;
+            }
+          }
+        }
+        if (in_oam)
+          best_slot = (int)slot;
+      }
+      if (best_slot >= 0) {
+        s_sprite_overflow_pal[best_slot] = last_overflow;
+        s_overflow_recovery_frames = 0;
+      }
+    }
+  }
+
+  uint16_t ext_ids[kDkc3WsExtObjMaxPalettes];
+  unsigned ext_count = 0;
+  uint8_t oam_ext_pal[128];
+  memset(oam_ext_pal, 0, sizeof oam_ext_pal);
+  bool any_active = false;
+
+  for (unsigned slot = 0; slot < kDkc3SpriteSlotCount; slot++) {
+    const uint16_t palette_id = s_sprite_overflow_pal[slot];
+    if (palette_id == 0)
+      continue;
+    const uint16_t base =
+        (uint16_t)(kDkc3SpriteTableBase + slot * kDkc3SpriteSlotStride);
+    const uint16_t oam_attr = Dkc3ReadWram16((uint16_t)(base + 0x1Eu));
+    const uint16_t tile_base = (uint16_t)(oam_attr & 0x01FFu);
+    if (tile_base >= kDkc3SpriteStaticTileBase)
+      continue;
+
+    uint8_t ext_slot = 0;
+    for (unsigned e = 0; e < ext_count; e++) {
+      if (ext_ids[e] == palette_id) {
+        ext_slot = (uint8_t)(e + 1u);
+        break;
+      }
+    }
+    if (ext_slot == 0) {
+      if (ext_count >= kDkc3WsExtObjMaxPalettes)
+        continue;
+      uint16_t colors[16];
+      if (!Dkc3LoadSpritePaletteColors(palette_id, colors))
+        continue;
+      ext_ids[ext_count] = palette_id;
+      ext_slot = (uint8_t)(ext_count + 1u);
+      ext_count++;
+      Dkc3PpuSetWsExtObjPalette(ext_slot, colors);
+    }
+
+    const uint16_t tile_end = Dkc3SpriteTileRangeEnd(slot, tile_base);
+    for (unsigned i = 0; i < 128u; i++) {
+      const uint16_t oam1 = g_ppu->oam[i * 2u + 1u];
+      if (((oam1 >> 9) & 7u) != 0)
+        continue;
+      const uint16_t tile = (uint16_t)(oam1 & 0x01FFu);
+      if (tile >= tile_base && tile < tile_end) {
+        oam_ext_pal[i] = ext_slot;
+        any_active = true;
+      }
+    }
+  }
+
+  if (any_active)
+    Dkc3PpuSetWsOamExtPalettes(oam_ext_pal, true);
+  if (getenv("DKC3_EXT_PAL_TRACE")) {
+    fprintf(stderr, "ext_pal frame=%u last=%04x ext=%u active=%d slots:",
+            (unsigned)snes_frame_counter, last_overflow, ext_count,
+            any_active ? 1 : 0);
+    for (unsigned slot = 0; slot < kDkc3SpriteSlotCount; slot++)
+      if (s_sprite_overflow_pal[slot])
+        fprintf(stderr, " %u=%04x", slot, s_sprite_overflow_pal[slot]);
+    fprintf(stderr, "\n");
+  }
+}
+
 /* $BB:A647 normally walks one list selected from the level's persistent
  * 256-pixel placement index. A quick save made by an older build preserves
  * that native-width index, and changing aspect is host-only, so rebuilding it
  * on restore would either lose object state or leave stale buckets. Merge the
- * current cell and its immediate horizontal neighbors for the generated
- * list walk instead. The terrain-gated $BB:AAD4 compare remains authoritative,
- * and 21:9's maximum added reach is less than one 256-pixel cell per side. */
+ * current cell and every horizontal neighbor the widened placement interval
+ * can reach (up to two cells per side at 21:9 with spawn lead) for the
+ * generated list walk instead. The terrain-gated $BB:AAD4 compare remains
+ * authoritative. */
 uint16_t Dkc3PlacementScanBegin(uint16_t native_head,
                                 uint16_t native_cell_offset) {
-  uint16_t cell_offsets[3];
+  uint16_t cell_offsets[kDkc3VideoPlacementScanMaxCells];
   const uint16_t row_stride = Dkc3ReadWram16(0x15fa);
   const size_t cell_count = Dkc3VideoPlacementScanCells(
       native_cell_offset, row_stride, cell_offsets);
@@ -815,6 +1518,104 @@ static void Dkc3ResetWidescreenShadow(void) {
   s_hold_camera_valid = false;
   s_bias_valid = false;
   Dkc3VideoSetTerrainReady(false);
+}
+
+static void Dkc3ResetOverworldState(void) {
+  s_overworld_copy_valid = false;
+  s_overworld_streams = false;
+}
+
+/* The layers whose vertical scroll this frame's HDMA rewrites per line. */
+static uint8_t Dkc3OverworldVerticalHdmaLayers(void) {
+  uint8_t b_address[8];
+  uint8_t mode[8];
+  for (int index = 0; index < 8; index++) {
+    b_address[index] = g_dma->channel[index].bAdr;
+    mode[index] = g_dma->channel[index].mode;
+  }
+  return Dkc3VideoHdmaVerticalScrollLayers(g_snesrecomp_last_hdmaen,
+                                           b_address, mode);
+}
+
+/* Compare each enabled BG1-BG3 tilemap (32 rows, one or two pages) with the
+ * previous drawn frame's copy and refresh the copy. Returns false when the
+ * copy was not comparable (first frame, or a new layer layout) or a layer's
+ * writes are not row streaming; sets *foreign_writes in the latter case. */
+static bool Dkc3OverworldMapsResident(uint8_t enabled_layers,
+                                      bool *foreign_writes) {
+  const uint8_t layers = (uint8_t)(enabled_layers & 0x07u);
+  bool comparable = s_overworld_copy_valid && s_overworld_layers == layers;
+  for (unsigned layer = 0; layer < 3; layer++) {
+    if ((layers & (1u << layer)) &&
+        s_overworld_sc[layer] != g_ppu->bgXsc[layer])
+      comparable = false;
+  }
+  const uint8_t vertical_hdma = Dkc3OverworldVerticalHdmaLayers();
+  *foreign_writes = false;
+  for (unsigned layer = 0; layer < 3; layer++) {
+    if (!(layers & (1u << layer)))
+      continue;
+    uint32_t changed_rows = 0;
+    uint8_t pages[4];
+    const unsigned count = Dkc3VideoTilemapPages(g_ppu->bgXsc[layer], pages);
+    for (unsigned page = 0; page < count && page < 2; page++) {
+      const uint16_t *words = g_ppu->vram + ((unsigned)pages[page] << 10);
+      uint16_t *copy = s_overworld_maps[layer] + page * 0x400u;
+      for (unsigned word = 0; word < 0x400; word++) {
+        if (words[word] == copy[word])
+          continue;
+        changed_rows |= 1u << (word >> 5);
+        copy[word] = words[word];
+      }
+    }
+    if (comparable &&
+        !Dkc3VideoOverworldWritesAreRows(changed_rows, g_ppu->vScroll[layer],
+                                         (vertical_hdma >> layer) & 1u))
+      *foreign_writes = true;
+    s_overworld_sc[layer] = g_ppu->bgXsc[layer];
+  }
+  s_overworld_layers = layers;
+  s_overworld_copy_valid = true;
+  return comparable && !*foreign_writes;
+}
+
+/* Present the resident overworld widened: raw BG1-BG3 across the margins,
+ * each margin clamped to the 512-pixel map. The view stays locked to the
+ * camera (no glide): a presentation bias shifts objects in the PPU, but on
+ * this raw path nothing shifts the backgrounds with them, so a biased frame
+ * would misplace every sprite against the map. Returns false (black
+ * margins) until the maps are proven resident. */
+static bool Dkc3PresentOverworld(uint8_t enabled_layers) {
+  bool foreign_writes = false;
+  const bool stable =
+      Dkc3OverworldMapsResident(enabled_layers, &foreign_writes);
+  const bool displayed =
+      !PPU_forcedBlank(g_ppu) && PPU_brightness(g_ppu) != 0;
+  if (foreign_writes && displayed)
+    s_overworld_streams = true;
+  if (!stable || s_overworld_streams)
+    return false;
+
+  const int extra = Dkc3VideoExtra();
+  int left_margin = extra;
+  int right_margin = extra;
+  /* Clamp at the scroll the frame renders, not the camera word, which
+   * leads it while the boat moves. */
+  Dkc3VideoOverworldMargins(Dkc3VideoOverworldRenderedX(g_ppu->hScroll[0]),
+                            &left_margin, &right_margin);
+  PpuSetExtraSpace(g_ppu, (uint8_t)extra);
+  Dkc3VideoSetPresentationBias(0);
+  PpuSetExtraSideSpace(g_ppu, left_margin, right_margin, 0);
+  Dkc3VideoClearOutsideMargins(g_ppu->renderBuffer, g_ppu->renderPitch,
+                               Dkc3VideoWidth(), kDkc3VideoHeight, extra,
+                               left_margin, right_margin);
+  /* Every enabled layer reads VRAM directly: BG1 and BG3 are the resident
+   * 512-pixel pictures and BG2's 32-column water wraps at 256 pixels as
+   * the hardware does, with its per-line HDMA scroll evaluated in place. */
+  const uint8_t layers = (uint8_t)(enabled_layers & 0x07u);
+  PpuSetWidescreenLayerMask(g_ppu, layers);
+  PpuSetWidescreenBg3Widen(g_ppu, (layers & 0x04u) != 0 ? 1u : 0u);
+  return true;
 }
 
 static const uint8_t *Dkc3LevelSourceBank(uint8_t *bank_out) {
@@ -1607,7 +2408,18 @@ static bool Dkc3PrefillWidescreenLevelTerrain(uint8_t layer_mask,
             terrain_layer, tile_x, shadow_tile_y, transparent_tile, margin);
         continue;
       }
-      if (edge == 0 && outside_cartridge && cartridge_first_tile >= 32u) {
+      /* The wall rules below invent what the console never shows beside a
+       * wall. A column the camera can still scroll the native window over
+       * is not that: the console draws the decoded map there once the
+       * camera arrives. In the waterfall level the empty gap between two
+       * tree trunks sat one metatile past the window whenever the camera
+       * stood on a tile boundary, and the rule filled it with the trunk's
+       * successors (rock and grass that popped in at the right margin
+       * and vanished as soon as the camera moved a pixel). */
+      const bool in_reach = Dkc3VideoTileInCameraReach(
+          tile_x, s_reach_minimum_x, s_reach_maximum_x);
+      if (edge == 0 && outside_cartridge && !in_reach &&
+          cartridge_first_tile >= 32u) {
         const bool east =
             ((uint64_t)tile_x << 3) >= (uint64_t)cartridge_x +
                                            kDkc3VideoNativeWidth;
@@ -1961,6 +2773,35 @@ static bool Dkc3HdmaReadable(void *context, const uint8_t *pointer,
   return false;
 }
 
+/* The KAOS arena's body window: BG1 must use window 1 alone, inverted, on
+ * the main screen, and an active direct mode-1 HDMA channel must write
+ * $2126/$2127. Dkc3VideoKaosBodyWindow picks the body lines' pair. */
+static bool Dkc3FindKaosBodyWindow(uint8_t *reg_left, uint8_t *reg_right,
+                                   int *left, int *right) {
+  if ((g_ppu->windowsel & 0x0fu) != 0x03u ||
+      !(g_ppu->screenWindowed[0] & 0x01u) ||
+      (g_ppu->screenWindowed[1] & 0x01u))
+    return false;
+  for (int index = 0; index < 8; index++) {
+    const DmaChannel *channel = &g_dma->channel[index];
+    if (!(g_snesrecomp_last_hdmaen & (uint8_t)(1u << index)) ||
+        channel->indirect || channel->bAdr != 0x26 || channel->mode != 1)
+      continue;
+    const uint32_t address =
+        (uint32_t)channel->aAdr | ((uint32_t)channel->aBank << 16);
+    enum { kTableLimit = 1024 };
+    const uint8_t *table = Dkc3HdmaPointer(NULL, address);
+    size_t length = kTableLimit;
+    while (length > 0 && !Dkc3HdmaReadable(NULL, table, length))
+      length /= 2;
+    if (!table || length == 0)
+      return false;
+    return Dkc3VideoKaosBodyWindow(table, length, g_ppu->hScroll[0],
+                                   reg_left, reg_right, left, right);
+  }
+  return false;
+}
+
 static void Dkc3ScanFrameBands(Dkc3HdmaBands *bands) {
   Dkc3HdmaChannelConfig channels[8];
   for (int index = 0; index < 8; index++) {
@@ -2153,37 +2994,34 @@ static void Dkc3ApplyBandPolicies(const Dkc3HdmaBand *band,
  * CMP #$0160 ($B7:A8C8) exactly like the eight variants the override
  * script widens in generated code, but the analysis leaves it to the
  * interpreter, which reads those immediates from the ROM image. Widen them
- * there: $30 by the configured margin and $160 by two margins, symmetric,
- * without the glide bias the generated wrappers apply (a cull only decides
- * whether a sprite reaches OAM, so a superset is harmless). Each write
- * checks the bytes it replaces, so an image that does not hold the native
- * or the previously widened operands is left alone.
+ * there using the same Dkc3VideoExpandSpriteCullLeft/Span policy (including
+ * terrain readiness, presentation bias, DKC3_CULL_WIDEN, and DKC3_SPAWN_LEAD).
+ * Each write checks the bytes it replaces, so an image that does not hold the
+ * native or the previously patched operands is left alone.
  */
 static void Dkc3PatchInterpreterCull(void) {
-  static int applied_extra = -1;
-  const int extra = Dkc3VideoExtra();
-  if (extra == applied_extra || !g_rom)
+  static uint16_t applied_left = 0x30u;
+  static uint16_t applied_span = 0x160u;
+  const uint16_t left = Dkc3VideoExpandSpriteCullLeft(0x30u);
+  const uint16_t span = Dkc3VideoExpandSpriteCullSpan(0x160u);
+  if ((left == applied_left && span == applied_span) || !g_rom)
     return;
   enum { kLeftOperand = 0x37a8c9u, kSpanOperand = 0x37a8ccu };
   const uint32_t rom_size = g_snes && g_snes->cart ? (uint32_t)g_snes->cart->romSize : 0;
   if (rom_size < kSpanOperand + 2u)
     return;
   uint8_t *rom = (uint8_t *)(uintptr_t)g_rom;
-  const unsigned previous = applied_extra < 0 ? 0u : (unsigned)applied_extra;
-  const uint16_t expect_left = (uint16_t)(0x30u + previous);
-  const uint16_t expect_span = (uint16_t)(0x160u + 2u * previous);
-  if (rom[kLeftOperand] != (expect_left & 0xffu) ||
-      rom[kLeftOperand + 1] != (expect_left >> 8) ||
-      rom[kSpanOperand] != (expect_span & 0xffu) ||
-      rom[kSpanOperand + 1] != (expect_span >> 8))
+  if (rom[kLeftOperand] != (applied_left & 0xffu) ||
+      rom[kLeftOperand + 1] != (applied_left >> 8) ||
+      rom[kSpanOperand] != (applied_span & 0xffu) ||
+      rom[kSpanOperand + 1] != (applied_span >> 8))
     return;
-  const uint16_t left = (uint16_t)(0x30u + (unsigned)extra);
-  const uint16_t span = (uint16_t)(0x160u + 2u * (unsigned)extra);
   rom[kLeftOperand] = (uint8_t)(left & 0xffu);
   rom[kLeftOperand + 1] = (uint8_t)(left >> 8);
   rom[kSpanOperand] = (uint8_t)(span & 0xffu);
   rom[kSpanOperand + 1] = (uint8_t)(span >> 8);
-  applied_extra = extra;
+  applied_left = left;
+  applied_span = span;
 }
 
 /* Floodlit Fish uses a full-screen inverted BG3 window for the water surface
@@ -2230,7 +3068,6 @@ static void Dkc3EnhanceUnderwaterSubscreen(Ppu *ppu, uint y, bool sub,
 }
 
 void Dkc3DrawPpuFrame(void) {
-  Dkc3PatchInterpreterCull();
   PpuSetWidescreenLineEnhancer(
       g_ppu, Dkc3VideoIsWidescreen() ? Dkc3EnhanceUnderwaterSubscreen : NULL,
       NULL);
@@ -2282,51 +3119,111 @@ void Dkc3DrawPpuFrame(void) {
           g_ppu->bgmode, g_ppu->bgXsc, g_ppu->bgTileAdr,
           g_snesrecomp_last_hdmaen, g_ppu->vram, 0x8000);
   const bool extend_world = wide_layer_mask != 0 && !name_card;
+  const uint8_t enabled_layers =
+      (uint8_t)(g_ppu->screenEnabled[0] | g_ppu->screenEnabled[1]);
+  const bool overworld = Dkc3VideoIsWidescreen() && !extend_world &&
+      !snow_arena &&
+      Dkc3VideoIsResidentOverworld(
+          Dkc3FactRead24(kDkc3WramMainLoopVector), g_ppu->bgmode,
+          g_ppu->bgXsc, enabled_layers, g_ppu->hScroll,
+          Dkc3ReadWram16(kDkc3WramCameraX));
+  if (!overworld)
+    Dkc3ResetOverworldState();
   int presentation_bias = 0;
+  bool trunk_windows_active = false;
   bool band_policies_active = false;
   bool blank_margins = false;
+  bool kaos_body_window = false;
+  uint8_t kaos_body_reg_left = 0, kaos_body_reg_right = 0;
+  int kaos_body_left = 0, kaos_body_right = 0;
+  bool room_windows = false;
+  int room_w1_left = 0, room_w1_right = 0, room_w2_left = 0, room_w2_right = 0;
   /* Reset host presentation latches before deriving the current frame. A
    * prior gameplay scene must not leave a physically wide BG3 enabled on a
    * bounded title, menu, or unsupported layout. */
   PpuSetWidescreenLayerMask(g_ppu, 0);
   PpuSetWidescreenBg3Widen(g_ppu, 0);
   PpuSetWidescreenPresentationXBias(g_ppu, 0);
+  bool overworld_presented = false;
+  if (overworld) {
+    Dkc3ResetWidescreenShadow();
+    overworld_presented = Dkc3PresentOverworld(enabled_layers);
+  }
   if (extend_world) {
     const int extra = Dkc3VideoExtra();
     PpuSetExtraSpace(g_ppu, (uint8_t)extra);
     const uint16_t camera_x = Dkc3ReadWram16(kDkc3WramCameraX);
-    const uint16_t maximum_scroll_x = Dkc3MaximumScrollX();
+    uint16_t region_minimum_x = 0x0100u;
+    uint16_t maximum_scroll_x = Dkc3MaximumScrollX();
+    /* The walls of the camera's current region and the neighbours it
+     * links: $04BC is the maximum over every region, so a region the
+     * camera cannot leave sideways (an elevator shaft exactly one screen
+     * wide) would otherwise widen into other rooms' map columns that the
+     * cartridge never shows beside it. The native window always stays
+     * inside the bounds. */
+    {
+      uint16_t region_left = 0, region_right = 0;
+      if (Dkc3VideoCameraRegionSpan(g_ram,
+                                    Dkc3ReadWram16(kDkc3WramCameraRegion),
+                                    &region_left, &region_right))
+        Dkc3VideoRegionScrollBounds(camera_x, region_left, region_right,
+                                    maximum_scroll_x, &region_minimum_x,
+                                    &maximum_scroll_x);
+    }
     int bias = 0;
     int left_margin = extra;
     int right_margin = extra;
-    /* The level's west bound: the map's first page unless the last prefill
-     * found the player held at the authored world's edge with nothing
-     * beside it (Dkc3VideoHoldWest). The bias then moves at most one pixel
-     * a frame toward the glide's target. */
+    /* The level's west bound: the region's unless the last prefill found
+     * the player held at the authored world's edge with nothing beside it
+     * (Dkc3VideoHoldWest). The bias then steps toward the glide's target
+     * (Dkc3VideoStepPresentationBias). */
     const uint16_t minimum_scroll_x =
-        s_hold_west_valid && s_hold_west_x > 0x100u &&
+        s_hold_west_valid && s_hold_west_x > region_minimum_x &&
                 s_hold_west_x <= camera_x
-            ? (uint16_t)s_hold_west_x : 0x0100u;
+            ? (uint16_t)s_hold_west_x : region_minimum_x;
     int wanted_bias = 0;
     Dkc3VideoPresentationMarginsBounded(camera_x, minimum_scroll_x,
                                         maximum_scroll_x, &wanted_bias,
                                         &left_margin, &right_margin);
+    if (s_bias_policy != Dkc3VideoGetEdgePolicy()) {
+      s_bias_policy = Dkc3VideoGetEdgePolicy();
+      s_bias_valid = false;
+    }
+    const bool limit_margins = s_margin_valid && s_bias_valid &&
+        s_bias_frames >= (uint32_t)kDkc3BiasSettleFrames;
     if (!s_bias_valid) {
       s_bias_presented = wanted_bias;
       s_bias_frames = 0;
     } else if (s_bias_frames < (uint32_t)kDkc3BiasSettleFrames) {
       s_bias_presented = wanted_bias;
-    } else if (wanted_bias > s_bias_presented) {
-      s_bias_presented++;
-    } else if (wanted_bias < s_bias_presented) {
-      s_bias_presented--;
+    } else {
+      s_bias_presented = Dkc3VideoStepPresentationBias(
+          s_bias_presented, wanted_bias,
+          (int)camera_x - (int)s_bias_camera_x);
     }
+    s_bias_camera_x = camera_x;
     s_bias_valid = true;
     if (s_bias_frames < 0xffffffffu)
       s_bias_frames++;
     bias = s_bias_presented;
     Dkc3VideoMarginsForBias(camera_x, minimum_scroll_x, maximum_scroll_x,
                             bias, &left_margin, &right_margin);
+    /* A region change that opens onto a wider room moves its wall away
+     * in one frame; wipe the margin open rather than popping a full
+     * margin of terrain and objects in. DKC3_CULL_WIDEN=0 keeps the
+     * immediate walls for same-binary comparisons. */
+    const int view_x = (int)camera_x + bias;
+    if (limit_margins && Dkc3VideoCullWidenEnabled()) {
+      left_margin = Dkc3VideoLimitMarginGrowth(s_margin_left, left_margin,
+                                               view_x - s_margin_view_x);
+      right_margin = Dkc3VideoLimitMarginGrowth(s_margin_right, right_margin,
+                                                s_margin_view_x - view_x);
+    }
+    s_margin_left = left_margin;
+    s_margin_right = right_margin;
+    s_margin_view_x = view_x;
+    s_reach_minimum_x = minimum_scroll_x;
+    s_reach_maximum_x = maximum_scroll_x;
     const int terrain_layer = Dkc3VideoTerrainLayer(
         wide_layer_mask, g_ppu->bgXsc, Dkc3TerrainVramBase());
     /* The terrain phase the frame renders: the frame-start register unless
@@ -2361,7 +3258,15 @@ void Dkc3DrawPpuFrame(void) {
     PpuSetWidescreenLayerMask(g_ppu, wide_layer_mask);
     const bool terrain_ready = Dkc3PrepareWidescreenShadow(
         wide_layer_mask, terrain_layer, layout, bias, alias_layer);
+    s_terrain_prefill_stats.camera_region =
+        Dkc3ReadWram16(kDkc3WramCameraRegion);
+    s_terrain_prefill_stats.wall_left = minimum_scroll_x;
+    s_terrain_prefill_stats.wall_right = maximum_scroll_x;
+    s_terrain_prefill_stats.left_margin = (int16_t)left_margin;
+    s_terrain_prefill_stats.right_margin = (int16_t)right_margin;
+    s_margin_valid = terrain_ready;
     presentation_bias = terrain_ready ? bias : 0;
+    trunk_windows_active = terrain_ready;
     /* Nothing authored reaches the margins while the world is unproven (a
      * level intro's static picture, the first frames of a stream), and the
      * PPU would otherwise fill them with the backdrop color, which Barrel
@@ -2370,19 +3275,34 @@ void Dkc3DrawPpuFrame(void) {
     blank_margins = !terrain_ready;
     PpuSetWidescreenPresentationXBias(g_ppu, presentation_bias);
     Dkc3VideoSetPresentationBias(presentation_bias);
-    if (terrain_ready)
+    if (terrain_ready) {
       PpuSetExtraSideSpace(g_ppu, left_margin, right_margin, 0);
+      /* The PPU leaves columns outside the clamped span untouched, so a
+       * margin that narrows at a wall would keep last frame's pixels
+       * there (a sheared strip once the camera moves vertically). Black
+       * them before the lines render; full-budget lines overwrite them. */
+      Dkc3VideoClearOutsideMargins(g_ppu->renderBuffer, g_ppu->renderPitch,
+                                   Dkc3VideoWidth(), kDkc3VideoHeight, extra,
+                                   left_margin, right_margin);
+    }
     uint8_t physical_wide_mask =
         terrain_ready
             ? Dkc3VideoPhysicalWideLayerMask(
                   g_ppu->bgmode, g_ppu->bgXsc,
                   g_ppu->screenEnabled[0], g_ppu->screenEnabled[1])
             : 0;
+    /* A mirrored margin at a level wall has no authored BG3 ring columns to
+     * expose. Within one margin of a wall, a physical 64-column BG3 repeats
+     * its rendered line like a bounded layer instead of reading the ring.
+     * `reflect` mirrors at the level's walls, not the camera region's. */
+    if (Dkc3VideoMarginLeavesAuthoredExtent(camera_x, Dkc3MaximumScrollX()))
+      physical_wide_mask = (uint8_t)(physical_wide_mask & ~0x04u);
     /* A bounded layer with a hardware window cannot repeat an already
      * composited 256-pixel line: Murky Mill's per-scanline BG3 light window
-     * then ends at the native edge and its clipped cone wraps to the opposite
-     * margin. Draw the 32-column map physically across the widened span so
-     * the same HDMA window edges are evaluated in screen space. */
+     * and Poisonous Pipeline's BG3 water-surface window would otherwise wrap
+     * their clipped spans into the opposite margin, including near a level
+     * wall. Draw the 32-column map physically across the widened span so the
+     * same HDMA window edges are evaluated in screen space. */
     physical_wide_mask = (uint8_t)(
         physical_wide_mask |
         (terrain_ready
@@ -2391,11 +3311,6 @@ void Dkc3DrawPpuFrame(void) {
                    g_ppu->screenEnabled[0], g_ppu->screenEnabled[1],
                    g_ppu->screenWindowed[0], g_ppu->screenWindowed[1])
              : 0));
-    /* A mirrored margin at a level wall has no authored BG3 ring columns to
-     * expose. Within one margin of a wall, a physical 64-column BG3 repeats
-     * its rendered line like a bounded layer instead of reading the ring. */
-    if (Dkc3VideoMarginLeavesAuthoredExtent(camera_x, maximum_scroll_x))
-      physical_wide_mask = (uint8_t)(physical_wide_mask & ~0x04u);
     const uint8_t repeat_exempt_mask = 0u;
     const uint8_t render_layer_mask =
         (uint8_t)(wide_layer_mask | physical_wide_mask);
@@ -2445,12 +3360,82 @@ void Dkc3DrawPpuFrame(void) {
       PpuSetWidescreenLayerClamp(g_ppu, wide_layer_mask);
     }
     Dkc3VideoSetTerrainReady(terrain_ready);
+    /* The KAOS arena (level $23) streams no terrain, so readiness stays
+     * false, but its room is a verified static 64-column plane. Draw that
+     * plane from its own map, never across its 512-pixel wrap. While KAOS
+     * fights (room on BG2), keep his 32-column BG1 body inside its window
+     * (a wrap would duplicate it) and repeat the bounded BG3 sky at its
+     * hardware period. Once K. Roolenstein appears (room on BG1), repeat
+     * BG2 and BG3, which share one 32-column map; the cartridge's own
+     * windows keep them off the room's west wall. Culling, bias, and the
+     * camera stay native. */
+    const int arena_layer =
+        (!terrain_ready && terrain_layer < 0)
+            ? Dkc3VideoKaosArenaPlaneLayer(
+                  Dkc3InLevel(), Dkc3ReadWram16(kDkc3WramLevelNumber),
+                  g_ppu->bgmode, g_ppu->bgXsc, s_plane_band_count,
+                  s_frame_bands.count)
+            : -1;
+    if (arena_layer == 0) {
+      int arena_left = 0, arena_right = 0;
+      Dkc3VideoKaosArenaMargins(g_ppu->hScroll[0], extra, &arena_left,
+                                &arena_right);
+      blank_margins = false;
+      PpuSetExtraSideSpace(g_ppu, arena_left, arena_right, 0);
+      Dkc3VideoClearOutsideMargins(g_ppu->renderBuffer, g_ppu->renderPitch,
+                                   Dkc3VideoWidth(), kDkc3VideoHeight, extra,
+                                   arena_left, arena_right);
+      /* BG2 and BG3 are drawn into the margins from their own 32-column
+       * map (the hardware wrap), clipped by the cartridge's room-anchored
+       * windows. A 256-pixel repeat would copy columns the window hides at
+       * the opposite edge. Without both unclamped windows they stay native. */
+      room_windows =
+          Dkc3VideoKaosRoomWindow(g_ppu->window1left, g_ppu->window1right,
+                                  g_ppu->hScroll[0],
+                                  kDkc3KaosRoomWindowWest,
+                                  kDkc3KaosRoomWindow1East, &room_w1_left,
+                                  &room_w1_right) &&
+          Dkc3VideoKaosRoomWindow(g_ppu->window2left, g_ppu->window2right,
+                                  g_ppu->hScroll[0],
+                                  kDkc3KaosRoomWindowWest,
+                                  kDkc3KaosRoomWindow2East, &room_w2_left,
+                                  &room_w2_right);
+      PpuSetWidescreenLayerMask(g_ppu, room_windows ? 0x07 : 0x01);
+      PpuSetWidescreenBg3Widen(g_ppu, room_windows ? 1 : 0);
+      PpuSetWidescreenLayerClamp(g_ppu, 0);
+      PpuSetWidescreenLayerRepeat(g_ppu, 0);
+      PpuSetWidescreenLayerRepeatAutoPeriod(g_ppu, 0, 0);
+      band_policies_active = true;
+    } else if (arena_layer == 1) {
+      int arena_left = 0, arena_right = 0;
+      Dkc3VideoKaosArenaMargins(g_ppu->hScroll[1], extra, &arena_left,
+                                &arena_right);
+      blank_margins = false;
+      PpuSetExtraSideSpace(g_ppu, arena_left, arena_right, 0);
+      Dkc3VideoClearOutsideMargins(g_ppu->renderBuffer, g_ppu->renderPitch,
+                                   Dkc3VideoWidth(), kDkc3VideoHeight, extra,
+                                   arena_left, arena_right);
+      /* BG1 continues into a margin only through the unclamped body
+       * window; without it the body stays inside the native window. */
+      kaos_body_window = Dkc3FindKaosBodyWindow(&kaos_body_reg_left,
+                                                &kaos_body_reg_right,
+                                                &kaos_body_left,
+                                                &kaos_body_right);
+      PpuSetWidescreenLayerMask(g_ppu, kaos_body_window ? 0x03 : 0x02);
+      PpuSetWidescreenBg3Widen(g_ppu, 0);
+      PpuSetWidescreenLayerClamp(g_ppu, 0);
+      PpuSetWidescreenLayerRepeat(g_ppu, 0x04);
+      PpuSetWidescreenLayerRepeatAutoPeriod(g_ppu, 0, 0);
+      band_policies_active = true;
+    }
   } else if (snow_arena) {
     /* Keep the cartridge camera and object activation unchanged. These
      * bounded planes have no map stream or world shadow to prefill. */
     Dkc3ResetWidescreenShadow();
     PpuSetExtraSpace(g_ppu, (uint8_t)Dkc3VideoExtra());
     PpuSetWidescreenLayerMask(g_ppu, 0x03);
+  } else if (overworld_presented) {
+    /* Dkc3PresentOverworld set this frame's geometry and layer policy. */
   } else if (Dkc3VideoIsWidescreen()) {
     Dkc3ResetWidescreenShadow();
     /*
@@ -2467,6 +3452,18 @@ void Dkc3DrawPpuFrame(void) {
     Dkc3ResetWidescreenShadow();
     PpuSetExtraSpace(g_ppu, 0);
   }
+  Dkc3PatchInterpreterCull();
+  Dkc3ApplyTrunkWindows(trunk_windows_active);
+  if (kaos_body_window)
+    Dkc3PpuSetWsWindowUnclamped(0, true, kaos_body_left, kaos_body_right,
+                                kaos_body_reg_left, kaos_body_reg_right);
+  if (room_windows) {
+    Dkc3PpuSetWsWindowUnclamped(0, true, room_w1_left, room_w1_right,
+                                g_ppu->window1left, g_ppu->window1right);
+    Dkc3PpuSetWsWindowUnclamped(1, true, room_w2_left, room_w2_right,
+                                g_ppu->window2left, g_ppu->window2right);
+  }
+  Dkc3SyncWidescreenObjPalettes(Dkc3InLevel());
 
   dma_startDma(g_dma, g_snesrecomp_last_hdmaen, true);
   for (int channel = 0; channel < 8; channel++) {
@@ -2521,6 +3518,8 @@ void Dkc3DrawPpuFrame(void) {
       }
     }
   }
+  /* Host-only annotation over the finished picture (dkc3_kong_tracker.h). */
+  Dkc3KongDrawFrameBadge();
 
   /* The static-recomp host advances one complete game frame and one complete
    * render pass as separate operations. Model the VBlank boundary after the

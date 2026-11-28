@@ -144,22 +144,29 @@ def adapt_nth_accumulator_write(
 
 
 # Camera-relative X windows to widen, by the trace address of the generated
-# block that holds them: (native left margin, native span). Each block
-# subtracts $196D from a world X, adds the margin, and compares the sum
-# with the span, keeping [-margin, span - margin).
+# block that holds them: (native left margin, native span, left helper,
+# span helper). Each block subtracts $196D from a world X, adds the margin,
+# and compares the sum with the span, keeping [-margin, span - margin).
+# Sprite renderer culls ($B7) use the sprite-cull helpers so newly activated
+# sprites can queue VRAM tile DMA off-screen before crossing the widened edge.
 CULL_SITES = {
     # The sprite renderer's cull, [-$30, $130). The block is inlined into
     # every renderer variant that reaches it, so the same address recurs
     # across units; every copy must widen.
-    "0xB780C9": ("0x30", "0x160"), "0xB78925": ("0x30", "0x160"),
-    "0xB78A2E": ("0x30", "0x160"), "0xB78A60": ("0x30", "0x160"),
-    "0xB78B68": ("0x30", "0x160"), "0xB78CFB": ("0x30", "0x160"),
-    "0xB78E73": ("0x30", "0x160"), "0xB7903C": ("0x30", "0x160"),
+    "0xB780C9": ("0x30", "0x160", "Dkc3VideoExpandSpriteCullLeft", "Dkc3VideoExpandSpriteCullSpan"),
+    "0xB78925": ("0x30", "0x160", "Dkc3VideoExpandSpriteCullLeft", "Dkc3VideoExpandSpriteCullSpan"),
+    "0xB78A2E": ("0x30", "0x160", "Dkc3VideoExpandSpriteCullLeft", "Dkc3VideoExpandSpriteCullSpan"),
+    "0xB78A60": ("0x30", "0x160", "Dkc3VideoExpandSpriteCullLeft", "Dkc3VideoExpandSpriteCullSpan"),
+    "0xB78B68": ("0x30", "0x160", "Dkc3VideoExpandSpriteCullLeft", "Dkc3VideoExpandSpriteCullSpan"),
+    "0xB78CFB": ("0x30", "0x160", "Dkc3VideoExpandSpriteCullLeft", "Dkc3VideoExpandSpriteCullSpan"),
+    "0xB78E73": ("0x30", "0x160", "Dkc3VideoExpandSpriteCullLeft", "Dkc3VideoExpandSpriteCullSpan"),
+    "0xB7903C": ("0x30", "0x160", "Dkc3VideoExpandSpriteCullLeft", "Dkc3VideoExpandSpriteCullSpan"),
     # The renderer variant at $B7:8DFC culls narrower, [-$10, $110).
-    "0xB78DFC": ("0x10", "0x120"),
+    "0xB78DFC": ("0x10", "0x120", "Dkc3VideoExpandSpriteCullLeft", "Dkc3VideoExpandSpriteCullSpan"),
     # $B6:F186 answers "is this sprite on screen" for sprite behaviors with
-    # X in [-$10, $100) (its Y test, in the next block, is untouched).
-    "0xB6F186": ("0x10", "0x110"),
+    # X in [-$10, $100) (its Y test, in the next block, is untouched). Keep it
+    # on the exact presented view without extra off-screen spawn lead.
+    "0xB6F186": ("0x10", "0x110", "Dkc3VideoExpandCullLeft", "Dkc3VideoExpandCullSpan"),
 }
 # The same $30/$160 cull at $B7:A8C8 sits in CODE_B7A88F, which the analysis
 # leaves to the interpreter; the runtime widens its immediates in the ROM
@@ -183,11 +190,11 @@ def adapt_cull_blocks(text: str) -> tuple[str, set[str]]:
         if not trace or trace.group(1) not in CULL_SITES:
             continue
         address = trace.group(1)
-        left, span = CULL_SITES[address]
+        left, span, left_helper, span_helper = CULL_SITES[address]
         if "0x196d" not in block:
             raise ValueError(f"cull block {address} does not read camera X")
-        left_expr = f"Dkc3VideoExpandCullLeft({left})"
-        span_expr = f"Dkc3VideoExpandCullSpan({span})"
+        left_expr = f"{left_helper}({left})"
+        span_expr = f"{span_helper}({span})"
         if left_expr not in block:
             block, count = re.subn(
                 rf"(uint16\s+\w+\s*=\s*){left};",
@@ -273,10 +280,14 @@ def adapt_grid_renderer(sources: dict, generated_dir: Path) -> None:
     """Widen the OAM grid renderer for the level's static tile-row objects.
 
     $B7:E4D6 builds a list at $7E:6780 of the level's static tile-row
-    objects (banana arcs and the like) and $B7:E8E0 walks it every frame:
+    objects (banana arcs and bonus stars) and $B7:E8E0 walks it every frame:
     it stops at the first object starting at or beyond camera + $100 and
     skips one whose right end lies more than $10F - $100 = 15 pixels left
-    of the screen. $B7:E981 draws one object, clipping its tile columns at
+    of the screen (adding $10F back after subtracting camera + $100, so $10F
+    is the full span from the right bound to the left slack and must widen by
+    both margins; widening it by only the left margin shrank the left edge
+    inward by 2*bias near a left wall and skipped both drawing and collection
+    for stars there). $B7:E981 draws one object, clipping its tile columns at
     the screen's left edge (the $0F slack at $B7:E9C8) and right edge (the
     $107 at $B7:E9EF), and takes OAM's ninth X bit from bit 15 of the
     column's screen X, which native play only needs for negative values;
@@ -292,7 +303,7 @@ def adapt_grid_renderer(sources: dict, generated_dir: Path) -> None:
     walk = adapt_block_constant(
         walk, "0xB7E8E0", "0x100", "Dkc3VideoExpandCullRight")
     walk = adapt_block_constant(
-        walk, "0xB7E909", "0x10f", "Dkc3VideoExpandCullLeft")
+        walk, "0xB7E909", "0x10f", "Dkc3VideoExpandCullSpan")
     sources[walk_path] = walk
     draw = sources[draw_path]
     draw = adapt_block_constant(
@@ -331,6 +342,149 @@ def adapt_music_transition(sources: dict, generated_dir: Path) -> None:
     sources[path] = text.replace(marker, marker + "\n    " + hook, 1)
 
 
+def adapt_palette_overflow(sources: dict, generated_dir: Path) -> None:
+    """Record sprite palette allocator overflows without changing guest state.
+
+    When all eight SNES hardware OBJ palettes ($073C[0..7]) are full in
+    widescreen, $BB:95E6 falls back to palette slot 0. Recording the failed
+    palette ID ($04EF) and active sprite slot (DP $76) lets the widescreen PPU
+    render that sprite with its true ROM/WRAM palette from an extended table.
+    """
+    path = find_unit(generated_dir, "request_palette_direct_M0X0")
+    if path in sources:
+        raise ValueError(f"{path.name} already adapted for another site")
+    text = add_include(path.read_text(encoding="utf-8"), GAME_INCLUDE)
+    hook = "Dkc3RecordSpritePaletteOverflow(cpu->D);"
+    if hook in text:
+        if text.count(hook) != 1:
+            raise ValueError("ambiguous existing palette overflow observer")
+        sources[path] = text
+        return
+    marker = "    cpu_trace_block(cpu, 0xBB95E6);"
+    if text.count(marker) != 1:
+        raise ValueError(
+            "expected one $BB:95E6 palette overflow block; "
+            f"found {text.count(marker)}")
+    sources[path] = text.replace(marker, marker + "\n    " + hook, 1)
+
+
+def adapt_trunk_windows(sources: dict, generated_dir: Path) -> None:
+    """Record the tree-trunk BG3 windows without changing guest state.
+
+    $B3:C0F4 loads two world spans into DP $1A-$20 and writes W1 and W2 as
+    those spans minus the camera, each edge clamped to the 256-pixel
+    screen. A trunk inside a wide margin is therefore written as [255, 255]
+    or [0, 0]. Right after the last register write ($2129, block $B3:C1B1),
+    the host reads the spans back so the widescreen PPU can mask the margin
+    part of the trunk the clamp removed.
+    """
+    path = find_unit(generated_dir, "CODE_B3C0F4_M0X0")
+    if path in sources:
+        raise ValueError(f"{path.name} already adapted for another site")
+    text = add_include(path.read_text(encoding="utf-8"), GAME_INCLUDE)
+    hook = "Dkc3RecordTrunkWindows(cpu->D);"
+    if hook in text:
+        if text.count(hook) != 1:
+            raise ValueError("ambiguous existing trunk window observer")
+        sources[path] = text
+        return
+    marker = "    cpu_trace_block(cpu, 0xB3C1B1);"
+    if text.count(marker) != 1:
+        raise ValueError(
+            "expected one $B3:C1B1 trunk window block; "
+            f"found {text.count(marker)}")
+    start = text.index(marker)
+    following = text.find("cpu_trace_block(cpu, 0x", start + len(marker))
+    end = following if following >= 0 else len(text)
+    block = text[start:end]
+    write = re.compile(
+        r"\n    cpu_write8\(cpu, cpu->DB, \(uint16\)\(0x2129\), _v\d+\);")
+    matches = write.findall(block)
+    if len(matches) != 1:
+        raise ValueError(
+            "expected one W2R ($2129) write in $B3:C1B1; "
+            f"found {len(matches)}")
+    block = block.replace(matches[0], matches[0] + "\n    " + hook, 1)
+    sources[path] = text[:start] + block + text[end:]
+
+
+HIDDEN_RENDER_BLOCK = "0xB78904"
+HIDDEN_RENDER_HOOK = "Dkc3RevealHiddenSpriteFlags"
+# The primary sprite renderer, whose loop holds the block's own copy.
+HIDDEN_RENDER_PRIMARY = "CODE_B78857"
+
+
+def adapt_hidden_sprite_reveal(sources: dict, generated_dir: Path) -> None:
+    """Let the Show hidden objects assist reveal invisible sprites.
+
+    The sprite renderer reads each slot's render word (+$26) at $B7:8908, in
+    the block traced as $B7:8904. Bits 15 and 14 together make $B7:89C4 skip
+    the sprite without drawing it (the hidden bear coin spawns that way).
+    The block is inlined into every renderer variant that loops back to the
+    top, so every copy is wrapped. The host helper returns the word unchanged
+    unless the assist is on; the native behavior is the helper disabled.
+    Every trace marker must sit in exactly one wrapped block, and the
+    primary renderer's copy must be among them, so a partial match fails.
+    """
+    label = re.compile(r"(  L_[0-9A-F]{4}_M[01]X[01]:)")
+    read = re.compile(
+        r"(uint16\s+\w+\s*=\s*)(cpu_read16\([^;\n]*\(uint32\)0x0026 \+ "
+        r"\(uint32\)cpu->Y[^;\n]*\));")
+    function = re.compile(r"RecompReturn (\w+)\(")
+    marker = f"cpu_trace_block(cpu, {HIDDEN_RENDER_BLOCK});"
+    markers = 0
+    found = 0
+    wrapped_functions: set[str] = set()
+    for path in sorted(generated_dir.glob("*.c")):
+        text = sources.get(path)
+        if text is None:
+            text = path.read_text(encoding="utf-8")
+        if marker not in text:
+            continue
+        markers += text.count(marker)
+        parts = label.split(text)
+        for index in range(2, len(parts), 2):
+            block = parts[index]
+            if marker not in block:
+                continue
+            if block.count(marker) != 1:
+                raise ValueError(
+                    f"ambiguous $B7:8904 sprite renderer block in {path.name}")
+            owners = function.findall("".join(parts[:index]))
+            if owners:
+                wrapped_functions.add(owners[-1])
+            if f"{HIDDEN_RENDER_HOOK}(" in block:
+                if block.count(f"{HIDDEN_RENDER_HOOK}(") != 1:
+                    raise ValueError(
+                        "ambiguous existing hidden sprite adaptation in "
+                        f"{path.name}")
+                found += 1
+                continue
+            block, count = read.subn(
+                rf"\1{HIDDEN_RENDER_HOOK}(\2, cpu->Y);", block)
+            if count != 1:
+                raise ValueError(
+                    "expected one $B7:8908 render word (+$26) read in "
+                    f"{path.name}; found {count}")
+            parts[index] = block
+            found += 1
+        text = add_include("".join(parts), GAME_INCLUDE)
+        sources[path] = text
+    if found == 0:
+        raise ValueError(
+            "no $B7:8904 sprite renderer block found for the hidden "
+            "sprite reveal")
+    if found != markers:
+        raise ValueError(
+            f"wrapped {found} of {markers} $B7:8904 sprite renderer blocks "
+            "for the hidden sprite reveal")
+    if not any(name.startswith(HIDDEN_RENDER_PRIMARY + "_")
+               for name in wrapped_functions):
+        raise ValueError(
+            f"the primary sprite renderer {HIDDEN_RENDER_PRIMARY} was not "
+            "wrapped for the hidden sprite reveal")
+
+
 def apply_overrides(generated_dir: Path) -> list[Path]:
     """Widen DKC3's object activation and sprite culls to the presented view.
 
@@ -348,9 +502,9 @@ def apply_overrides(generated_dir: Path) -> list[Path]:
         compare_path.read_text(encoding="utf-8"))}
     compare = sources[compare_path]
     compare = wrap_single_read(
-        compare, "0xbba8be", "Dkc3VideoExpandCullLeft")
+        compare, "0xbba8be", "Dkc3VideoExpandSpawnLeft")
     compare = wrap_single_read(
-        compare, "0xbba8c0", "Dkc3VideoExpandCullSpan")
+        compare, "0xbba8c0", "Dkc3VideoExpandSpawnSpan")
     sources[compare_path] = compare
 
     scan = add_include(scan_path.read_text(encoding="utf-8"))
@@ -361,6 +515,8 @@ def apply_overrides(generated_dir: Path) -> list[Path]:
         scan, "0x7e4180", "Dkc3PlacementScanNext")
     sources[scan_path] = scan
     adapt_music_transition(sources, generated_dir)
+    adapt_palette_overflow(sources, generated_dir)
+    adapt_trunk_windows(sources, generated_dir)
 
     found: set[str] = set()
     for path in sorted(generated_dir.glob("*.c")):
@@ -379,6 +535,7 @@ def apply_overrides(generated_dir: Path) -> list[Path]:
         raise ValueError(
             "renderer cull blocks not found: " + ", ".join(sorted(missing)))
     adapt_grid_renderer(sources, generated_dir)
+    adapt_hidden_sprite_reveal(sources, generated_dir)
 
     changed = []
     for path, text in sorted(sources.items()):

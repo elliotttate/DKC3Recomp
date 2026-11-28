@@ -45,6 +45,12 @@ def renderer_unit(symbol: str, entry_pc: str, cull_pc: str) -> str:
 RecompReturn {symbol}(CpuState *cpu) {{
   uint16 _entry_s = cpu->S;  L_{entry_pc[4:]}_M0X0:    cpu_trace_block(cpu, {entry_pc});
     uint16 _v1 = 0x30;
+  L_8904_M0X0:
+    cpu_trace_block(cpu, 0xB78904);
+    uint16 _v80 = cpu_read_a16(cpu);
+    cpu_write16(cpu, 0x00, (uint16)(cpu->D + 0x002a), _v80);
+    uint16 _v82 = cpu_read16(cpu, (uint8)(((((uint32)cpu->DB << 16) + (uint32)0x0026 + (uint32)cpu->Y)) >> 16), (uint16)((((uint32)cpu->DB << 16) + (uint32)0x0026 + (uint32)cpu->Y)));
+    cpu_write_a_m(cpu, (uint16)(_v82));
   L_{cull_pc[4:]}_M0X0:
     cpu_trace_block(cpu, {cull_pc});
     uint16 _v5 = cpu_read16(cpu, cpu->DB, (uint16)(0x196d));
@@ -61,6 +67,23 @@ RecompReturn {symbol}(CpuState *cpu) {{
 }}
 """
 
+
+# The primary renderer holds its own copy of the $B7:8904 block in its loop
+# and none of the listed culls.
+PRIMARY_RENDERER_FIXTURE = """\
+#include "funcs.h"
+RecompReturn CODE_B78857_M0X0(CpuState *cpu) {
+  uint16 _entry_s = cpu->S;  L_8857_M0X0:    cpu_trace_block(cpu, 0xB78857);
+    uint16 _v1 = 0x30;
+  L_8904_M0X0:
+    cpu_trace_block(cpu, 0xB78904);
+    uint16 _v80 = cpu_read_a16(cpu);
+    uint16 _v82 = cpu_read16(cpu, (uint8)(((((uint32)cpu->DB << 16) + (uint32)0x0026 + (uint32)cpu->Y)) >> 16), (uint16)((((uint32)cpu->DB << 16) + (uint32)0x0026 + (uint32)cpu->Y)));
+    cpu_write_a_m(cpu, (uint16)(_v82));
+  L_8908_M0X0:
+    cpu_trace_block(cpu, 0xB78908);
+}
+"""
 
 NARROW_FIXTURE = """\
 #include "funcs.h"
@@ -136,6 +159,33 @@ RecompReturn CODE_B2800F_M0X0(CpuState *cpu) {
 }
 """
 
+PALETTE_FIXTURE = """#include "funcs.h"
+RecompReturn request_palette_direct_M0X0(CpuState *cpu) {
+  L_95DF_M0X0:
+    cpu_trace_block(cpu, 0xBB95DF);
+    goto L_95E6_M0X0;
+  L_95E6_M0X0:
+    cpu_trace_block(cpu, 0xBB95E6);
+    WatchdogCheck();
+}
+"""
+
+
+TRUNK_FIXTURE = """#include "funcs.h"
+RecompReturn CODE_B3C0F4_M0X0(CpuState *cpu) {
+  L_C19C_M0X0:
+    cpu_trace_block(cpu, 0xB3C19C);
+    uint16 _v50 = cpu_read_a16(cpu);
+    cpu_write8(cpu, cpu->DB, (uint16)(0x2128), _v50);
+  L_C1B1_M0X0:
+    cpu_trace_block(cpu, 0xB3C1B1);
+    uint16 _v58 = cpu_read_a16(cpu);
+    cpu_write8(cpu, cpu->DB, (uint16)(0x2129), _v58);
+    uint16 _v59 = cpu_read16(cpu, cpu->DB, (uint16)(0x0760));
+  L_C1C3_M0X0:
+    cpu_trace_block(cpu, 0xB3C1C3);
+}
+"""
 
 class WidescreenOverrideTests(unittest.TestCase):
     def make_generated_dir(self, root: Path) -> Path:
@@ -149,8 +199,13 @@ class WidescreenOverrideTests(unittest.TestCase):
         (generated / "walk.c").write_text(WALK_FIXTURE, encoding="utf-8")
         (generated / "draw.c").write_text(DRAW_FIXTURE, encoding="utf-8")
         (generated / "music.c").write_text(MUSIC_FIXTURE, encoding="utf-8")
-        sites = [address for address in MODULE.CULL_SITES
-                 if MODULE.CULL_SITES[address] == ("0x30", "0x160")]
+        (generated / "palette.c").write_text(
+            PALETTE_FIXTURE, encoding="utf-8")
+        (generated / "trunk.c").write_text(TRUNK_FIXTURE, encoding="utf-8")
+        (generated / "primary.c").write_text(
+            PRIMARY_RENDERER_FIXTURE, encoding="utf-8")
+        sites =[address for address in MODULE.CULL_SITES
+                 if MODULE.CULL_SITES[address][:2] == ("0x30", "0x160")]
         for index, address in enumerate(sorted(sites)):
             if address == "0xB78925":
                 continue
@@ -181,12 +236,29 @@ class WidescreenOverrideTests(unittest.TestCase):
                 first["music.c"].index("cpu_trace_block(cpu, 0xB2800F);"),
                 first["music.c"].index(
                     "Dkc3RecordMusicTransition(cpu->A);"))
+            self.assertIn(MODULE.GAME_INCLUDE, first["palette.c"])
+            self.assertEqual(
+                first["palette.c"].count(
+                    "Dkc3RecordSpritePaletteOverflow(cpu->D);"), 1)
+            self.assertLess(
+                first["palette.c"].index("cpu_trace_block(cpu, 0xBB95E6);"),
+                first["palette.c"].index(
+                    "Dkc3RecordSpritePaletteOverflow(cpu->D);"))
+            self.assertIn(MODULE.GAME_INCLUDE, first["trunk.c"])
+            self.assertEqual(
+                first["trunk.c"].count("Dkc3RecordTrunkWindows(cpu->D);"), 1)
+            self.assertLess(
+                first["trunk.c"].index("(uint16)(0x2129), _v58);"),
+                first["trunk.c"].index("Dkc3RecordTrunkWindows(cpu->D);"))
+            self.assertLess(
+                first["trunk.c"].index("Dkc3RecordTrunkWindows(cpu->D);"),
+                first["trunk.c"].index("(uint16)(0x0760)"))
             self.assertEqual(
                 first["compare.c"].count(
-                    "Dkc3VideoExpandCullLeft(cpu_read16"), 1)
+                    "Dkc3VideoExpandSpawnLeft(cpu_read16"), 1)
             self.assertEqual(
                 first["compare.c"].count(
-                    "Dkc3VideoExpandCullSpan(cpu_read16"), 1)
+                    "Dkc3VideoExpandSpawnSpan(cpu_read16"), 1)
             self.assertEqual(
                 first["scan.c"].count(
                     "Dkc3PlacementScanBegin(cpu_read16"), 1)
@@ -205,14 +277,26 @@ class WidescreenOverrideTests(unittest.TestCase):
                 self.assertIn("uint16 _v1 = 0x30;", text)
                 self.assertIn("uint16 _v20 = 0x160;", text)
                 self.assertEqual(
-                    text.count("Dkc3VideoExpandCullLeft(0x30)"), 2)
+                    text.count("Dkc3VideoExpandSpriteCullLeft(0x30)"), 2)
                 self.assertEqual(
-                    text.count("Dkc3VideoExpandCullSpan(0x160)"), 2)
+                    text.count("Dkc3VideoExpandSpriteCullSpan(0x160)"), 2)
+                # The render word read is wrapped once, after the cull
+                # adaptations, and the unit includes the game header.
+                self.assertEqual(
+                    text.count("Dkc3RevealHiddenSpriteFlags(cpu_read16("), 1)
+                self.assertIn("(uint32)cpu->Y))), cpu->Y);", text)
+                self.assertIn(MODULE.GAME_INCLUDE, text)
+            primary = first["primary.c"]
+            self.assertEqual(
+                primary.count("Dkc3RevealHiddenSpriteFlags(cpu_read16("), 1)
+            self.assertIn("(uint32)cpu->Y))), cpu->Y);", primary)
+            self.assertIn("uint16 _v1 = 0x30;", primary)
+            self.assertIn(MODULE.GAME_INCLUDE, primary)
             self.assertIn(
-                "uint16 _v14 = Dkc3VideoExpandCullLeft(0x10);",
+                "uint16 _v14 = Dkc3VideoExpandSpriteCullLeft(0x10);",
                 first["narrow.c"])
             self.assertIn(
-                "uint16 _v17 = Dkc3VideoExpandCullSpan(0x120);",
+                "uint16 _v17 = Dkc3VideoExpandSpriteCullSpan(0x120);",
                 first["narrow.c"])
             self.assertIn(
                 "uint16 _v5 = Dkc3VideoExpandCullLeft(0x10);",
@@ -227,8 +311,9 @@ class WidescreenOverrideTests(unittest.TestCase):
                 "uint16 _v2 = Dkc3VideoExpandCullRight(0x100);",
                 first["walk.c"])
             self.assertIn(
-                "uint16 _v24 = Dkc3VideoExpandCullLeft(0x10f);",
+                "uint16 _v24 = Dkc3VideoExpandCullSpan(0x10f);",
                 first["walk.c"])
+            self.assertNotIn("Dkc3VideoExpandCullLeft(0x10f)", first["walk.c"])
             self.assertIn(
                 "uint16 _v35 = Dkc3VideoExpandCullLeft(0xf);",
                 first["draw.c"])
@@ -250,6 +335,50 @@ class WidescreenOverrideTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "0xB78DFC"):
                 MODULE.apply_overrides(generated)
 
+    def test_fails_closed_when_hidden_render_block_is_missing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            generated = self.make_generated_dir(Path(directory))
+            for path in [*generated.glob("renderer*.c"),
+                         generated / "primary.c"]:
+                path.write_text(
+                    path.read_text(encoding="utf-8").replace(
+                        "0xB78904", "0xB78905"),
+                    encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, r"\$B7:8904"):
+                MODULE.apply_overrides(generated)
+
+    def test_fails_closed_when_primary_renderer_is_missing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            generated = self.make_generated_dir(Path(directory))
+            (generated / "primary.c").unlink()
+            with self.assertRaisesRegex(ValueError, "CODE_B78857"):
+                MODULE.apply_overrides(generated)
+
+    def test_fails_closed_when_a_hidden_render_marker_is_unwrapped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            generated = self.make_generated_dir(Path(directory))
+            path = generated / "primary.c"
+            # A marker ahead of every block label is never wrapped.
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "  uint16 _entry_s = cpu->S;",
+                    "  cpu_trace_block(cpu, 0xB78904);\n"
+                    "  uint16 _entry_s = cpu->S;"),
+                encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, r"wrapped \d+ of \d+"):
+                MODULE.apply_overrides(generated)
+
+    def test_fails_closed_when_hidden_render_read_moves(self):
+        with tempfile.TemporaryDirectory() as directory:
+            generated = self.make_generated_dir(Path(directory))
+            path = sorted(generated.glob("renderer*.c"))[0]
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "(uint32)0x0026", "(uint32)0x0028"),
+                encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, r"\+\$26"):
+                MODULE.apply_overrides(generated)
+
     def test_fails_closed_when_a_constant_changes(self):
         with tempfile.TemporaryDirectory() as directory:
             generated = self.make_generated_dir(Path(directory))
@@ -268,6 +397,34 @@ class WidescreenOverrideTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "B2:800F"):
                 MODULE.apply_overrides(generated)
 
+    def test_fails_closed_when_palette_overflow_anchor_moves(self):
+        with tempfile.TemporaryDirectory() as directory:
+            generated = self.make_generated_dir(Path(directory))
+            palette = generated / "palette.c"
+            palette.write_text(PALETTE_FIXTURE.replace("0xBB95E6", "0xBB95E7"),
+                               encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "BB:95E6"):
+                MODULE.apply_overrides(generated)
+
+
+    def test_fails_closed_when_trunk_window_anchor_moves(self):
+        with tempfile.TemporaryDirectory() as directory:
+            generated = self.make_generated_dir(Path(directory))
+            trunk = generated / "trunk.c"
+            trunk.write_text(TRUNK_FIXTURE.replace("0xB3C1B1", "0xB3C1B2"),
+                             encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "B3:C1B1"):
+                MODULE.apply_overrides(generated)
+
+    def test_fails_closed_when_trunk_window_write_moves(self):
+        with tempfile.TemporaryDirectory() as directory:
+            generated = self.make_generated_dir(Path(directory))
+            trunk = generated / "trunk.c"
+            trunk.write_text(
+                TRUNK_FIXTURE.replace("(0x2129), _v58", "(0x2127), _v58"),
+                encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, r"\$2129"):
+                MODULE.apply_overrides(generated)
 
 if __name__ == "__main__":
     unittest.main()

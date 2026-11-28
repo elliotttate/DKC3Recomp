@@ -53,6 +53,9 @@ static int s_reconstruct_strength = 100;
 static int s_reconstruct_softness = 50;
 static int s_reconstruct_shading = 60;
 static int s_haptics_enabled = 1;
+static int s_kong_badges = 1;
+static int s_pause_crate_spawn = 0;
+static int s_show_hidden_objects = 0;
 
 int Dkc3LauncherUpscaler(void) { return s_upscaler; }
 void Dkc3LauncherSetUpscaler(int upscaler) {
@@ -77,6 +80,18 @@ void Dkc3LauncherSetReconstructShading(int percent) {
 int Dkc3LauncherHaptics(void) { return s_haptics_enabled; }
 void Dkc3LauncherSetHaptics(int enabled) {
   s_haptics_enabled = enabled != 0;
+}
+int Dkc3LauncherKongBadges(void) { return s_kong_badges; }
+void Dkc3LauncherSetKongBadges(int enabled) {
+  s_kong_badges = enabled != 0;
+}
+int Dkc3LauncherPauseCrateSpawn(void) { return s_pause_crate_spawn; }
+void Dkc3LauncherSetPauseCrateSpawn(int enabled) {
+  s_pause_crate_spawn = enabled != 0;
+}
+int Dkc3LauncherShowHiddenObjects(void) { return s_show_hidden_objects; }
+void Dkc3LauncherSetShowHiddenObjects(int enabled) {
+  s_show_hidden_objects = enabled != 0;
 }
 
 int Dkc3LauncherWidescreenEdge(void) {
@@ -192,6 +207,12 @@ void Dkc3LauncherSettingsLoad(RecompLauncherCSettings *settings) {
       Dkc3LauncherSetReconstructShading(value);
     else if (strcmp(key, "HapticsEnabled") == 0)
       Dkc3LauncherSetHaptics(value);
+    else if (strcmp(key, "KongBadges") == 0)
+      Dkc3LauncherSetKongBadges(value);
+    else if (strcmp(key, "PauseCrateSpawn") == 0)
+      Dkc3LauncherSetPauseCrateSpawn(value);
+    else if (strcmp(key, "ShowHiddenObjects") == 0)
+      Dkc3LauncherSetShowHiddenObjects(value);
     else if (strcmp(key, "EnableAudio") == 0)
       settings->enable_audio = value != 0;
     else if (strcmp(key, "AudioFrequency") == 0)
@@ -259,6 +280,9 @@ bool Dkc3LauncherSettingsSave(const RecompLauncherCSettings *settings) {
                     "ReconstructStrength=%d\n"
                     "ReconstructSoftness=%d\nReconstructShading=%d\n"
                     "HapticsEnabled=%d\n"
+                    "KongBadges=%d\n"
+                    "PauseCrateSpawn=%d\n"
+                    "ShowHiddenObjects=%d\n"
                     "EnableAudio=%d\n"
                     "AudioFrequency=%d\n"
                     "Volume=%d\nPlayer1Source=%d\nPlayer2Source=%d\n"
@@ -280,6 +304,9 @@ bool Dkc3LauncherSettingsSave(const RecompLauncherCSettings *settings) {
                     s_upscaler, s_reconstruct_mode, s_reconstruct_strength,
                     s_reconstruct_softness, s_reconstruct_shading,
                     s_haptics_enabled,
+                    s_kong_badges,
+                    s_pause_crate_spawn,
+                    s_show_hidden_objects,
                     settings->enable_audio != 0,
                     ClampInt(settings->audio_freq, 8000, 192000),
                     ClampInt(settings->volume, 0, 100),

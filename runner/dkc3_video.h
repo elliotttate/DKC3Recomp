@@ -54,6 +54,19 @@ enum {
    * of pixels off and never qualifies. */
   kDkc3VideoTerrainPhaseFollowX = 32,
   kDkc3VideoTerrainPhaseFollowY = 32,
+  /* Extra horizontal lead-in (pixels per side) added in widescreen to
+   * placement activation/despawn ($BB:AAD4) and sprite renderer culls ($B7)
+   * so newly spawned objects can upload VRAM tiles before crossing the
+   * widened screen edge. Overridable via DKC3_SPAWN_LEAD, clamped to
+   * [0, kDkc3VideoMaxSpawnLead]. */
+  kDkc3VideoDefaultSpawnLead = 48,
+  kDkc3VideoMaxSpawnLead = 64,
+  /* Maximum horizontal 256-pixel bucket radius/count returned by
+   * Dkc3VideoPlacementScanCells: 1 neighbor per side at 16:10/16:9, and up to
+   * 2 neighbors per side at 21:9 when wall bias + spawn lead (+ 32 px
+   * asymmetric row slack) cross a second 256-pixel cell boundary. */
+  kDkc3VideoPlacementScanMaxRadius = 2,
+  kDkc3VideoPlacementScanMaxCells = 1 + 2 * kDkc3VideoPlacementScanMaxRadius,
 };
 
 typedef enum Dkc3VideoAspect {
@@ -83,6 +96,117 @@ bool Dkc3VideoUsesSnowArenaPlanes(bool in_level, uint16_t level,
                                  uint16_t character_bases, uint8_t hdma,
                                  const uint16_t *vram, size_t vram_words);
 
+/* The KAOS arena of level $23 has no terrain stream: one static 64-column
+ * plane ($71) holds the whole 512-pixel room. While KAOS fights, BG1 ($78)
+ * is his 32-column body, BG2 the room and BG3 ($7C) the bounded sky; once
+ * K. Roolenstein appears, BG1 is the room and BG2/BG3 share $7C. Requires
+ * Mode 1, one of those map sets, and every scanline band of the room layer
+ * verified as a static plane (plane_bands[layer] == band_count). Returns
+ * the room's layer (1 or 0), or -1. */
+int Dkc3VideoKaosArenaPlaneLayer(bool in_level, uint16_t level,
+                                 uint8_t mode, const uint8_t maps[4],
+                                 const int plane_bands[2], int band_count);
+
+/* Margins that keep the arena plane inside its 512-pixel map: the view
+ * never crosses the map's own wrap at either end. h_scroll is the room
+ * layer's. */
+void Dkc3VideoKaosArenaMargins(uint16_t h_scroll, int extra, int *left,
+                               int *right);
+
+/* In the K. Roolenstein phase, windows 1 (BG2) and 2 (BG3) are room-anchored
+ * spans clamped to the screen: room x [west, east] at BG1 scroll s is
+ * [west - s, east - s]. A register at 0 or 255 hides how far the span runs
+ * past the screen edge. Returns the unclamped span in native screen x when
+ * every unpinned register is within two pixels of the room-anchored edge and
+ * every pinned one is consistent with it; false otherwise. */
+enum {
+  kDkc3KaosRoomWindowWest = 75,
+  kDkc3KaosRoomWindow1East = 436,
+  kDkc3KaosRoomWindow2East = 348,
+};
+bool Dkc3VideoKaosRoomWindow(uint8_t reg_left, uint8_t reg_right,
+                             uint16_t room_h_scroll, int west, int east,
+                             int *left, int *right);
+
+/* KAOS's BG1 body is shown through window 1, inverted, which the arena's
+ * HDMA sets per scanline ($2126/$2127, mode 1, direct). On the body's lines
+ * the window is the body map's 256-pixel extent clamped to the screen:
+ * [0, r] when the map starts left of the screen, [l, 255] when it starts
+ * inside it. Scan the table (count bytes, bit 7 repeat, zero ends) for the
+ * first pair consistent with BG1's scroll within two pixels (the latched
+ * scroll can trail the WRAM copy), and return its registers and the
+ * unclamped extent [*left, *right] in native screen x. */
+bool Dkc3VideoKaosBodyWindow(const uint8_t *table, size_t length,
+                             uint16_t bg1_h_scroll, uint8_t *reg_left,
+                             uint8_t *reg_right, int *left, int *right);
+
+/*
+ * The Northern Kremisphere overworld (main-loop vector $B4:B179) keeps its
+ * whole picture resident: a 64x32 BG1 map spans world x [$100, $300), the
+ * camera word $196D sits $100 ahead of BG1HOFS, and the game writes map
+ * words only into rows the frame does not show: once the hovercraft opens
+ * the north, it streams whole 64-column rows as the camera climbs
+ * (docs/BRINGUP.md, 2026-11-22). The scene qualifies only
+ * in Mode 1 with BG1 a 64-column, 32-row map whose rendered world x ($100 +
+ * the nine-bit BG1HOFS) lies in [$100, $200] and within the camera lead of
+ * $196D, every other enabled 64-column BG layer at BG1's phase, and every
+ * enabled layer 32 rows tall. The measured camera word runs up to two
+ * pixels ahead of the latched scroll while the boat moves.
+ * kDkc3OverworldCameraLead accepts up to eight pixels either way: a margin
+ * over that measurement, not a measured bound. Only the two-pixel forward
+ * lead has been observed; the negative side (camera behind the scroll) is
+ * unmeasured tolerance. The host still has to prove every map write lands in
+ * a row the frame hides, or in at most kDkc3OverworldShownRowWrites shown
+ * rows per frame (see Dkc3VideoOverworldWritesAreRows).
+ */
+enum {
+  kDkc3OverworldMainLoop = 0xb4b179,
+  kDkc3OverworldMinimumCameraX = 0x0100,
+  kDkc3OverworldMaximumCameraX = 0x0200,
+  kDkc3OverworldCameraLead = 8,
+};
+bool Dkc3VideoIsResidentOverworld(uint32_t main_loop_vector, uint8_t bg_mode,
+                                  const uint8_t bg_sc[4],
+                                  uint8_t enabled_layers,
+                                  const uint16_t h_scroll[3],
+                                  uint16_t camera_x);
+
+/* The overworld's rendered world x: $100 plus BG1's nine-bit scroll. */
+uint16_t Dkc3VideoOverworldRenderedX(uint16_t bg1_h_scroll);
+
+/* Margins for the overworld at its rendered world x, each clamped to the
+ * resident map [$100, $300) under every edge policy: the map's 512-pixel wrap is not authored, no
+ * mirror decoder exists for it, and the raw background path cannot follow
+ * a presentation bias, so the view stays locked to the camera. */
+void Dkc3VideoOverworldMargins(uint16_t rendered_x, int *left_margin,
+                               int *right_margin);
+
+/* Whether any of the 224 displayed lines falls in tilemap row `row` of a
+ * 32-row (256-line) map at vertical scroll `v_scroll`. */
+bool Dkc3VideoTilemapRowVisible(uint16_t v_scroll, unsigned row);
+
+/*
+ * Whether one frame's tilemap writes to an overworld layer are row
+ * streaming, which leaves the resident map whole across the margins.
+ * `changed_rows` has bit n set when any word of row n changed since the
+ * previous drawn frame. The game writes each streamed row as a 32-word run
+ * into both 256-pixel pages, one word into the next row: up to
+ * kDkc3OverworldShownRowWrites shown rows per frame, the rest hidden. A
+ * game streaming columns instead would touch every shown row, and the
+ * margins would show columns it never wrote. With `vertical_hdma` the
+ * layer's shown rows vary per line, so every changed row counts as shown.
+ */
+enum { kDkc3OverworldShownRowWrites = 2 };
+bool Dkc3VideoOverworldWritesAreRows(uint32_t changed_rows, uint16_t v_scroll,
+                                     bool vertical_hdma);
+
+/* The BG1-BG3 layers (bit n = BG n+1) whose vertical scroll register an
+ * active HDMA channel writes, given each channel's B-bus address and
+ * transfer mode. Such a layer's visible rows vary per line. */
+uint8_t Dkc3VideoHdmaVerticalScrollLayers(uint8_t active_channels,
+                                          const uint8_t b_address[8],
+                                          const uint8_t mode[8]);
+
 /*
  * What a host margin shows where the level authors nothing: within one
  * margin of a hard level wall, and in rooms narrower than two margins.
@@ -104,7 +228,10 @@ typedef enum Dkc3VideoEdgePolicy {
    * inward slide is released one pixel per kDkc3VideoEdgeGlideSpan pixels
    * of camera travel, so the background scrolls at seven eighths of the
    * camera speed until the view is centered instead of standing still.
-   * The default. */
+   * A room shorter than the two releases (2 * extra * span pixels; the
+   * bonus rooms) gets a smaller shift, range / (2 * span), with no pins and
+   * each margin clamped to the room; one narrower than two margins gets
+   * none and is exactly bars. The default. */
   kDkc3VideoEdgeGlide,
   kDkc3VideoEdgePolicyCount,
 } Dkc3VideoEdgePolicy;
@@ -140,7 +267,10 @@ const char *Dkc3VideoEdgePolicyName(Dkc3VideoEdgePolicy policy);
  * active edge policy. Every known layout authors terrain from world
  * X=`$0100` through maximum_scroll_x+256. With `shift`, the presented
  * viewport is moved inward (bias) while the room can absorb the margin and
- * centered with clamped margins when it cannot. With `bars`, the bias is
+ * centered with clamped margins when it cannot. `glide` is shift's
+ * geometry released with travel, except that a room shorter than the two
+ * releases takes a smaller unpinned shift with clamped margins (none, as
+ * bars, below two margins). With `bars`, the bias is
  * zero and each visible margin is clamped to the authored extent. With
  * `reflect`, the bias is zero and both margins stay fully visible; the
  * terrain decoder mirrors authored columns into the unauthored strip. The
@@ -162,13 +292,80 @@ void Dkc3VideoPresentationMarginsBounded(uint16_t camera_x,
                                          int *left_margin,
                                          int *right_margin);
 
+/* One frame's step of the presented bias toward the glide's target. The bias
+ * moves one pixel a frame, so a bound that appears or vanishes never snaps
+ * the picture. It may also move by as much as the camera moved this frame
+ * (camera_delta, new camera X minus the previous one) when that step works
+ * against the camera's motion. That lets the pins hold the view still
+ * while the camera scrolls into a wall: in a room narrower than two
+ * margins of scroll, a 1-pixel step lets the view run up to a margin past
+ * the wall (a clamped black strip) and drift back after every turn while
+ * the camera's look-ahead moves 2-4 pixels a frame. A step never makes the
+ * view move faster than the camera plus one pixel. Ported from
+ * DKC2Recomp's Dkc2VideoStepPresentationBias. */
+int Dkc3VideoStepPresentationBias(int presented_bias, int wanted_bias,
+                                  int camera_delta);
+
 /* The margins the bounds allow for a bias the host has already chosen
- * (the bias moves at most one pixel per frame toward the glide's target,
- * so a bound that appears or vanishes never snaps the picture). */
+ * (Dkc3VideoStepPresentationBias moves it toward the glide's target, so a
+ * bound that appears or vanishes never snaps the picture). */
 void Dkc3VideoMarginsForBias(uint16_t camera_x, uint16_t minimum_scroll_x,
                              uint16_t maximum_scroll_x, int bias,
                              int *left_margin, int *right_margin);
 
+/* Scroll bounds from a camera region's span ([region_left, region_right),
+ * the right edge one screen past the last camera x) capped by the level's
+ * maximum. A camera still outside the span (converging on a region it has
+ * just entered) gets the wall reflected about it, so the margin on that
+ * side equals the distance left to travel and closes as the camera arrives
+ * instead of vanishing on the frame `$0478` changes. */
+void Dkc3VideoRegionScrollBounds(uint16_t camera_x, uint16_t region_left,
+                                 uint16_t region_right,
+                                 uint16_t level_maximum_x,
+                                 uint16_t *minimum_scroll_x,
+                                 uint16_t *maximum_scroll_x);
+
+/* Pixels per frame a margin may open beyond the view's own motion when its
+ * wall moves outward (a region change opening onto a wider room). */
+enum { kDkc3VideoMarginOpenRate = 2 };
+
+/* The margin to present this frame: at most the last presented margin plus
+ * kDkc3VideoMarginOpenRate plus how far the view moved away from that side
+ * (positive view_step_outward), so a wall fixed in the world keeps pace
+ * and a wall that jumps outward wipes the margin open. Narrowing is never
+ * limited. */
+int Dkc3VideoLimitMarginGrowth(int presented_margin, int target_margin,
+                               int view_step_outward);
+
+
+/* `$B3:C0F4` (Ripsaw Rage's tree-trunk BG3 masks) writes W1 = [`$1A`,
+ * `$1C`] and W2 = [`$1E`, `$20`] (world X in its direct page) minus the
+ * camera, each edge clamped to the 256-pixel screen, so a trunk inside a
+ * wide margin reaches the PPU as [255, 255] or [0, 0]. Given those four
+ * world edges, the camera the routine read, and the four registers it
+ * wrote (W1L, W1R, W2L, W2R), stores each window's unclamped screen edges
+ * in `edges` (left, right per window) and returns a mask of the windows
+ * whose registers equal the clamp of those edges (bit 0 W1, bit 1 W2). A
+ * window that fails the check was not written by that clamp; leave it to
+ * the hardware registers. */
+unsigned Dkc3VideoUnclampedTrunkWindows(const uint16_t world[4],
+                                        uint16_t camera,
+                                        const uint8_t regs[4],
+                                        int16_t edges[4]);
+
+/* False when DKC3_CULL_WIDEN=0 asks for native object and window behavior
+ * beside the presented margins (the before/after switch). */
+bool Dkc3VideoCullWidenEnabled(void);
+
+/* Black the host columns outside the live span of a wide frame: the first
+ * `extra - left_margin` and the last `extra - right_margin` of each row of
+ * `width` pixels (kDkc3VideoBytesPerPixel each). The PPU writes only the
+ * clamped span on ordinary lines, so without this a margin that narrows at
+ * a wall keeps the pixels it last showed, which shear as the camera moves
+ * vertically. Lines that composite the full budget overwrite the strips. */
+void Dkc3VideoClearOutsideMargins(uint8_t *buffer, size_t pitch, int width,
+                                  int height, int extra, int left_margin,
+                                  int right_margin);
 
 void Dkc3VideoPresentationMargins(uint16_t camera_x,
                                   uint16_t maximum_scroll_x,
@@ -189,6 +386,22 @@ int Dkc3VideoResolveEdgeTile(uint32_t world_tile_x,
                              uint32_t *source_tile_x,
                              bool *mirror_horizontally);
 
+/* The world span [left_edge, right_edge) the cartridge camera may show from
+ * its current camera region (`region_offset`, the region index * 2 kept at
+ * $0478) in the 64 KiB WRAM bank `wram`: the region's own span, continued
+ * through the left and right neighbours it links (the right link, or the
+ * region after it when that one names this region as a left neighbour, as
+ * $B7:E0ED tests) until a region has no further link or the neighbour is
+ * closed (flag $20). The clamp at $B7:DBCC..DC37 also admits a neighbour
+ * only while it overlaps the target's rows by $38 or, flagged $80, the
+ * player is near it; those gates change with every step of vertical
+ * travel, and a bound that comes and goes beside the camera would slide
+ * the glide back and forth, so the span ignores them and moves only when
+ * the cartridge changes region. False for no current region (entry 0, the
+ * whole level) or a region narrower than one screen. */
+bool Dkc3VideoCameraRegionSpan(const uint8_t *wram, uint16_t region_offset,
+                               uint16_t *left_edge, uint16_t *right_edge);
+
 /* True when a host margin would extend past the authored extent on either
  * side under the active edge policy without being clamped, which is where a
  * physical 64-column BG3 could expose unauthored ring columns. */
@@ -199,6 +412,16 @@ bool Dkc3VideoMarginLeavesAuthoredExtent(uint16_t camera_x,
  * 256-pixel viewport and can therefore be sampled by a widened margin. */
 bool Dkc3VideoTileTouchesWidescreenMargin(uint32_t world_tile_x,
                                           uint32_t camera_x);
+
+/* True when an 8x8 world tile lies wholly inside the span the cartridge's
+ * own 256-pixel window can reach with the camera anywhere in
+ * [minimum_scroll_x, maximum_scroll_x] (the current camera region's walls,
+ * or a west hold). The decoded level map there is what the console shows
+ * once the camera arrives, so a margin cell in that span must not be
+ * replaced by a continued or mirrored wall. */
+bool Dkc3VideoTileInCameraReach(uint32_t world_tile_x,
+                                uint16_t minimum_scroll_x,
+                                uint16_t maximum_scroll_x);
 
 /*
  * DKC3 stores left margins and total horizontal spans separately. Keeping
@@ -214,12 +437,24 @@ int Dkc3VideoPresentationBias(void);
 uint16_t Dkc3VideoExpandCullLeft(uint16_t native_margin);
 uint16_t Dkc3VideoExpandCullSpan(uint16_t native_span);
 uint16_t Dkc3VideoExpandCullRight(uint16_t native_right);
-/* Return the current placement-index cell plus its immediate horizontal
- * neighbors in widescreen. The final activation cull above rejects the
- * broad-phase candidates outside the live presented window. */
-size_t Dkc3VideoPlacementScanCells(uint16_t native_cell_offset,
-                                    uint16_t row_stride,
-                                    uint16_t cell_offsets[3]);
+/* Configure or query the extra widescreen spawn-ahead lead (0 when native,
+ * terrain is unproven, or DKC3_CULL_WIDEN=0). The sprite renderer lead is
+ * further clamped so off-screen OAM coordinates never wrap in nine-bit X. */
+void Dkc3VideoSetSpawnLead(int lead);
+int Dkc3VideoSpawnLead(void);
+int Dkc3VideoSpriteCullLead(void);
+uint16_t Dkc3VideoExpandSpawnLeft(uint16_t native_margin);
+uint16_t Dkc3VideoExpandSpawnSpan(uint16_t native_span);
+uint16_t Dkc3VideoExpandSpriteCullLeft(uint16_t native_margin);
+uint16_t Dkc3VideoExpandSpriteCullSpan(uint16_t native_span);
+/* Return the current placement-index cell plus every horizontal neighbor cell
+ * the widened placement interval (including wall bias, spawn lead, and
+ * DATA_BBA8BE's 32-pixel asymmetric row slack) can reach. The final
+ * activation compare rejects broad-phase candidates outside the live window. */
+size_t Dkc3VideoPlacementScanCells(
+    uint16_t native_cell_offset,
+    uint16_t row_stride,
+    uint16_t cell_offsets[kDkc3VideoPlacementScanMaxCells]);
 /* Match the exact PPU register signature of Floodlit Fish's underwater
  * color-math composition. Keeping this as a pure, tested host policy avoids
  * changing unrelated full-screen effects that also use BG3. */
@@ -613,6 +848,19 @@ bool Dkc3VideoFindStructuralWallSource(Dkc3VideoMetatileClassifier classify,
  * discarding those presentation bits. */
 bool Dkc3VideoIsTransparentTileEntry(uint16_t tile_entry,
                                      uint16_t transparent_tile);
+
+/* The sprite palette that `sprite_type`'s init scripts request, read from
+ * one bank of the $BB:8FF9 init-script language. A script opens with
+ * `$FF type`. Commands below `$EF` write a field. `$FA`, `$FB`, `$FC`, and
+ * `$FE` are three bytes each; only `$FC` (through $BB:95C8) sets a palette.
+ * `$EF` ends the script, and so does `$F0` (which also sets priority 2 but
+ * keeps the palette bits). $BB:8FF1 runs scripts with DB = $FF. Every such
+ * script for the type in the bank must request the same palette exactly
+ * once. A script that names no palette, uses any other
+ * command, has no terminator, or disagrees with another makes the answer 0
+ * (unknown). */
+uint16_t Dkc3VideoInitScriptPaletteForType(const uint8_t *bank, size_t size,
+                                           uint16_t sprite_type);
 
 #ifdef __cplusplus
 }

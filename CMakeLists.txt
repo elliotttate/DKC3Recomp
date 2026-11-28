@@ -116,6 +116,10 @@ if(DKC3_BUILD_SNESRECOMP)
         ${SNESRECOMP_RUNNER_SOURCES}
         ${DKC3_SNESRECOMP_GEN_SOURCES}
         runner/dkc3_game.c
+        runner/dkc3_animal_crate_cheat.c
+        runner/dkc3_show_hidden.c
+        runner/dkc3_intro_skip.c
+        runner/dkc3_kong_tracker.c
         runner/dkc3_video.c
         runner/dkc3_hdma.c
         runner/headless_host.c
@@ -168,6 +172,10 @@ if(DKC3_BUILD_SNESRECOMP)
             ${SNESRECOMP_RUNNER_SOURCES}
             ${DKC3_SNESRECOMP_GEN_SOURCES}
             runner/dkc3_game.c
+            runner/dkc3_animal_crate_cheat.c
+            runner/dkc3_show_hidden.c
+            runner/dkc3_intro_skip.c
+            runner/dkc3_kong_tracker.c
             runner/dkc3_video.c
             runner/dkc3_hdma.c
             runner/diagnostics.c
@@ -180,6 +188,7 @@ if(DKC3_BUILD_SNESRECOMP)
             runner/desktop_launcher.c
             runner/desktop_overlay.cpp
             runner/desktop_overlay_model.c
+            runner/desktop_pacer.c
             runner/desktop_perf.c
             runner/desktop_present.c
             runner/desktop_present_gl.c
@@ -225,7 +234,11 @@ if(DKC3_BUILD_SNESRECOMP)
         ${SNESRECOMP_RUNNER_SOURCES}
         ${DKC3_SNESRECOMP_GEN_SOURCES}
         runner/dkc3_game.c
+        runner/dkc3_animal_crate_cheat.c
+        runner/dkc3_show_hidden.c
         runner/dkc3_haptics.c
+        runner/dkc3_intro_skip.c
+        runner/dkc3_kong_tracker.c
         runner/dkc3_video.c
         runner/dkc3_hdma.c
         runner/diagnostics.c
@@ -345,6 +358,7 @@ if(DKC3_BUILD_SNESRECOMP)
                     DKC3_DESKTOP_TEST_FASTFORWARD=1
                     DKC3_DESKTOP_TEST_SAVELOAD=1
                     DKC3_DESKTOP_DISABLE_SRAM=1
+                    DKC3_USER_DIR=${CMAKE_CURRENT_BINARY_DIR}/windows-test-user-${aspect_id}
                     DKC3_ASPECT=${aspect}
                     DKC3_UPSCALER=reconstruct
                     SNESRECOMP_NO_LAUNCHER=1
@@ -443,6 +457,18 @@ if(BUILD_TESTING)
         SNESRECOMP_REVERSE_DEBUG=0)
     add_test(NAME dkc3_ppu_mode2 COMMAND test_dkc3_ppu_mode2)
     set_tests_properties(dkc3_ppu_mode2 PROPERTIES LABELS "unit;video;ppu")
+
+    add_executable(test_dkc3_ppu_windows
+        tests/test_dkc3_ppu_windows.c
+        ${DKC3_PATCHED_PPU}
+        ${SNESRECOMP_ROOT}/runner/src/snes/ppu_legacy.c)
+    target_include_directories(test_dkc3_ppu_windows PRIVATE
+        ${SNESRECOMP_ROOT}/runner/src
+        ${SNESRECOMP_ROOT}/runner/src/snes)
+    target_compile_definitions(test_dkc3_ppu_windows PRIVATE
+        SNESRECOMP_REVERSE_DEBUG=0)
+    add_test(NAME dkc3_ppu_windows COMMAND test_dkc3_ppu_windows)
+    set_tests_properties(dkc3_ppu_windows PROPERTIES LABELS "unit;video;ppu")
     find_package(Python3 QUIET COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
         add_test(NAME dkc3_runtime_patches
@@ -553,6 +579,46 @@ if(BUILD_TESTING)
     add_test(NAME dkc3_haptics COMMAND test_dkc3_haptics)
     set_tests_properties(dkc3_haptics PROPERTIES
         LABELS "unit;desktop;input;haptics")
+
+    add_executable(test_dkc3_kong_tracker
+        tests/test_dkc3_kong_tracker.c
+        runner/dkc3_kong_tracker.c)
+    target_include_directories(test_dkc3_kong_tracker PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/runner)
+    dkc3_enable_project_warnings(test_dkc3_kong_tracker)
+    add_test(NAME dkc3_kong_tracker COMMAND test_dkc3_kong_tracker)
+    set_tests_properties(dkc3_kong_tracker PROPERTIES
+        LABELS "unit;native;saves")
+
+    add_executable(test_dkc3_intro_skip
+        tests/test_dkc3_intro_skip.c
+        runner/dkc3_intro_skip.c)
+    target_include_directories(test_dkc3_intro_skip PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/runner)
+    dkc3_enable_project_warnings(test_dkc3_intro_skip)
+    add_test(NAME dkc3_intro_skip COMMAND test_dkc3_intro_skip)
+    set_tests_properties(dkc3_intro_skip PROPERTIES
+        LABELS "unit;native;input")
+
+    add_executable(test_dkc3_animal_crate_cheat
+        tests/test_dkc3_animal_crate_cheat.c
+        runner/dkc3_animal_crate_cheat.c)
+    target_include_directories(test_dkc3_animal_crate_cheat PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/runner)
+    dkc3_enable_project_warnings(test_dkc3_animal_crate_cheat)
+    add_test(NAME dkc3_animal_crate_cheat COMMAND test_dkc3_animal_crate_cheat)
+    set_tests_properties(dkc3_animal_crate_cheat PROPERTIES
+        LABELS "unit;native;input;assist")
+
+    add_executable(test_dkc3_show_hidden
+        tests/test_dkc3_show_hidden.c
+        runner/dkc3_show_hidden.c)
+    target_include_directories(test_dkc3_show_hidden PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/runner)
+    dkc3_enable_project_warnings(test_dkc3_show_hidden)
+    add_test(NAME dkc3_show_hidden COMMAND test_dkc3_show_hidden)
+    set_tests_properties(dkc3_show_hidden PROPERTIES
+        LABELS "unit;native;assist")
 
     if(TARGET SDL2::SDL2)
         add_executable(test_desktop_launcher_settings

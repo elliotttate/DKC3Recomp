@@ -84,7 +84,13 @@ beyond the authored world never shows; the slide exposes ring columns the
 store must serve (`WsShadowSetNativeViewportInset`) and the PPU decodes
 nine-bit sprite X as positive up to 256 + extra + bias. A wall can be a
 camera bound or a map-derived hold (void beside the window and the player
-pinned there).
+pinned there). DKC3 takes the camera bound from the current camera region
+and the neighbours it links, not from the level-wide clamp. A room shorter than the two releases (2 x extra x 8
+pixels of camera travel: 688 at 16:9) cannot hide both walls at the glide
+rate. Its shift shrinks to travel / 16 so both releases still fit at one
+pixel per eight, without pins, and each margin is clamped to the room; a
+room narrower than two margins gets no shift and is exactly `bars`. The
+first level's bonus rooms travel 24 and 128 pixels.
 
 **Objects.** The cartridge activates, releases, and culls objects against
 its 256-column screen with a little slack. The overrides script rewrites
@@ -104,6 +110,7 @@ the disassembly before use.
 | In a level | mode word | main-loop vector `$4E` == `$B3:8076` | `$04C4` is 1P/2P, not a mode |
 | Camera | WRAM camera | `$196D`/`$1973` | the copies, not the working `$0493` |
 | Camera clamp | `$0AFC` | `$04BC`/`$04BE` | `$B4`/`$B6` are HUD words |
+| Camera regions | | current `$0478` (index x 2); edges `$7E:995A`/`9A5A`/`9B5A`/`9C5A`, links `$9D5A` (flags, right) and `$9E5A` (two left) | `$04BC` is the maximum over every region, not the current room's wall; `$0466`-`$046C` hold the joined bounds only inside the clamp and are reused for velocities |
 | Level map | bank `$9A` | `$7F:0000`, base `$0000` | a base of `$FF00` compensated the `$100` world origin twice |
 | Metatile table | fixed | word `$1967` | 32-byte definitions, DKC2's form |
 | Ring VRAM base | `$17B6` | word `$1969` | `$04F8` is a moving upload pointer |
@@ -134,6 +141,13 @@ one 256-pixel page early until it was.
 | Backdrop through a hole beside a held wall | classifier fill map ('.', '+', '#') for the source window | player-held wall with void beyond; structural wall rule, mirror on rejected rows |
 | Wrong strip of tiles at one native edge while the view is slid | compare glide against reflect per world column | biased ring tail not served by the store (inset) |
 | Abrupt jump stepping away from a wall | | endpoint bias; replaced by glide |
+| Background keeps sliding after the player stops and the HUD drifts sideways in a small room (bonus games) | prefill trace: bias against camera per frame | glide pinning a room shorter than its two releases: the target bias followed the camera nearly 1:1 and the 1 px/frame limit lagged it; such rooms now take a shift of travel / 16 (none below two margins) |
+| A sheared, slanted strip beyond a wall after walking up to it and then moving vertically; content where the clamp says black | diff against a run started at that camera; isolated layers all show the same diagonal black/backdrop boundary | stale host pixels: the PPU writes only the clamped span, so columns a narrowing margin gave up kept their last frame; clear them before each frame renders |
+| A strip of unrelated rooms, cut off or misaligned, in one margin of a room the camera cannot leave sideways (an elevator shaft) | camera region table at `$995A` for the current `$0478` | the glide took the level-wide clamp `$04BC` as its wall; the region and its linked neighbours bound the view |
+| 8-pixel blocks of a parallax layer inside solid terrain in a margin only | layer-isolated render; the terrain cell entries against the ring when native; the parallax layer's band map and its native left/right edge | authored transparent BG1 cells that the camera range never lines up with the parallax art; the 256-pixel wrap is the hardware's, so keep it (Ripsaw Rage, owner's decision) |
+| A far layer shows through a trunk or wall in a margin, but not inside the native window | window registers along a walk: does one edge track a fixed world x and read 0 or 255 when it leaves? | a cartridge mask clamped to the 256-pixel screen; record its unclamped world edges from the writer (Ripsaw Rage, `$B3:C0F4`) |
+| A whole margin snaps between black and terrain as the Kongs move between rooms | `DKC3_PREFILL_TRACE` `region=`, `walls=`, `margins=` per frame | a region change moved a wall in one frame; a camera still converging on its new region gets the wall reflected about it, and a wall that jumps outward opens at the view's own outward motion plus 2 px/frame (`Dkc3VideoRegionScrollBounds`, `Dkc3VideoLimitMarginGrowth`) |
+| Terrain blocks pop into a margin while the camera rests on an 8-pixel boundary and vanish when it moves a pixel | layer isolation; `DKC3_TERRAIN_FILL_MAP=2` at both phases; a 4:3 run that brings those columns into the window | the structural wall rule continuing a decorative trunk into an authored gap inside the camera's reach; gate the rule to columns outside the region's reach (DKC3 waterfall level `$0038`) |
 | Objects pop in inside the margin, or vanish while still visible | spawn trace, OAM trace, before/after with widening off | activation window, release window, or renderer cull not widened |
 | Banana arcs or other tile rows appear only at the native edge | OAM census for first appearance at x in [256, 266) | separate grid renderer with its own clips and sign-derived ninth bit |
 | Objects cut exactly at the authentic margin near a wall | | PPU nine-bit X limit must include the bias |
@@ -244,13 +258,24 @@ toward the native edge must be full and backed by another full one, on a
 corroborating adjacent row. A continued wall cell takes the metatile the
 map most often places beside the previous one outward, not a copy of the
 edge column. Rows the rule rejects mirror the authored terrain across the
-wall line. Judge every corpus state a wall-rule edit changes by a zoomed
-crop of its diff bounding box.
+wall line. Both rules apply only to columns outside the reach of the
+camera's scroll bounds (the region's walls, or a west hold): inside it the
+console draws the decoded map once the camera arrives, and a void there is
+authored (DKC3: a gap between two tree trunks). Judge every corpus state a
+wall-rule edit changes by a zoomed crop of its diff bounding box.
 
 A west hold needs both the void and a pinned player (within forty pixels
 of the frame's west edge with the camera unmoved, or the first eight
 frames after a level change; a state restore is not a level start). The
-presented bias moves at most one pixel per frame toward its target.
+presented bias moves one pixel per frame toward its target, and may also
+move as far as the camera moved that frame when that step works against the
+camera's motion (`Dkc3VideoStepPresentationBias`): a pinned target that
+tracks the camera is then held, and no step makes the view move faster than
+the camera plus one pixel. The one-pixel glide alone is only safe while the
+target changes by at most one pixel per frame, which is why a room shorter
+than the two releases also takes a reduced, unpinned shift: a pinned target
+there tracks the camera nearly pixel for pixel, and the bias would trail it
+whenever it moves with the camera.
 
 ### 6.6 Special streamed layers
 
@@ -332,7 +357,7 @@ DKC3 headless switches (`runner/headless_main.c`): `DKC3_ASPECT`,
 `DKC3_FRAME_PPM` and `DKC3_FRAME_PPM_PREFIX/START/END/STEP` (END minus
 START must be a multiple of STEP), `DKC3_WRAM_OUTPUT`, `DKC3_VRAM_OUTPUT`,
 `DKC3_OAM_OUTPUT`, `DKC3_PREFILL_TRACE=1` (camera, ready, bias, present,
-matching per frame), `DKC3_PREFILL_DUMP=<frame counter>` (ring, decode,
+matching, walls, margins, and row stride per frame), `DKC3_PREFILL_DUMP=<frame counter>` (ring, decode,
 store, status per disagreeing or margin cell; the counter is the host
 frame plus the restored state's own counter), `DKC3_BAND_DUMP=1`,
 `DKC3_WATERFALL_TRACE=1` (source verification and matching native cells),

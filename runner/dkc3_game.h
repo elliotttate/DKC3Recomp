@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -35,6 +36,13 @@ typedef struct Dkc3TerrainPrefillStats {
    * this frame (the calibration gate). */
   uint16_t row_bytes;
   uint8_t row_match_percent;
+  /* The presentation walls and margins this frame used, and the camera
+   * region word ($0478) they were taken from. */
+  uint16_t camera_region;
+  uint16_t wall_left;
+  uint16_t wall_right;
+  int16_t left_margin;
+  int16_t right_margin;
 } Dkc3TerrainPrefillStats;
 
 const RtlGameInfo *Dkc3GameInfo(void);
@@ -46,6 +54,30 @@ int Dkc3AliasOffsetRows(int layer);
 void Dkc3TintLineCounters(unsigned *seen, unsigned *water, unsigned *matched);
 
 void Dkc3BeginDrawing(uint8_t *pixels, size_t pitch);
+/* Starts the KONG letter tracker (dkc3_kong_tracker.h) with its sidecar
+ * file. Hosts call it once the battery save is in g_sram; tracking runs after
+ * every game frame and the map badge is drawn into each rendered frame
+ * unless DKC3_KONG_BADGES=0 or Dkc3KongSetBadgesVisible(false). Returns false when the sidecar existed but was
+ * unreadable (it is then left untouched until the next record). */
+bool Dkc3KongTrackingEnable(const char *path);
+/* Shows or hides the map badges (the desktop Settings checkbox); recording
+ * continues either way. */
+void Dkc3KongSetBadgesVisible(bool visible);
+/* Enables or disables the Assist Tools / Cheats option that spawns animal
+ * buddy crates from the in-game pause state (Left/Right selects buddy, B
+ * spawns the selected crate). Off by default. */
+void Dkc3SetPauseCrateSpawnEnabled(bool enabled);
+bool Dkc3PauseCrateSpawnEnabled(void);
+/* Returns the currently selected animal buddy name while paused in a level
+ * with the crate-spawn cheat enabled (or NULL otherwise), for host HUD
+ * display at the bottom middle of the screen. */
+const char *Dkc3PauseCrateHudLabel(void);
+/* Enables or disables the Assist Tools / Cheats option that draws sprites
+ * the game keeps invisible (render word +$26 with bits 15 and 14 set, such as
+ * the hidden bear coin). Off by default; DKC3_SHOW_HIDDEN_OBJECTS=1 also
+ * enables it for headless runs. */
+void Dkc3SetShowHiddenObjectsEnabled(bool enabled);
+bool Dkc3ShowHiddenObjectsEnabled(void);
 void Dkc3DrawPpuFrame(void);
 uint32_t Dkc3ResumePc(void);
 int Dkc3LastLleResult(void);
@@ -77,3 +109,30 @@ uint16_t Dkc3PlacementScanNext(uint16_t native_placement);
  * cartridge frame; other hosts may ignore it without changing game state. */
 void Dkc3RecordMusicTransition(uint16_t command);
 int Dkc3TakeMusicTransition(uint16_t *command);
+
+/* The generated $BB:95E6 palette-allocator overflow block records the failed
+ * palette ID and sprite slot so widescreen can serve the sprite's true palette
+ * from host extended OBJ CGRAM without mutating guest WRAM or 4:3 output. */
+void Dkc3RecordSpritePaletteOverflow(uint16_t direct_page);
+
+/* The generated $B3:C0F4 block that writes W2R records the tree-trunk
+ * windows' world edges (DP $1A-$20) so a wide aspect can mask a trunk that
+ * lies in a margin. Besides those edges it reads only the camera X and
+ * level number from WRAM and the PPU window registers, and writes no guest
+ * state; 4:3 returns at once. */
+void Dkc3RecordTrunkWindows(uint16_t direct_page);
+
+/* The generated $B7:8904 renderer block passes each slot's render word
+ * (+$26) and slot address through this helper. It returns the word unchanged
+ * unless Show hidden objects is on, and never writes guest state. */
+uint16_t Dkc3RevealHiddenSpriteFlags(uint16_t flags, uint16_t slot);
+
+/* Host-only unclamped window edges in patched ppu.c (window 0 = W1). */
+void Dkc3PpuSetWsWindowUnclamped(int window, bool active, int left,
+                                 int right, uint8_t reg_left,
+                                 uint8_t reg_right);
+
+/* Host-only widescreen extended OBJ palette setters in patched ppu.c. */
+void Dkc3PpuClearWsExtObjPalettes(void);
+void Dkc3PpuSetWsExtObjPalette(uint8_t slot, const uint16_t colors[16]);
+void Dkc3PpuSetWsOamExtPalettes(const uint8_t oam_ext_pal[128], bool active);

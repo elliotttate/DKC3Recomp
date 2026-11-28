@@ -31,6 +31,20 @@ void Dkc3LauncherSetReconstructShading(int percent);
  * shared launcher settings. */
 int Dkc3LauncherHaptics(void);
 void Dkc3LauncherSetHaptics(int enabled);
+/* Whether the map shows KONG letter badges (dkc3_kong_tracker.h); on by
+ * default and persisted as KongBadges. Recording is unaffected. */
+int Dkc3LauncherKongBadges(void);
+void Dkc3LauncherSetKongBadges(int enabled);
+/* Whether the Assist Tools / Cheats option to spawn animal buddy crates from
+ * the in-game pause state (Up = Squawks, Down = Enguarde) is enabled; off by
+ * default and persisted as PauseCrateSpawn. */
+int Dkc3LauncherPauseCrateSpawn(void);
+void Dkc3LauncherSetPauseCrateSpawn(int enabled);
+/* Whether the Assist Tools / Cheats option that draws sprites the game keeps
+ * invisible (such as hidden bear coins) is enabled; off by default and
+ * persisted as ShowHiddenObjects. */
+int Dkc3LauncherShowHiddenObjects(void);
+void Dkc3LauncherSetShowHiddenObjects(int enabled);
 
 void Dkc3LauncherSettingsDefault(RecompLauncherCSettings *settings);
 void Dkc3LauncherSettingsLoad(RecompLauncherCSettings *settings);

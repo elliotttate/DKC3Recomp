@@ -22,6 +22,10 @@ extern "C" {
  *   - Bit  8 ($0100): Right
  * - $04F9: pointer to the active Kong/player sprite record in WRAM.
  * - $05AF: level state flags; bit 6 ($0040) is set while paused in-game.
+ *   Bit 15 ($8000) is set while no player is in control: the ending credits
+ *   run on the level main loop with $05AF = $80C0 (frozen bit set between
+ *   credit scenes), and $BB:A19F returns early on it. A player pause never
+ *   has it ($40C0 in a paused level save).
  * - Sprite table: $0878 (Dixie), $08E6 (Kiddy), $0954..$1412 (26 non-Kong
  *   slots, stride $006E, end $1480). A slot is free when type (+$00) == 0.
  * - Bank $FF spawn scripts for animal_buddy_box (type $0250):
@@ -44,6 +48,7 @@ enum {
   kDkc3PauseCrateActiveKongAddr = 0x04F9u,
   kDkc3PauseCrateLevelFlagsAddr = 0x05AFu,
   kDkc3PauseCratePausedFlagBit = 0x0040u,
+  kDkc3PauseCrateNoControlFlagBit = 0x8000u,
   kDkc3PauseCratePaletteSlotIdsAddr = 0x073Cu,
   kDkc3PauseCratePaletteSlotRefsAddr = 0x074Cu,
   kDkc3PauseCrateLevelConfigFlagsAddr = 0x0777u,
@@ -120,8 +125,8 @@ const char *Dkc3PauseCrateName(Dkc3PauseCrateKind kind);
 /* Returns the bank $FF spawn script pointer for a valid crate kind, or 0. */
 uint16_t Dkc3PauseCrateScriptPtr(Dkc3PauseCrateKind kind);
 
-/* Returns true when the cheat is enabled and the game is currently paused
- * inside a level ($004E == $B3:8076 and $05AF & $0040). */
+/* Returns true when the cheat is enabled and the player has paused inside a
+ * level ($004E == $B3:8076, $05AF & $0040, and not $05AF & $8000). */
 bool Dkc3IsPauseCrateMenuActive(const uint8_t *wram, size_t wram_size,
                                 bool enabled);
 

@@ -94,6 +94,28 @@ int main(void) {
   CHECK(!Dkc3IsPauseCrateMenuActive(wram, sizeof wram, true));
   CHECK(!Dkc3DetectPauseCrateSpawn(wram, sizeof wram, true, selected, &req));
 
+  /* The credits run on the level main loop with $05AF = $80C0: the frozen
+   * bit is set while no player is in control (bit 15). Fails closed, and
+   * Left/Right does not move the selection. */
+  SetupPausedLevel(wram, 0x0180u, 0x00C0u);
+  Write16(wram, kDkc3PauseCrateLevelFlagsAddr, 0x80C0u);
+  Write16(wram, kDkc3PauseCrateActivePressedAddr, kDkc3PauseCrateInputBBit);
+  CHECK(!Dkc3IsPauseCrateMenuActive(wram, sizeof wram, true));
+  CHECK(!Dkc3DetectPauseCrateSpawn(wram, sizeof wram, true, selected, &req));
+  {
+    Dkc3PauseCrateKind credits_sel = kDkc3PauseCrateEllie;
+    Write16(wram, kDkc3PauseCrateActivePressedAddr,
+            kDkc3PauseCrateInputRightBit);
+    CHECK(!Dkc3UpdatePauseCrateSelection(wram, sizeof wram, true,
+                                         &credits_sel));
+    CHECK(credits_sel == kDkc3PauseCrateEllie);
+  }
+
+  /* A player pause in a level ($05AF = $40C0) is still accepted. */
+  SetupPausedLevel(wram, 0x0180u, 0x00C0u);
+  Write16(wram, kDkc3PauseCrateLevelFlagsAddr, 0x40C0u);
+  CHECK(Dkc3IsPauseCrateMenuActive(wram, sizeof wram, true));
+
   /* Left/Right selection cycles and wraps across all 5 buddies while paused. */
   SetupPausedLevel(wram, 0x0180u, 0x00C0u);
   CHECK(Dkc3IsPauseCrateMenuActive(wram, sizeof wram, true));

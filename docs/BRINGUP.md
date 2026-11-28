@@ -4017,3 +4017,29 @@ equal to the monitor; the menu item and Escape restored the bar and
   hand; only the unit test covers type `$0284`). Other hidden types are
   still not surveyed, so another object hidden after leaving play could be
   drawn the same way.
+
+## 2026-11-27 - Pause crate selector no longer appears during the credits
+
+- **Report:** with **Spawn animal buddy crates from pause menu** on, the
+  ending credits showed the `< Ellie >` selector pill between scenes, as if
+  paused.
+- **Measurement (release quick save in the credits):** the credits run on
+  the level main loop (`$004E` = `$B3:8076`, level word `$00C0` = `$000D` /
+  `$000B`) with `$05AF` = `$80C0`, so the frozen bit (`$0040`) the cheat
+  read as "paused" is set while the credit text is shown. Bit 15 (`$8000`)
+  stays set through the whole credits and is clear in a player pause
+  (`$40C0` in the earlier paused level save); `$BB:A19F` returns early on
+  it.
+- **Change:** `Dkc3IsPauseCrateMenuActive` also requires `$05AF & $8000`
+  clear. That gate covers the HUD pill, Left/Right selection and B
+  spawning.
+- **Verified:** new unit cases (`$80C0` fails closed and does not move the
+  selection; `$40C0` is still accepted); full CTest 33/33. Headless run
+  of the credits save for 60 frames with B, Right, B pressed: WRAM is
+  byte-identical with `DKC3_PAUSE_CRATE_SPAWN=0` and `=1`, and no
+  `$0250` crate slot exists.
+- **Unverified:** a live pause inside a level was not replayed after this
+  change (the paused level save was overwritten by the credits save; the
+  unit test covers it). Whether the title attract demo also sets bit 15
+  was not checked. `DKC3RecompSDL.exe` did not relink because it was
+  running; `DKC3Recomp.exe` and the headless runner were rebuilt.

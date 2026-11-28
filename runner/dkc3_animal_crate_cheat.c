@@ -80,8 +80,10 @@ bool Dkc3IsPauseCrateMenuActive(const uint8_t *wram, size_t wram_size,
   if (ReadLe24(wram, kDkc3PauseCrateMainLoopVectorAddr) !=
       kDkc3PauseCrateMainLoopLevel)
     return false;
-  return (ReadLe16(wram, kDkc3PauseCrateLevelFlagsAddr) &
-          kDkc3PauseCratePausedFlagBit) != 0u;
+  const uint16_t flags = ReadLe16(wram, kDkc3PauseCrateLevelFlagsAddr);
+  if ((flags & kDkc3PauseCrateNoControlFlagBit) != 0u)
+    return false;
+  return (flags & kDkc3PauseCratePausedFlagBit) != 0u;
 }
 
 bool Dkc3UpdatePauseCrateSelection(const uint8_t *wram, size_t wram_size,

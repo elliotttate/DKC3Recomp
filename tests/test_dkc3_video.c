@@ -2013,6 +2013,56 @@ int main(void) {
     }
   }
 
+  /* Init-script palette lookup on a synthetic bank (no cartridge bytes). */
+  {
+    static uint8_t bank[0x100];
+    const uint8_t two_scripts[] = {
+        0x12, 0x34, 0xef,                         /* tail of other data */
+        0xff, 0x84, 0x02, 0xfa, 0x48, 0x01, 0xfc, 0xc8, 0x00,
+        0xfe, 0x00, 0x20, 0x0e, 0xcc, 0x00, 0xef, /* ends with $EF */
+        0xff, 0x84, 0x02, 0xfc, 0xc8, 0x00, 0x3a, 0x00, 0x00,
+        0xf0,                                     /* ends with $F0 */
+        0xff, 0x34, 0x02, 0xfc, 0x16, 0x00, 0xef};
+    memset(bank, 0, sizeof bank);
+    memcpy(bank, two_scripts, sizeof two_scripts);
+    if (Dkc3VideoInitScriptPaletteForType(bank, sizeof bank, 0x0284) !=
+            0x00c8 ||
+        Dkc3VideoInitScriptPaletteForType(bank, sizeof bank, 0x0234) !=
+            0x0016)
+      return fprintf(stderr, "FAIL: init-script palette lookup\n"), 1;
+    if (Dkc3VideoInitScriptPaletteForType(bank, sizeof bank, 0x0238) != 0 ||
+        Dkc3VideoInitScriptPaletteForType(NULL, sizeof bank, 0x0284) != 0 ||
+        Dkc3VideoInitScriptPaletteForType(bank, sizeof bank, 0) != 0)
+      return fprintf(stderr, "FAIL: init-script palette absent type\n"), 1;
+
+    /* A disagreeing script, one without a palette, one with two, one that
+     * calls a sub-script ($F9), and one that runs off the bank each make
+     * the answer unknown. */
+    const struct {
+      uint8_t bytes[12];
+      size_t length;
+    } refuting[] = {
+        {{0xff, 0x84, 0x02, 0xfc, 0x71, 0x00, 0xef}, 7},
+        {{0xff, 0x84, 0x02, 0x3a, 0x00, 0x00, 0xef}, 7},
+        {{0xff, 0x84, 0x02, 0xfc, 0xc8, 0x00, 0xfc, 0xc8, 0x00, 0xef}, 10},
+        {{0xff, 0x84, 0x02, 0xf9, 0x6d, 0x65, 0xfc, 0xc8, 0x00, 0xef}, 10},
+    };
+    for (size_t i = 0; i < sizeof refuting / sizeof refuting[0]; i++) {
+      memset(bank, 0, sizeof bank);
+      memcpy(bank, two_scripts, sizeof two_scripts);
+      memcpy(bank + 0x80, refuting[i].bytes, refuting[i].length);
+      if (Dkc3VideoInitScriptPaletteForType(bank, sizeof bank, 0x0284) != 0)
+        return fprintf(stderr, "FAIL: init-script refutation %zu\n", i), 1;
+    }
+    memset(bank, 0, sizeof bank);
+    memcpy(bank, two_scripts, sizeof two_scripts);
+    const uint8_t unterminated[] = {0xff, 0x84, 0x02, 0xfc, 0xc8, 0x00};
+    memcpy(bank + sizeof bank - sizeof unterminated, unterminated,
+           sizeof unterminated);
+    if (Dkc3VideoInitScriptPaletteForType(bank, sizeof bank, 0x0284) != 0)
+      return fprintf(stderr, "FAIL: unterminated init script accepted\n"), 1;
+  }
+
   Dkc3VideoSetWidescreen(false);
   if (Dkc3VideoTerrainReady()) {
     fprintf(stderr, "FAIL: native mode retained widescreen terrain state\n");

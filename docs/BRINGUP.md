@@ -3617,3 +3617,95 @@ equal to the monitor; the menu item and Escape restored the bar and
 - **Unverified:** interactive visual check of the bottom-middle HUD pill in
   the live desktop app, macOS rebuild, and spawning/dismounting across all
   levels/water states.
+
+## 2026-11-27 - black margins in a one-screen rope shaft (kept by decision)
+
+- **Report:** in the release quick save (SHA-256 `d33c5659...064d`, level
+  word `$00C0` = `$0041`, 16:9 with `glide`), the Kongs hang on the ropes of a
+  cliff shaft. Both margins are black although the cliff looks continuous.
+- **Measurement:** the camera is at `[$01E8,$1A09]` in region `$0478` = `$2C`
+  (index 22, x `$01E8..$02E8`, exactly one screen, no side links). The trace
+  reads `walls=[01e8,01e8] margins=[0,0] bias=0` with every margin cell
+  present and matching the decode, so the camera-region clamp
+  (2026-11-22) closes the margins on purpose. On the same rows, region 12
+  (x `$0100..$01E0`) ends 8 pixels to the west and region 35
+  (x `$0300..$0400`) starts 24 pixels to the east.
+- **Counterfactual (temporary, uncommitted headless build that skipped
+  `Dkc3VideoCameraRegionSpan`):** the walls became `[0100,0300]`, the margins
+  `[43,43]` at 16:9 and `[95,95]` at 21:9, and the bias 3. The native 256
+  columns were pixel-identical to the 4:3 frame at that offset. Both margins
+  show continuous cliff art with the ropes carried through. At 21:9 the right
+  margin also shows region 35's rope rows, a barrel, and enemies, which the
+  cartridge shows only once the camera reaches that room.
+- **Decision (owner):** keep the margins black. The region table does not
+  distinguish this shaft from the mill elevator shaft, whose neighbouring
+  rooms do not line up. Any rule that opens one-screen regions needs its own
+  structural evidence (for example flanking regions on the same rows within
+  a few pixels, with terrain continuous at the seam). It must also be judged
+  against the elevator, Squeals on Wheels, and bonus-room states.
+- The temporary switch was reverted and the headless runner rebuilt. The
+  rebuilt runner again reports `margins=[0,0]` for this save.
+
+## 2026-11-27 - bear coin drawn orange after a quick load (overflow recovery)
+
+- **Report:** in the release quick save (SHA-256 `acee01f7...e411b`, level
+  word `$00C0` = `$0045`, 16:9), Kiddy rides an Ellie in a cave and the
+  spinning coin to the right of the Kongs loads in corrupted.
+- **Measurement:**
+  - The coin is slot 2 (`$0954`), type `$0284`, handler `$BB:D24E`
+    (`bear_coin_main`). Its OAM attribute `$20E0` selects palette 0. The
+    hardware palette table `$073C` is `[$0F,$01,$02,$74,$1C,$6D,$00,$16]`,
+    and Ellie's `$16` is one of them, so the coin's request overflowed to the
+    common `$0F` palette. At 4:3 the coin's tiles show through `$0F` as
+    red/white/yellow noise, which is the cartridge's own fallback.
+  - At 16:9 `DKC3_EXT_PAL_TRACE` shows the coin tracked as `2=0071`. A quick
+    save does not carry the overflow hook's associations, so the 8-frame
+    load recovery attached `$1D4B` (the most recent overflow, `$0071`, an
+    orange ramp) to the only palette-0 dynamic sprite in OAM. The orange coin
+    is that wrong palette.
+  - All four bank-`$FF` init scripts that set type `$0284` (`$FF:6235`,
+    `$624E`, `$6264`, `$627D`) request palette `$00C8` with command `$FC`.
+    Drawing the coin's VRAM tiles through `$00C8` gives a clean silver bear
+    coin. Through `$0071` they are orange and through `$000F` they are noise.
+  - Init-script format, from the ROM: `$BB:8FF1` runs scripts with DB =
+    `$FF`. `$BB:9005` writes commands below `$EF` to field `D+op`, and the
+    table at `$BB:9018` sends `$FF` (`$9062`), `$FE` (`$9071`), `$FC`
+    (`$9119`, `JSR $95C8` request_palette_direct), `$FB` (`$9137`), and `$FA`
+    (`$917E`) through `$9002`, which advances three bytes. `$EF` (`$9041`)
+    and `$F0` (`$9048`, which also sets priority 2 but keeps the palette
+    bits) end a script.
+- **Change:** `Dkc3VideoInitScriptPaletteForType` (`runner/dkc3_video.c`)
+  walks every bank-`$FF` run that opens with `$FF type` using only those
+  commands. It returns the palette only if every run reaches a terminator
+  and requests the same palette exactly once. An unknown command (such as
+  the `$F9` sub-script call), a missing terminator, no palette, or a
+  disagreement returns 0. On the release ROM 66 types have an answer,
+  including Kongs `$022C`/`$0230` -> `$01`/`$02` and Ellie `$0234` -> `$16`,
+  which match the hardware slots. In `Dkc3SyncWidescreenObjPalettes`
+  (`runner/dkc3_game.c`) the load recovery first attaches that palette to
+  each palette-0 dynamic sprite whose type has one (unless it is `$0F`).
+  The `$1D4B` fallback now considers only sprites whose type the scripts do
+  not settle. The live overflow hook, the 4:3 path, and guest memory are
+  unchanged.
+- **Verified (headless, private ROM, previous build as reference):**
+  - The save, 300 frames at 4:3, 16:9, and 21:9: WRAM, VRAM, CGRAM, and OAM
+    hashes are identical in every aspect, and every 4:3 frame is identical.
+    At 16:9 and 21:9, 299 of 301 frames differ, only inside the coin's box
+    (x 279-302 / 331-354, y 55-85). The trace now reads `2=00c8`, and a
+    crop strip shows the silver bear coin spinning.
+  - 1,800-frame boot at 4:3 and 16:9: frame, WRAM, VRAM, CGRAM, and OAM
+    hashes identical.
+  - `test_dkc3_video` covers the lookup: two scripts with `$EF` and `$F0`
+    ends, an absent type, and refutation by a disagreeing palette, no
+    palette, two palettes, an `$F9` call, and an unterminated run. Windows
+    Release CTest 32/32.
+- **Not changed (faithful):** at 4:3 the coin keeps the cartridge's `$0F`
+  fallback until it respawns. The overflow comes from the eighth palette
+  slot being taken, here most likely by an Ellie the pause crate spawner put
+  in a level that does not budget for her (not confirmed: the save does not
+  record how Ellie arrived).
+- **Unverified:** the saved-scene corpus and cave replay are not on this
+  host. A sprite type that switches palette after its init script runs
+  could be recovered with its initial palette for the rest of its life. The
+  live desktop app was rebuilt but not played at this spot, and macOS is
+  unverified.

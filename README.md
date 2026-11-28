@@ -113,8 +113,11 @@ Wide aspects now draw that sprite with its own palette from a host-side
 table, leaving guest memory unchanged; the 4:3 path returns early and is
 not expected to change, but a byte-identical 4:3 comparison has not been
 measured. Quick saves that already captured the fallback are recovered
-when the fallback sprite can be identified in the first frames after the
-load; this was checked on one release save only, and the interpreter path
+in the first frames after the load: a sprite whose type's init scripts
+all request one palette gets that palette (a bear coin is silver again,
+not orange), and otherwise the game's last-overflow word is used when the
+fallback sprite can be identified. This was checked on two release saves
+only, and the interpreter path
 through the allocator does not record overflows. A save made in a wide
 aspect still shows the fallback colours if loaded at 4:3 until the sprite
 despawns.

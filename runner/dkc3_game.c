@@ -1152,6 +1152,17 @@ static bool Dkc3LoadSpritePaletteColors(uint16_t palette_id,
   return true;
 }
 
+/* The palette a sprite type's bank-$FF init scripts request, or 0. */
+static uint16_t Dkc3InitScriptPaletteForType(uint16_t sprite_type) {
+  enum { kInitScriptBankOffset = 0x3F0000u, kInitScriptBankSize = 0x10000u };
+  if (!g_rom || !g_snes || !g_snes->cart ||
+      (size_t)g_snes->cart->romSize <
+          (size_t)kInitScriptBankOffset + kInitScriptBankSize)
+    return 0;
+  return Dkc3VideoInitScriptPaletteForType(
+      g_rom + kInitScriptBankOffset, kInitScriptBankSize, sprite_type);
+}
+
 static uint16_t Dkc3SpriteTileRangeEnd(unsigned target_slot,
                                        uint16_t tile_base) {
   uint16_t tile_end = kDkc3SpriteStaticTileBase;
@@ -1223,15 +1234,48 @@ static void Dkc3SyncWidescreenObjPalettes(bool in_level) {
     }
   }
 
-  /* Savestate recovery: if a loaded savestate already captured an overflowed
-   * palette ID in $1D4B and an active dynamic sprite is stuck on palette 0,
-   * re-attach $1D4B to it when $1D4B is not already loaded in hardware CGRAM
-   * or tracked on another slot. Only runs in the short window after a load or
-   * an aspect change: live overflows are recorded by the hook instead. */
+  /* Savestate recovery. The hook's associations are host state that a quick
+   * save does not carry, so after a load (or an aspect change) a dynamic
+   * sprite stuck on palette 0 has lost its palette. Only runs in the short
+   * window after a load or an aspect change: live overflows are recorded by
+   * the hook instead.
+   *
+   * First, a sprite whose type's init scripts all request one palette gets
+   * that palette. $1D4B names only the most recent overflow, which need not
+   * be this sprite's: a bear coin ($0284, palette $00C8) restored beside a
+   * later $0071 overflow was drawn orange. */
   const uint16_t last_overflow = Dkc3ReadWram16(kDkc3WramPaletteLastOverflow);
   const bool try_recovery = s_overflow_recovery_frames != 0;
   if (try_recovery)
     s_overflow_recovery_frames--;
+  bool type_known[kDkc3SpriteSlotCount];
+  memset(type_known, 0, sizeof type_known);
+  for (unsigned slot = 0; try_recovery && slot < kDkc3SpriteSlotCount;
+       slot++) {
+    const uint16_t base =
+        (uint16_t)(kDkc3SpriteTableBase + slot * kDkc3SpriteSlotStride);
+    const uint16_t type = Dkc3ReadWram16(base);
+    if (type == 0)
+      continue;
+    const uint16_t palette_id = Dkc3InitScriptPaletteForType(type);
+    if (palette_id == 0)
+      continue;
+    type_known[slot] = true;
+    if (s_sprite_overflow_pal[slot] != 0 ||
+        palette_id == kDkc3CommonPaletteId)
+      continue;
+    const uint16_t oam_attr = Dkc3ReadWram16((uint16_t)(base + 0x1Eu));
+    if (oam_attr == 0 || ((oam_attr >> 9) & 7u) != 0)
+      continue;
+    const uint16_t tile_base = (uint16_t)(oam_attr & 0x01FFu);
+    if (tile_base >= kDkc3SpriteStaticTileBase)
+      continue;
+    s_sprite_overflow_pal[slot] = palette_id;
+  }
+
+  /* Then, for a sprite whose type the scripts do not settle, fall back to
+   * $1D4B when it is not already loaded in hardware CGRAM or tracked on
+   * another slot. */
   if (try_recovery && last_overflow != 0 &&
       last_overflow != kDkc3CommonPaletteId) {
     bool known = false;
@@ -1249,7 +1293,7 @@ static void Dkc3SyncWidescreenObjPalettes(bool in_level) {
     if (!known) {
       int best_slot = -1;
       for (unsigned slot = 0; slot < kDkc3SpriteSlotCount; slot++) {
-        if (s_sprite_overflow_pal[slot] != 0)
+        if (s_sprite_overflow_pal[slot] != 0 || type_known[slot])
           continue;
         const uint16_t base =
             (uint16_t)(kDkc3SpriteTableBase + slot * kDkc3SpriteSlotStride);

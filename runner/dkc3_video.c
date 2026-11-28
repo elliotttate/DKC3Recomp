@@ -1489,6 +1489,59 @@ bool Dkc3VideoIsTransparentTileEntry(uint16_t tile_entry,
   return (tile_entry & 0x03ffu) == (transparent_tile & 0x03ffu);
 }
 
+enum { kDkc3InitScriptMaxCommands = 32 };
+
+uint16_t Dkc3VideoInitScriptPaletteForType(const uint8_t *bank, size_t size,
+                                           uint16_t sprite_type) {
+  if (!bank || size < 4u || sprite_type == 0)
+    return 0;
+  uint16_t answer = 0;
+  for (size_t start = 0; start + 3u <= size; start++) {
+    if (bank[start] != 0xffu ||
+        (uint16_t)(bank[start + 1u] | (bank[start + 2u] << 8)) != sprite_type)
+      continue;
+    uint16_t palette = 0;
+    bool ended = false, usable = true;
+    size_t at = start + 3u;
+    for (unsigned n = 0; n < kDkc3InitScriptMaxCommands && usable; n++) {
+      if (at >= size) {
+        usable = false;
+        break;
+      }
+      const uint8_t op = bank[at];
+      if (op == 0xefu || op == 0xf0u) {
+        ended = true;
+        break;
+      }
+      if (at + 3u > size ||
+          !(op < 0xefu || op == 0xfau || op == 0xfbu || op == 0xfcu ||
+            op == 0xfeu)) {
+        usable = false;
+        break;
+      }
+      if (op == 0xfcu) {
+        if (palette != 0) {
+          usable = false;
+          break;
+        }
+        palette = (uint16_t)(bank[at + 1u] | (bank[at + 2u] << 8));
+        if (palette == 0)
+          usable = false;
+      }
+      at += 3u;
+    }
+    /* Fail closed: a run that opens with this type but cannot be walked
+     * (an unknown command such as a sub-script call, or no terminator)
+     * might request another palette, so it refutes the answer like a
+     * script without a palette or with a different one. */
+    if (!usable || !ended || palette == 0 ||
+        (answer != 0 && answer != palette))
+      return 0;
+    answer = palette;
+  }
+  return answer;
+}
+
 
 
 

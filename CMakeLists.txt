@@ -117,6 +117,7 @@ if(DKC3_BUILD_SNESRECOMP)
         ${DKC3_SNESRECOMP_GEN_SOURCES}
         runner/dkc3_game.c
         runner/dkc3_animal_crate_cheat.c
+        runner/dkc3_show_hidden.c
         runner/dkc3_intro_skip.c
         runner/dkc3_kong_tracker.c
         runner/dkc3_video.c
@@ -172,6 +173,7 @@ if(DKC3_BUILD_SNESRECOMP)
             ${DKC3_SNESRECOMP_GEN_SOURCES}
             runner/dkc3_game.c
             runner/dkc3_animal_crate_cheat.c
+            runner/dkc3_show_hidden.c
             runner/dkc3_intro_skip.c
             runner/dkc3_kong_tracker.c
             runner/dkc3_video.c
@@ -233,6 +235,7 @@ if(DKC3_BUILD_SNESRECOMP)
         ${DKC3_SNESRECOMP_GEN_SOURCES}
         runner/dkc3_game.c
         runner/dkc3_animal_crate_cheat.c
+        runner/dkc3_show_hidden.c
         runner/dkc3_haptics.c
         runner/dkc3_intro_skip.c
         runner/dkc3_kong_tracker.c
@@ -605,6 +608,16 @@ if(BUILD_TESTING)
     add_test(NAME dkc3_animal_crate_cheat COMMAND test_dkc3_animal_crate_cheat)
     set_tests_properties(dkc3_animal_crate_cheat PROPERTIES
         LABELS "unit;native;input;assist")
+
+    add_executable(test_dkc3_show_hidden
+        tests/test_dkc3_show_hidden.c
+        runner/dkc3_show_hidden.c)
+    target_include_directories(test_dkc3_show_hidden PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/runner)
+    dkc3_enable_project_warnings(test_dkc3_show_hidden)
+    add_test(NAME dkc3_show_hidden COMMAND test_dkc3_show_hidden)
+    set_tests_properties(dkc3_show_hidden PROPERTIES
+        LABELS "unit;native;assist")
 
     if(TARGET SDL2::SDL2)
         add_executable(test_desktop_launcher_settings

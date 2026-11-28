@@ -780,6 +780,8 @@ static void ApplyOverlaySettings(RecompLauncherCSettings *settings) {
   Dkc3KongSetBadgesVisible(Dkc3LauncherKongBadges() != 0);
   Dkc3SetPauseCrateSpawnEnabled(updated.assist_tools != 0 &&
                                 Dkc3LauncherPauseCrateSpawn() != 0);
+  Dkc3SetShowHiddenObjectsEnabled(updated.assist_tools != 0 &&
+                                  Dkc3LauncherShowHiddenObjects() != 0);
   if (Dkc3VideoGetAspect() != (Dkc3VideoAspect)updated.aspect_index) {
     Dkc3VideoSetAspect((Dkc3VideoAspect)updated.aspect_index);
     memset(s_pixels, 0, sizeof s_pixels);
@@ -893,6 +895,8 @@ static int RunDesktop(const char *rom_path,
   }
   Dkc3SetPauseCrateSpawnEnabled(settings->assist_tools != 0 &&
                                 Dkc3LauncherPauseCrateSpawn() != 0);
+  Dkc3SetShowHiddenObjectsEnabled(settings->assist_tools != 0 &&
+                                  Dkc3LauncherShowHiddenObjects() != 0);
   if (!Dkc3DesktopColorFilterInit(&s_color_filter, s_screen_filter)) {
     fprintf(stderr, "unable to initialize the %s screen-color filter\n",
             Dkc3DesktopScreenFilterName(s_screen_filter));

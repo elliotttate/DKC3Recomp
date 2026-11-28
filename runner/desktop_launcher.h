@@ -40,6 +40,11 @@ void Dkc3LauncherSetKongBadges(int enabled);
  * default and persisted as PauseCrateSpawn. */
 int Dkc3LauncherPauseCrateSpawn(void);
 void Dkc3LauncherSetPauseCrateSpawn(int enabled);
+/* Whether the Assist Tools / Cheats option that draws sprites the game keeps
+ * invisible (such as hidden bear coins) is enabled; off by default and
+ * persisted as ShowHiddenObjects. */
+int Dkc3LauncherShowHiddenObjects(void);
+void Dkc3LauncherSetShowHiddenObjects(int enabled);
 
 void Dkc3LauncherSettingsDefault(RecompLauncherCSettings *settings);
 void Dkc3LauncherSettingsLoad(RecompLauncherCSettings *settings);

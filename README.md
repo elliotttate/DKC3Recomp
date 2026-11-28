@@ -165,6 +165,12 @@ in headless runs). While enabled, pressing **X** also dismounts Squawks
 overflowed to palette 0 are automatically repaired when a hardware palette slot
 is available or via the widescreen extended OBJ palette table.
 
+Also under **Assist Tools / Cheats**, **Show hidden objects** (off by default,
+remembered as `ShowHiddenObjects` in `launcher.cfg` and gated behind **Enable
+Assist Tools / Cheats**) draws sprites the game keeps invisible, such as hidden
+bear coins. Their behavior is unchanged; only the renderer's skip is bypassed
+(`DKC3_SHOW_HIDDEN_OBJECTS=1` enables it in headless runs).
+
 ## Native macOS release
 
 The v0.0.6 release fixes the Windows menu bar staying on screen in

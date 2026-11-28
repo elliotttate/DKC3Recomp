@@ -72,6 +72,12 @@ bool Dkc3PauseCrateSpawnEnabled(void);
  * with the crate-spawn cheat enabled (or NULL otherwise), for host HUD
  * display at the bottom middle of the screen. */
 const char *Dkc3PauseCrateHudLabel(void);
+/* Enables or disables the Assist Tools / Cheats option that draws sprites
+ * the game keeps invisible (render word +$26 with bits 15 and 14 set, such as
+ * the hidden bear coin). Off by default; DKC3_SHOW_HIDDEN_OBJECTS=1 also
+ * enables it for headless runs. */
+void Dkc3SetShowHiddenObjectsEnabled(bool enabled);
+bool Dkc3ShowHiddenObjectsEnabled(void);
 void Dkc3DrawPpuFrame(void);
 uint32_t Dkc3ResumePc(void);
 int Dkc3LastLleResult(void);
@@ -115,6 +121,11 @@ void Dkc3RecordSpritePaletteOverflow(uint16_t direct_page);
  * level number from WRAM and the PPU window registers, and writes no guest
  * state; 4:3 returns at once. */
 void Dkc3RecordTrunkWindows(uint16_t direct_page);
+
+/* The generated $B7:8904 renderer block passes each slot's render word
+ * (+$26) and slot address through this helper. It returns the word unchanged
+ * unless Show hidden objects is on, and never writes guest state. */
+uint16_t Dkc3RevealHiddenSpriteFlags(uint16_t flags, uint16_t slot);
 
 /* Host-only unclamped window edges in patched ppu.c (window 0 = W1). */
 void Dkc3PpuSetWsWindowUnclamped(int window, bool active, int left,

@@ -3709,3 +3709,64 @@ equal to the monitor; the menu item and Escape restored the bar and
   could be recovered with its initial palette for the rest of its life. The
   live desktop app was rebuilt but not played at this spot, and macOS is
   unverified.
+
+## 2026-11-27 - Assist Tools / Cheats option: show hidden objects
+
+- **Report:** in the release quick save `saves/dkc3s0.sav` (Kongs on a
+  cliff ledge, 4:3), an invisible coin sits above the Kongs. Request: an
+  assist option, off by default, that draws invisible objects.
+- **Measurement:**
+  - The coin is slot 3 (`$09C2`), type `$0284`, handler `$BB:D24E`
+    (`bear_coin_main`), OAM attribute `$2760` (palette 3, holding `$00C8`
+    with one reference), graphic `+$24` = `$274C`, and render word
+    `+$26` = `$C000`. Its behavior still runs: it animates and is collected
+    on contact.
+  - The sprite renderer loop at `$B7:8857` reads `+$26` at `$B7:8908`.
+    With bit 15 clear it draws at `$B7:8910` (camera-relative). With bit 15
+    set, `$B7:89C4` shifts the word. If bit 14 is also set it jumps to
+    `$B7:89E5`, which copies `+$20` to `+$22` and draws nothing. Otherwise
+    bits 1-4 index the variant table at `$B7:89CF`; variant 0 (`$B7:89EE`)
+    is a screen-space draw. In bank `$B7`, `$B7:8908` is the only
+    `LDA $0026,Y` that gates drawing; the other eight read the palette bits.
+  - The block holding that read (trace `$B7:8904`) is inlined into twelve
+    generated units: `CODE_B78857` and every renderer variant that loops
+    back to the top.
+- **Change:**
+  - `adapt_hidden_sprite_reveal` in
+    `scripts/apply_dkc3_widescreen_overrides.py` wraps that one `+$26` read
+    in every `$B7:8904` block as
+    `Dkc3RevealHiddenSpriteFlags(word, cpu->Y)`. It fails closed if no
+    block is found or a block has a different number of `+$26,Y` reads
+    than one. On the release ROM it wraps all twelve.
+  - `Dkc3ShowHiddenRenderFlags` (`runner/dkc3_show_hidden.c`) returns the
+    word unchanged unless the option is on and `(word & $C000) == $C000`.
+    It then clears bit 15, so the sprite takes the normal camera-relative
+    draw. The Kong slots `$0878`/`$08E6` and the ridden buddy's slot
+    (DP `$7C`) stay hidden, because the game draws those sprites on the
+    Kong slot. Guest memory is never written by the helper.
+  - The option is **Assist Tools / Cheats > Show hidden objects**, off by
+    default, saved as `ShowHiddenObjects` in `launcher.cfg`, and only on
+    while **Enable Assist Tools / Cheats** is on.
+    `DKC3_SHOW_HIDDEN_OBJECTS=1` turns it on for headless runs.
+- **Verified (headless, private ROM, Windows Release):**
+  - The quick save with the option off, 4 frames: frame, WRAM, VRAM,
+    CGRAM, and OAM hashes are identical to the previous build.
+  - With the option on, 30 frames: only the box x 140-155, y 22-48
+    differs. It is the coin, drawn as OAM 23-26 (tiles `$160`-`$164`,
+    palette 3). Frames 30/34/38/42 show the silver bear coin spinning.
+    That matches the `$00C8` palette noted in the overflow entry above.
+    WRAM differs in 47 bytes: the slot's `+$20`/`+$22`, the OAM buffer,
+    and renderer scratch, which is what any drawn sprite writes.
+  - `test_dkc3_show_hidden` covers the env parse, the reveal, untouched
+    normal/variant/bit-14-only words, and the Kong and ridden-buddy
+    exclusions. `test_desktop_launcher_settings` covers the default and the
+    round trip. `test_apply_dkc3_widescreen_overrides` covers the wrap in
+    each renderer fixture, idempotence, and both fail-closed cases.
+    Windows Release CTest 33/33.
+- **Unverified:**
+  - Other hidden sprite types were not surveyed. The option shows any
+    non-Kong slot the game hides this way, and one that never asked for
+    VRAM or a palette could draw with whatever those slots hold.
+  - The live desktop app was rebuilt but not played. The saved-scene
+    corpus, cave replay, and macOS are not checked.
+  - The overlay checkbox was not exercised in a window.

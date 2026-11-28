@@ -45,6 +45,12 @@ def renderer_unit(symbol: str, entry_pc: str, cull_pc: str) -> str:
 RecompReturn {symbol}(CpuState *cpu) {{
   uint16 _entry_s = cpu->S;  L_{entry_pc[4:]}_M0X0:    cpu_trace_block(cpu, {entry_pc});
     uint16 _v1 = 0x30;
+  L_8904_M0X0:
+    cpu_trace_block(cpu, 0xB78904);
+    uint16 _v80 = cpu_read_a16(cpu);
+    cpu_write16(cpu, 0x00, (uint16)(cpu->D + 0x002a), _v80);
+    uint16 _v82 = cpu_read16(cpu, (uint8)(((((uint32)cpu->DB << 16) + (uint32)0x0026 + (uint32)cpu->Y)) >> 16), (uint16)((((uint32)cpu->DB << 16) + (uint32)0x0026 + (uint32)cpu->Y)));
+    cpu_write_a_m(cpu, (uint16)(_v82));
   L_{cull_pc[4:]}_M0X0:
     cpu_trace_block(cpu, {cull_pc});
     uint16 _v5 = cpu_read16(cpu, cpu->DB, (uint16)(0x196d));
@@ -255,6 +261,12 @@ class WidescreenOverrideTests(unittest.TestCase):
                     text.count("Dkc3VideoExpandSpriteCullLeft(0x30)"), 2)
                 self.assertEqual(
                     text.count("Dkc3VideoExpandSpriteCullSpan(0x160)"), 2)
+                # The render word read is wrapped once, after the cull
+                # adaptations, and the unit includes the game header.
+                self.assertEqual(
+                    text.count("Dkc3RevealHiddenSpriteFlags(cpu_read16("), 1)
+                self.assertIn("(uint32)cpu->Y))), cpu->Y);", text)
+                self.assertIn(MODULE.GAME_INCLUDE, text)
             self.assertIn(
                 "uint16 _v14 = Dkc3VideoExpandSpriteCullLeft(0x10);",
                 first["narrow.c"])
@@ -296,6 +308,28 @@ class WidescreenOverrideTests(unittest.TestCase):
             generated = self.make_generated_dir(Path(directory))
             (generated / "narrow.c").unlink()
             with self.assertRaisesRegex(ValueError, "0xB78DFC"):
+                MODULE.apply_overrides(generated)
+
+    def test_fails_closed_when_hidden_render_block_is_missing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            generated = self.make_generated_dir(Path(directory))
+            for path in generated.glob("renderer*.c"):
+                path.write_text(
+                    path.read_text(encoding="utf-8").replace(
+                        "0xB78904", "0xB78905"),
+                    encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, r"\$B7:8904"):
+                MODULE.apply_overrides(generated)
+
+    def test_fails_closed_when_hidden_render_read_moves(self):
+        with tempfile.TemporaryDirectory() as directory:
+            generated = self.make_generated_dir(Path(directory))
+            path = sorted(generated.glob("renderer*.c"))[0]
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "(uint32)0x0026", "(uint32)0x0028"),
+                encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, r"\+\$26"):
                 MODULE.apply_overrides(generated)
 
     def test_fails_closed_when_a_constant_changes(self):

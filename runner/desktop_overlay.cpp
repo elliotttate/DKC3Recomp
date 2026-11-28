@@ -780,6 +780,7 @@ static void DrawSettingsPage(Dkc3DesktopOverlay *overlay) {
     Dkc3LauncherSetHaptics(1);
     Dkc3LauncherSetKongBadges(1);
     Dkc3LauncherSetPauseCrateSpawn(0);
+    Dkc3LauncherSetShowHiddenObjects(0);
     Dkc3DesktopOverlayModelSetAssistTools(
         &overlay->model, overlay->settings.assist_tools != 0);
   }
@@ -828,6 +829,14 @@ static void DrawAssistPage(Dkc3DesktopOverlay *overlay) {
   ImGui::TextWrapped(
       "While paused in a level, press Left/Right to choose an animal buddy "
       "crate and B to spawn it. Press X to dismount Squawks.");
+  ImGui::PopStyleColor();
+  bool show_hidden_objects = Dkc3LauncherShowHiddenObjects() != 0;
+  if (ImGui::Checkbox("Show hidden objects", &show_hidden_objects))
+    Dkc3LauncherSetShowHiddenObjects(show_hidden_objects ? 1 : 0);
+  ImGui::PushStyleColor(ImGuiCol_Text,
+                        ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+  ImGui::TextWrapped(
+      "Draws objects the game keeps invisible, such as hidden bear coins.");
   ImGui::PopStyleColor();
   static const char *actions[] = {
       "Rewind", "Fast-forward", "Save state", "Load state"};

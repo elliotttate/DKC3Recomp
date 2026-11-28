@@ -41,9 +41,13 @@ int main(void) {
   if (Check(Dkc3LauncherPauseCrateSpawn() == 0,
             "pause crate spawn did not default to disabled"))
     return 1;
+  if (Check(Dkc3LauncherShowHiddenObjects() == 0,
+            "show hidden objects did not default to disabled"))
+    return 1;
   Dkc3LauncherSetHaptics(0);
   Dkc3LauncherSetKongBadges(0);
   Dkc3LauncherSetPauseCrateSpawn(1);
+  Dkc3LauncherSetShowHiddenObjects(1);
   if (Check(Dkc3LauncherSettingsSave(&settings),
             "launcher settings could not be saved"))
     return 1;
@@ -51,13 +55,16 @@ int main(void) {
   Dkc3LauncherSetHaptics(1);
   Dkc3LauncherSetKongBadges(1);
   Dkc3LauncherSetPauseCrateSpawn(0);
+  Dkc3LauncherSetShowHiddenObjects(0);
   Dkc3LauncherSettingsLoad(&settings);
   if (Check(Dkc3LauncherHaptics() == 0,
             "saved haptics setting was not restored") ||
       Check(Dkc3LauncherKongBadges() == 0,
             "saved KONG badge setting was not restored") ||
       Check(Dkc3LauncherPauseCrateSpawn() == 1,
-            "saved pause crate spawn setting was not restored"))
+            "saved pause crate spawn setting was not restored") ||
+      Check(Dkc3LauncherShowHiddenObjects() == 1,
+            "saved show hidden objects setting was not restored"))
     return 1;
 
   FILE *file = fopen(config, "r");
@@ -73,6 +80,8 @@ int main(void) {
             "saved launcher config omitted KONG badges") ||
       Check(strstr(contents, "PauseCrateSpawn=1\n") != NULL,
             "saved launcher config omitted pause crate spawn") ||
+      Check(strstr(contents, "ShowHiddenObjects=1\n") != NULL,
+            "saved launcher config omitted show hidden objects") ||
       Check(remove(config) == 0, "test launcher config could not be removed"))
     return 1;
   return 0;

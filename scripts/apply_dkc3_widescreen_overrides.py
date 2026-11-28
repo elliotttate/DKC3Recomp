@@ -408,6 +408,60 @@ def adapt_trunk_windows(sources: dict, generated_dir: Path) -> None:
     sources[path] = text[:start] + block + text[end:]
 
 
+HIDDEN_RENDER_BLOCK = "0xB78904"
+HIDDEN_RENDER_HOOK = "Dkc3RevealHiddenSpriteFlags"
+
+
+def adapt_hidden_sprite_reveal(sources: dict, generated_dir: Path) -> None:
+    """Let the Show hidden objects assist reveal invisible sprites.
+
+    The sprite renderer reads each slot's render word (+$26) at $B7:8908, in
+    the block traced as $B7:8904. Bits 15 and 14 together make $B7:89C4 skip
+    the sprite without drawing it (the hidden bear coin spawns that way).
+    The block is inlined into every renderer variant that loops back to the
+    top, so every copy is wrapped. The host helper returns the word unchanged
+    unless the assist is on; the native behavior is the helper disabled.
+    """
+    label = re.compile(r"(  L_[0-9A-F]{4}_M[01]X[01]:)")
+    read = re.compile(
+        r"(uint16\s+\w+\s*=\s*)(cpu_read16\([^;\n]*\(uint32\)0x0026 \+ "
+        r"\(uint32\)cpu->Y[^;\n]*\));")
+    marker = f"cpu_trace_block(cpu, {HIDDEN_RENDER_BLOCK});"
+    found = 0
+    for path in sorted(generated_dir.glob("*.c")):
+        text = sources.get(path)
+        if text is None:
+            text = path.read_text(encoding="utf-8")
+        if marker not in text:
+            continue
+        parts = label.split(text)
+        for index in range(2, len(parts), 2):
+            block = parts[index]
+            if marker not in block:
+                continue
+            if f"{HIDDEN_RENDER_HOOK}(" in block:
+                if block.count(f"{HIDDEN_RENDER_HOOK}(") != 1:
+                    raise ValueError(
+                        "ambiguous existing hidden sprite adaptation in "
+                        f"{path.name}")
+                found += 1
+                continue
+            block, count = read.subn(
+                rf"\1{HIDDEN_RENDER_HOOK}(\2, cpu->Y);", block)
+            if count != 1:
+                raise ValueError(
+                    "expected one $B7:8908 render word (+$26) read in "
+                    f"{path.name}; found {count}")
+            parts[index] = block
+            found += 1
+        text = add_include("".join(parts), GAME_INCLUDE)
+        sources[path] = text
+    if found == 0:
+        raise ValueError(
+            "no $B7:8904 sprite renderer block found for the hidden "
+            "sprite reveal")
+
+
 def apply_overrides(generated_dir: Path) -> list[Path]:
     """Widen DKC3's object activation and sprite culls to the presented view.
 
@@ -458,6 +512,7 @@ def apply_overrides(generated_dir: Path) -> list[Path]:
         raise ValueError(
             "renderer cull blocks not found: " + ", ".join(sorted(missing)))
     adapt_grid_renderer(sources, generated_dir)
+    adapt_hidden_sprite_reveal(sources, generated_dir)
 
     changed = []
     for path, text in sorted(sources.items()):

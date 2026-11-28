@@ -1031,6 +1031,8 @@ static void ApplyOverlaySettings(SdlHost *host,
   Dkc3KongSetBadgesVisible(Dkc3LauncherKongBadges() != 0);
   Dkc3SetPauseCrateSpawnEnabled(updated.assist_tools != 0 &&
                                 Dkc3LauncherPauseCrateSpawn() != 0);
+  Dkc3SetShowHiddenObjectsEnabled(updated.assist_tools != 0 &&
+                                  Dkc3LauncherShowHiddenObjects() != 0);
   memcpy(host->assist_key_bind, updated.assist_key_bind,
          sizeof host->assist_key_bind);
   memcpy(host->assist_pad_bind, updated.assist_pad_bind,
@@ -1193,6 +1195,8 @@ static int RunGame(const char *rom_path,
   }
   Dkc3SetPauseCrateSpawnEnabled(settings->assist_tools != 0 &&
                                 Dkc3LauncherPauseCrateSpawn() != 0);
+  Dkc3SetShowHiddenObjectsEnabled(settings->assist_tools != 0 &&
+                                  Dkc3LauncherShowHiddenObjects() != 0);
   if (!Dkc3DesktopColorFilterInit(&host.color_filter, screen_filter)) {
     free(rom);
 #ifdef __APPLE__

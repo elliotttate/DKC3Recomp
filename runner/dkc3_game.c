@@ -1,5 +1,6 @@
 #include "dkc3_game.h"
 #include "dkc3_animal_crate_cheat.h"
+#include "dkc3_show_hidden.h"
 #include "dkc3_hdma.h"
 #include "dkc3_intro_skip.h"
 #include "dkc3_kong_tracker.h"
@@ -846,6 +847,31 @@ static void Dkc3RunPauseCrateSpawn(void) {
   g_ram[kDkc3PauseCrateDpScratchSlotAddr + 1u] = saved_dp76_hi;
   g_ram[kDkc3PauseCrateDpScratchTempAddr] = saved_dp42_lo;
   g_ram[kDkc3PauseCrateDpScratchTempAddr + 1u] = saved_dp42_hi;
+}
+
+static bool s_show_hidden_objects;
+static int s_show_hidden_env = -1;
+
+void Dkc3SetShowHiddenObjectsEnabled(bool enabled) {
+  s_show_hidden_objects = enabled;
+}
+
+bool Dkc3ShowHiddenObjectsEnabled(void) {
+  if (s_show_hidden_env < 0)
+    s_show_hidden_env =
+        Dkc3ShowHiddenEnabledFromEnv(getenv("DKC3_SHOW_HIDDEN_OBJECTS")) ? 1
+                                                                          : 0;
+  return s_show_hidden_objects || s_show_hidden_env != 0;
+}
+
+uint16_t Dkc3RevealHiddenSpriteFlags(uint16_t flags, uint16_t slot) {
+  if ((flags & kDkc3HiddenRenderMask) != kDkc3HiddenRenderMask ||
+      !Dkc3ShowHiddenObjectsEnabled() || !g_ram)
+    return flags;
+  const uint16_t mounted_buddy =
+      (uint16_t)(g_ram[kDkc3HiddenMountedBuddyAddr] |
+                 ((uint16_t)g_ram[kDkc3HiddenMountedBuddyAddr + 1u] << 8));
+  return Dkc3ShowHiddenRenderFlags(flags, slot, mounted_buddy, true);
 }
 
 static void Dkc3KongDrawFrameBadge(void) {

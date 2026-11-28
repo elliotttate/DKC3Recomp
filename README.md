@@ -103,6 +103,14 @@ Bleak's snowball arena now preserves Mode 2's correct background/sprite order,
 so the snowman appears in front of the distant snowbank and behind foreground
 cover. Its bounded background maps fill 16:10, 16:9, and 21:9 using their
 hardware wrap, with the native center and gameplay unchanged by widening.
+The level `$23` KAOS arena now fills 16:10, 16:9, and 21:9 from its static
+512-pixel room plane, stopping at the plane's ends instead of wrapping. KAOS's
+body continues into a margin through the cartridge's own body window and is
+never duplicated. The K. Roolenstein phase that follows, where the room moves
+to BG1, fills the wide view the same way; its floor electricity and haze
+(BG2/BG3) are drawn into the margins from their own map, clipped by the
+cartridge's room-anchored windows. The native center, 4:3 output, and
+gameplay are unchanged.
 Pothole Panic's cave now fills the wide view from its authored level map.
 Its shape-1 layout uses 32 metatile rows per column, twice the height of
 the previously supported horizontal layout.
@@ -169,7 +177,10 @@ Also under **Assist Tools / Cheats**, **Show hidden objects** (off by default,
 remembered as `ShowHiddenObjects` in `launcher.cfg` and gated behind **Enable
 Assist Tools / Cheats**) draws sprites the game keeps invisible, such as hidden
 bear coins. Their behavior is unchanged; only the renderer's skip is bypassed
-(`DKC3_SHOW_HIDDEN_OBJECTS=1` enables it in headless runs).
+(`DKC3_SHOW_HIDDEN_OBJECTS=1` enables it in headless runs). It applies only
+during level gameplay and only to sprites that hold tiles or a palette, so
+hidden controllers such as the world map's are never drawn. K. Rool, whom the
+game hides after the final fight, also stays hidden.
 
 ## Native macOS release
 
@@ -221,6 +232,10 @@ overlay, and audio rate control. Keep `SDL2.dll` and the `assets` directory
 beside the executable when moving it. Select your own ROM in the launcher.
 The separate `DKC3Recomp.exe` in the build directory is the legacy Win32 host;
 portable packages use the SDL executable renamed to `DKC3Recomp.exe`.
+Config, quick states and SRAM live beside the executable unless
+`DKC3_USER_DIR` names another directory; the Windows smoke tests use their own
+directories under `build-windows`, so running CTest leaves `Release/saves`
+untouched.
 
 The game window now has native **Game** and **View** dropdown menus matching
 the Mac's game commands: Pause / Settings, Quick Save, Quick Load, fullscreen,

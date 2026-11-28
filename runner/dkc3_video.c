@@ -1002,6 +1002,109 @@ bool Dkc3VideoUsesSnowArenaPlanes(bool in_level, uint16_t level,
   return true;
 }
 
+int Dkc3VideoKaosArenaPlaneLayer(bool in_level, uint16_t level,
+                                 uint8_t mode, const uint8_t maps[4],
+                                 const int plane_bands[2], int band_count) {
+  /* Level $23 keeps its terrain stream base ($1969 = $7800) off every
+   * wide layer, so no layer owns a world stream. The room is one
+   * 64-column plane ($71): BG2 while KAOS's body occupies BG1 ($78), BG1
+   * once K. Roolenstein appears (BG2 and BG3 then share $7C). The band
+   * classifier must have proven that plane static on every band before
+   * its adjacent columns are shown. */
+  if (!in_level || level != 0x23 || (mode & 7u) != 1u || !maps ||
+      !plane_bands || band_count <= 0 || !Dkc3VideoCullWidenEnabled())
+    return -1;
+  int layer = -1;
+  if (maps[0] == 0x78 && maps[1] == 0x71 && maps[2] == 0x7c)
+    layer = 1;
+  else if (maps[0] == 0x71 && maps[1] == 0x7c && maps[2] == 0x7c)
+    layer = 0;
+  if (layer < 0 || plane_bands[layer] != band_count) return -1;
+  return layer;
+}
+
+void Dkc3VideoKaosArenaMargins(uint16_t h_scroll, int extra, int *left,
+                               int *right) {
+  const int x = (int)(h_scroll & 0x01ffu);
+  int l = x < extra ? x : extra;
+  int r = 0x200 - kDkc3VideoNativeWidth - x;
+  if (r > extra) r = extra;
+  if (r < 0) r = 0;
+  if (l < 0) l = 0;
+  if (left) *left = l;
+  if (right) *right = r;
+}
+
+bool Dkc3VideoKaosRoomWindow(uint8_t reg_left, uint8_t reg_right,
+                             uint16_t room_h_scroll, int west, int east,
+                             int *left, int *right) {
+  if (reg_left > reg_right)
+    return false;
+  const int s = (int)(room_h_scroll & 0x01ffu);
+  int l = reg_left, r = reg_right;
+  /* A register pinned to the screen edge hides where the room-anchored
+   * edge really lies; take it from the room scroll, and only when that
+   * places it at or past the same screen edge. */
+  if (reg_left == 0) {
+    l = west - s;
+    if (l > 0) return false;
+  } else if (abs(reg_left - (west - s)) > 2) {
+    return false;
+  }
+  if (reg_right == 0xff) {
+    r = east - s;
+    if (r < 0xff) return false;
+  } else if (abs(reg_right - (east - s)) > 2) {
+    return false;
+  }
+  if (left) *left = l;
+  if (right) *right = r;
+  return true;
+}
+
+bool Dkc3VideoKaosBodyWindow(const uint8_t *table, size_t length,
+                             uint16_t bg1_h_scroll, uint8_t *reg_left,
+                             uint8_t *reg_right, int *left, int *right) {
+  if (!table)
+    return false;
+  const int s = (int)(bg1_h_scroll & 0xffu);
+  if (s == 0)
+    return false; /* the map exactly fills the native window */
+  size_t at = 0;
+  int lines = 0;
+  while (at < length && lines < 240) {
+    const uint8_t count_byte = table[at++];
+    if (count_byte == 0)
+      break;
+    const int count = count_byte & 0x7f;
+    const int pairs = (count_byte & 0x80u) ? count : 1;
+    for (int pair = 0; pair < pairs; pair++) {
+      if (at + 2u > length)
+        return false;
+      const int l = table[at], r = table[at + 1];
+      at += 2;
+      /* Extent starts left of the screen at -s: clamped to [0, 255 - s]. */
+      if (l == 0 && r < 255 && abs(r - (255 - s)) <= 2) {
+        if (reg_left) *reg_left = (uint8_t)l;
+        if (reg_right) *reg_right = (uint8_t)r;
+        if (left) *left = r - 255;
+        if (right) *right = r;
+        return true;
+      }
+      /* Extent starts inside the screen at 256 - s: [256 - s, 255]. */
+      if (r == 255 && l > 0 && abs(l - (256 - s)) <= 2) {
+        if (reg_left) *reg_left = (uint8_t)l;
+        if (reg_right) *reg_right = (uint8_t)r;
+        if (left) *left = l;
+        if (right) *right = l + 255;
+        return true;
+      }
+    }
+    lines += count;
+  }
+  return false;
+}
+
 bool Dkc3VideoIsResidentOverworld(uint32_t main_loop_vector, uint8_t bg_mode,
                                   const uint8_t bg_sc[4],
                                   uint8_t enabled_layers,

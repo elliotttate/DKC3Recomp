@@ -45,6 +45,24 @@ int main(void) {
             0x4000u,
         "a slot other than the mounted buddy stayed hidden");
 
+  /* Only sprites in level gameplay that hold a tile base or palette. */
+  Check(Dkc3ShowHiddenSlotEligible(0xB38076u, 0x2760u),
+        "bear coin in a level is not eligible");
+  Check(!Dkc3ShowHiddenSlotEligible(0xB4B179u, 0x2760u),
+        "a world-map slot is eligible");
+  Check(!Dkc3ShowHiddenSlotEligible(0xB38076u, 0x3000u),
+        "a priority-only attribute (no tiles, no palette) is eligible");
+  Check(!Dkc3ShowHiddenSlotEligible(0xB38076u, 0x0000u),
+        "an empty attribute is eligible");
+  Check(Dkc3ShowHiddenSlotEligible(0xB38076u, 0x0E00u),
+        "a palette-only attribute is not eligible");
+  Check(Dkc3ShowHiddenSlotEligible(0xB38076u, 0x0001u),
+        "a tile-only attribute is not eligible");
+
+  /* A defeated K. Rool stays hidden; the bear coin type stays revealable. */
+  Check(!Dkc3ShowHiddenTypeEligible(0x0118u), "hidden K. Rool is eligible");
+  Check(Dkc3ShowHiddenTypeEligible(0x0284u), "bear coin type is not eligible");
+
   if (s_failures == 0) printf("dkc3_show_hidden: all checks passed\n");
   return s_failures == 0 ? 0 : 1;
 }

@@ -257,6 +257,107 @@ int main(void) {
     }
 #undef SNOW
   }
+  {
+    uint8_t maps[4] = {0x78, 0x71, 0x7c, 0};
+    const int on_bg2[2] = {0, 1}, on_bg2x3[2] = {0, 3}, on_bg1[2] = {1, 0};
+    const int none[2] = {0, 0}, partial[2] = {0, 2};
+    if (Dkc3VideoKaosArenaPlaneLayer(true, 0x23, 1, maps, on_bg2, 1) != 1 ||
+        Dkc3VideoKaosArenaPlaneLayer(true, 0x23, 0x09, maps, on_bg2x3, 3) !=
+            1 ||
+        Dkc3VideoKaosArenaPlaneLayer(false, 0x23, 1, maps, on_bg2, 1) != -1 ||
+        Dkc3VideoKaosArenaPlaneLayer(true, 0x20, 1, maps, on_bg2, 1) != -1 ||
+        Dkc3VideoKaosArenaPlaneLayer(true, 0x23, 2, maps, on_bg2, 1) != -1 ||
+        Dkc3VideoKaosArenaPlaneLayer(true, 0x23, 1, maps, none, 1) != -1 ||
+        Dkc3VideoKaosArenaPlaneLayer(true, 0x23, 1, maps, on_bg1, 1) != -1 ||
+        Dkc3VideoKaosArenaPlaneLayer(true, 0x23, 1, maps, partial, 3) != -1 ||
+        Dkc3VideoKaosArenaPlaneLayer(true, 0x23, 1, maps, none, 0) != -1 ||
+        Dkc3VideoKaosArenaPlaneLayer(true, 0x23, 1, maps, NULL, 1) != -1 ||
+        Dkc3VideoKaosArenaPlaneLayer(true, 0x23, 1, NULL, on_bg2, 1) != -1)
+      return fprintf(stderr, "FAIL: KAOS arena scene gate\n"), 1;
+    for (int layer = 0; layer < 3; layer++) {
+      maps[layer] ^= 1;
+      if (Dkc3VideoKaosArenaPlaneLayer(true, 0x23, 1, maps, on_bg2, 1) != -1)
+        return fprintf(stderr, "FAIL: KAOS arena map gate\n"), 1;
+      maps[layer] ^= 1;
+    }
+    /* K. Roolenstein: the room moves to BG1; BG2 and BG3 share $7C. */
+    uint8_t rool[4] = {0x71, 0x7c, 0x7c, 0};
+    if (Dkc3VideoKaosArenaPlaneLayer(true, 0x23, 1, rool, on_bg1, 1) != 0 ||
+        Dkc3VideoKaosArenaPlaneLayer(true, 0x23, 1, rool, on_bg2, 1) != -1 ||
+        Dkc3VideoKaosArenaPlaneLayer(true, 0x22, 1, rool, on_bg1, 1) != -1)
+      return fprintf(stderr, "FAIL: K. Roolenstein arena gate\n"), 1;
+    for (int layer = 0; layer < 3; layer++) {
+      rool[layer] ^= 1;
+      if (Dkc3VideoKaosArenaPlaneLayer(true, 0x23, 1, rool, on_bg1, 1) != -1)
+        return fprintf(stderr, "FAIL: K. Roolenstein map gate\n"), 1;
+      rool[layer] ^= 1;
+    }
+    int left = -1, right = -1;
+    Dkc3VideoKaosArenaMargins(0x0070, 43, &left, &right);
+    if (left != 43 || right != 43)
+      return fprintf(stderr, "FAIL: KAOS arena interior margins\n"), 1;
+    Dkc3VideoKaosArenaMargins(0x0008, 95, &left, &right);
+    if (left != 8 || right != 95)
+      return fprintf(stderr, "FAIL: KAOS arena west margin\n"), 1;
+    Dkc3VideoKaosArenaMargins(0x00f8, 95, &left, &right);
+    if (left != 95 || right != 8)
+      return fprintf(stderr, "FAIL: KAOS arena east margin\n"), 1;
+    Dkc3VideoKaosArenaMargins(0x0120, 43, &left, &right);
+    if (left != 43 || right != 0)
+      return fprintf(stderr, "FAIL: KAOS arena wrapped native window\n"), 1;
+    /* Body map starting left of the screen (scroll 103): a direct entry
+     * of other lines, then a repeat entry whose second pair is the body's. */
+    const uint8_t left_table[] = {0x20, 5, 255, 0x82, 5, 255, 0, 153, 0};
+    uint8_t rl = 0, rr = 0;
+    if (!Dkc3VideoKaosBodyWindow(left_table, sizeof left_table, 103, &rl,
+                                 &rr, &left, &right) ||
+        rl != 0 || rr != 153 || left != -102 || right != 153)
+      return fprintf(stderr, "FAIL: KAOS body window left extent\n"), 1;
+    /* Body map starting inside the screen (scroll 250). */
+    const uint8_t right_table[] = {0x40, 6, 255, 0};
+    if (!Dkc3VideoKaosBodyWindow(right_table, sizeof right_table, 0x3fa, &rl,
+                                 &rr, &left, &right) ||
+        rl != 6 || rr != 255 || left != 6 || right != 261)
+      return fprintf(stderr, "FAIL: KAOS body window right extent\n"), 1;
+    /* No consistent pair, a zero scroll, a truncated table, and a null
+     * table are all rejected. */
+    const uint8_t other_table[] = {0x40, 5, 255, 0x10, 0, 255, 0};
+    if (Dkc3VideoKaosBodyWindow(other_table, sizeof other_table, 103, &rl,
+                                &rr, &left, &right) ||
+        Dkc3VideoKaosBodyWindow(right_table, sizeof right_table, 0x400, &rl,
+                                &rr, &left, &right) ||
+        Dkc3VideoKaosBodyWindow(left_table, 4, 103, &rl, &rr, &left,
+                                &right) ||
+        Dkc3VideoKaosBodyWindow(NULL, 8, 103, &rl, &rr, &left, &right))
+      return fprintf(stderr, "FAIL: KAOS body window rejection\n"), 1;
+    /* K. Roolenstein room windows. Scroll 248: both left edges pinned at 0
+     * (the west wall is off screen), right edges room-anchored. */
+    if (!Dkc3VideoKaosRoomWindow(0, 188, 248, kDkc3KaosRoomWindowWest,
+                                 kDkc3KaosRoomWindow1East, &left, &right) ||
+        left != 75 - 248 || right != 188)
+      return fprintf(stderr, "FAIL: KAOS room window pinned left\n"), 1;
+    /* Scroll 41: the wall is on screen, the east end past it. */
+    if (!Dkc3VideoKaosRoomWindow(34, 255, 41, kDkc3KaosRoomWindowWest,
+                                 kDkc3KaosRoomWindow2East, &left, &right) ||
+        left != 34 || right != 348 - 41)
+      return fprintf(stderr, "FAIL: KAOS room window pinned right\n"), 1;
+    /* Within two pixels of a trailing scroll is accepted as written. */
+    if (!Dkc3VideoKaosRoomWindow(0, 190, 248, kDkc3KaosRoomWindowWest,
+                                 kDkc3KaosRoomWindow1East, &left, &right) ||
+        right != 190)
+      return fprintf(stderr, "FAIL: KAOS room window tolerance\n"), 1;
+    /* A pinned edge the room places on screen, an unpinned edge off the
+     * room's anchor, and an empty window are rejected. */
+    if (Dkc3VideoKaosRoomWindow(0, 188, 60, kDkc3KaosRoomWindowWest,
+                                kDkc3KaosRoomWindow1East, &left, &right) ||
+        Dkc3VideoKaosRoomWindow(0, 255, 248, kDkc3KaosRoomWindowWest,
+                                kDkc3KaosRoomWindow1East, &left, &right) ||
+        Dkc3VideoKaosRoomWindow(0, 150, 248, kDkc3KaosRoomWindowWest,
+                                kDkc3KaosRoomWindow1East, &left, &right) ||
+        Dkc3VideoKaosRoomWindow(20, 10, 248, kDkc3KaosRoomWindowWest,
+                                kDkc3KaosRoomWindow1East, &left, &right))
+      return fprintf(stderr, "FAIL: KAOS room window rejection\n"), 1;
+  }
   if (kDkc3VideoAspectNative != 0 || kDkc3VideoAspect16x10 != 1 ||
       kDkc3VideoAspect16x9 != 2 || kDkc3VideoAspect21x9 != 3 ||
       !Dkc3VideoAspectFromName("16:10", &parsed_aspect) ||

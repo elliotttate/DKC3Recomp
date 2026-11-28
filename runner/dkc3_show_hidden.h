@@ -24,13 +24,42 @@ extern "C" {
  *   the animal buddy the active Kong is riding, whose own slot is hidden
  *   while the Kong slot draws it.
  */
+/*
+ * Not every hidden slot is a sprite with graphics. On the world map, the
+ * controller in slot $1034 (type $0198) is hidden with +$26 = $C000, keeps a
+ * counter in the graphic word +$24 ($0001, $0101, $0201, ...), and has OAM
+ * attribute +$1E = $3000 (priority only: tile base 0, palette 0). Drawing it
+ * as a sprite reads frame data the game never meant to draw and leaves the
+ * OAM write pointer (DP $82) where the end-of-frame clear at $80:8992 never
+ * terminates. So a slot is revealed only during level gameplay (main loop
+ * vector DP $4E = $B3:8076) and only when its OAM attribute names a tile
+ * base or palette, as the bear coin's $2760 does.
+ */
 enum {
   kDkc3HiddenRenderMask = 0xC000u,
   kDkc3HiddenRenderVariantBit = 0x8000u,
   kDkc3HiddenKongSlotFirst = 0x0878u,
   kDkc3HiddenKongSlotSecond = 0x08E6u,
   kDkc3HiddenMountedBuddyAddr = 0x007Cu,
+  kDkc3HiddenMainLoopVectorAddr = 0x004Eu,
+  kDkc3HiddenSpriteOamOffset = 0x001Eu,
+  kDkc3HiddenOamTilePaletteMask = 0x0FFFu,
+  kDkc3HiddenSpriteTypeOffset = 0x0000u,
+  kDkc3HiddenTypeKRool = 0x0118u,
 };
+
+#define kDkc3HiddenMainLoopLevel 0xB38076u
+
+/* Returns true only during level gameplay (main_loop_vector == $B3:8076)
+ * when the slot's OAM attribute holds a tile base or palette. */
+bool Dkc3ShowHiddenSlotEligible(uint32_t main_loop_vector, uint16_t oam_attr);
+
+/* Types the game hides on purpose once they leave play, so revealing them
+ * draws a stale body. K. Rool (type $0118, slot +$00) is hidden with
+ * +$26 = $C000 after the level $23 fight and keeps his last frame and
+ * position, half inside the floor (release quick save, slot $09C2,
+ * +$1E = $26C0, graphic $8019). Returns false for those types. */
+bool Dkc3ShowHiddenTypeEligible(uint16_t type);
 
 /* Returns true only when env_value is non-NULL, non-empty, and not "0". */
 bool Dkc3ShowHiddenEnabledFromEnv(const char *env_value);

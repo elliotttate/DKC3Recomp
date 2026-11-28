@@ -868,6 +868,19 @@ uint16_t Dkc3RevealHiddenSpriteFlags(uint16_t flags, uint16_t slot) {
   if ((flags & kDkc3HiddenRenderMask) != kDkc3HiddenRenderMask ||
       !Dkc3ShowHiddenObjectsEnabled() || !g_ram)
     return flags;
+  const uint32_t main_loop_vector =
+      (uint32_t)g_ram[kDkc3HiddenMainLoopVectorAddr] |
+      ((uint32_t)g_ram[kDkc3HiddenMainLoopVectorAddr + 1u] << 8) |
+      ((uint32_t)g_ram[kDkc3HiddenMainLoopVectorAddr + 2u] << 16);
+  const size_t oam_addr = (size_t)slot + kDkc3HiddenSpriteOamOffset;
+  const uint16_t oam_attr =
+      (uint16_t)(g_ram[oam_addr] | ((uint16_t)g_ram[oam_addr + 1u] << 8));
+  if (!Dkc3ShowHiddenSlotEligible(main_loop_vector, oam_attr))
+    return flags;
+  const size_t type_addr = (size_t)slot + kDkc3HiddenSpriteTypeOffset;
+  if (!Dkc3ShowHiddenTypeEligible(
+          (uint16_t)(g_ram[type_addr] | ((uint16_t)g_ram[type_addr + 1u] << 8))))
+    return flags;
   const uint16_t mounted_buddy =
       (uint16_t)(g_ram[kDkc3HiddenMountedBuddyAddr] |
                  ((uint16_t)g_ram[kDkc3HiddenMountedBuddyAddr + 1u] << 8));
@@ -2760,6 +2773,35 @@ static bool Dkc3HdmaReadable(void *context, const uint8_t *pointer,
   return false;
 }
 
+/* The KAOS arena's body window: BG1 must use window 1 alone, inverted, on
+ * the main screen, and an active direct mode-1 HDMA channel must write
+ * $2126/$2127. Dkc3VideoKaosBodyWindow picks the body lines' pair. */
+static bool Dkc3FindKaosBodyWindow(uint8_t *reg_left, uint8_t *reg_right,
+                                   int *left, int *right) {
+  if ((g_ppu->windowsel & 0x0fu) != 0x03u ||
+      !(g_ppu->screenWindowed[0] & 0x01u) ||
+      (g_ppu->screenWindowed[1] & 0x01u))
+    return false;
+  for (int index = 0; index < 8; index++) {
+    const DmaChannel *channel = &g_dma->channel[index];
+    if (!(g_snesrecomp_last_hdmaen & (uint8_t)(1u << index)) ||
+        channel->indirect || channel->bAdr != 0x26 || channel->mode != 1)
+      continue;
+    const uint32_t address =
+        (uint32_t)channel->aAdr | ((uint32_t)channel->aBank << 16);
+    enum { kTableLimit = 1024 };
+    const uint8_t *table = Dkc3HdmaPointer(NULL, address);
+    size_t length = kTableLimit;
+    while (length > 0 && !Dkc3HdmaReadable(NULL, table, length))
+      length /= 2;
+    if (!table || length == 0)
+      return false;
+    return Dkc3VideoKaosBodyWindow(table, length, g_ppu->hScroll[0],
+                                   reg_left, reg_right, left, right);
+  }
+  return false;
+}
+
 static void Dkc3ScanFrameBands(Dkc3HdmaBands *bands) {
   Dkc3HdmaChannelConfig channels[8];
   for (int index = 0; index < 8; index++) {
@@ -3091,6 +3133,11 @@ void Dkc3DrawPpuFrame(void) {
   bool trunk_windows_active = false;
   bool band_policies_active = false;
   bool blank_margins = false;
+  bool kaos_body_window = false;
+  uint8_t kaos_body_reg_left = 0, kaos_body_reg_right = 0;
+  int kaos_body_left = 0, kaos_body_right = 0;
+  bool room_windows = false;
+  int room_w1_left = 0, room_w1_right = 0, room_w2_left = 0, room_w2_right = 0;
   /* Reset host presentation latches before deriving the current frame. A
    * prior gameplay scene must not leave a physically wide BG3 enabled on a
    * bounded title, menu, or unsupported layout. */
@@ -3313,6 +3360,74 @@ void Dkc3DrawPpuFrame(void) {
       PpuSetWidescreenLayerClamp(g_ppu, wide_layer_mask);
     }
     Dkc3VideoSetTerrainReady(terrain_ready);
+    /* The KAOS arena (level $23) streams no terrain, so readiness stays
+     * false, but its room is a verified static 64-column plane. Draw that
+     * plane from its own map, never across its 512-pixel wrap. While KAOS
+     * fights (room on BG2), keep his 32-column BG1 body inside its window
+     * (a wrap would duplicate it) and repeat the bounded BG3 sky at its
+     * hardware period. Once K. Roolenstein appears (room on BG1), repeat
+     * BG2 and BG3, which share one 32-column map; the cartridge's own
+     * windows keep them off the room's west wall. Culling, bias, and the
+     * camera stay native. */
+    const int arena_layer =
+        (!terrain_ready && terrain_layer < 0)
+            ? Dkc3VideoKaosArenaPlaneLayer(
+                  Dkc3InLevel(), Dkc3ReadWram16(kDkc3WramLevelNumber),
+                  g_ppu->bgmode, g_ppu->bgXsc, s_plane_band_count,
+                  s_frame_bands.count)
+            : -1;
+    if (arena_layer == 0) {
+      int arena_left = 0, arena_right = 0;
+      Dkc3VideoKaosArenaMargins(g_ppu->hScroll[0], extra, &arena_left,
+                                &arena_right);
+      blank_margins = false;
+      PpuSetExtraSideSpace(g_ppu, arena_left, arena_right, 0);
+      Dkc3VideoClearOutsideMargins(g_ppu->renderBuffer, g_ppu->renderPitch,
+                                   Dkc3VideoWidth(), kDkc3VideoHeight, extra,
+                                   arena_left, arena_right);
+      /* BG2 and BG3 are drawn into the margins from their own 32-column
+       * map (the hardware wrap), clipped by the cartridge's room-anchored
+       * windows. A 256-pixel repeat would copy columns the window hides at
+       * the opposite edge. Without both unclamped windows they stay native. */
+      room_windows =
+          Dkc3VideoKaosRoomWindow(g_ppu->window1left, g_ppu->window1right,
+                                  g_ppu->hScroll[0],
+                                  kDkc3KaosRoomWindowWest,
+                                  kDkc3KaosRoomWindow1East, &room_w1_left,
+                                  &room_w1_right) &&
+          Dkc3VideoKaosRoomWindow(g_ppu->window2left, g_ppu->window2right,
+                                  g_ppu->hScroll[0],
+                                  kDkc3KaosRoomWindowWest,
+                                  kDkc3KaosRoomWindow2East, &room_w2_left,
+                                  &room_w2_right);
+      PpuSetWidescreenLayerMask(g_ppu, room_windows ? 0x07 : 0x01);
+      PpuSetWidescreenBg3Widen(g_ppu, room_windows ? 1 : 0);
+      PpuSetWidescreenLayerClamp(g_ppu, 0);
+      PpuSetWidescreenLayerRepeat(g_ppu, 0);
+      PpuSetWidescreenLayerRepeatAutoPeriod(g_ppu, 0, 0);
+      band_policies_active = true;
+    } else if (arena_layer == 1) {
+      int arena_left = 0, arena_right = 0;
+      Dkc3VideoKaosArenaMargins(g_ppu->hScroll[1], extra, &arena_left,
+                                &arena_right);
+      blank_margins = false;
+      PpuSetExtraSideSpace(g_ppu, arena_left, arena_right, 0);
+      Dkc3VideoClearOutsideMargins(g_ppu->renderBuffer, g_ppu->renderPitch,
+                                   Dkc3VideoWidth(), kDkc3VideoHeight, extra,
+                                   arena_left, arena_right);
+      /* BG1 continues into a margin only through the unclamped body
+       * window; without it the body stays inside the native window. */
+      kaos_body_window = Dkc3FindKaosBodyWindow(&kaos_body_reg_left,
+                                                &kaos_body_reg_right,
+                                                &kaos_body_left,
+                                                &kaos_body_right);
+      PpuSetWidescreenLayerMask(g_ppu, kaos_body_window ? 0x03 : 0x02);
+      PpuSetWidescreenBg3Widen(g_ppu, 0);
+      PpuSetWidescreenLayerClamp(g_ppu, 0);
+      PpuSetWidescreenLayerRepeat(g_ppu, 0x04);
+      PpuSetWidescreenLayerRepeatAutoPeriod(g_ppu, 0, 0);
+      band_policies_active = true;
+    }
   } else if (snow_arena) {
     /* Keep the cartridge camera and object activation unchanged. These
      * bounded planes have no map stream or world shadow to prefill. */
@@ -3339,6 +3454,15 @@ void Dkc3DrawPpuFrame(void) {
   }
   Dkc3PatchInterpreterCull();
   Dkc3ApplyTrunkWindows(trunk_windows_active);
+  if (kaos_body_window)
+    Dkc3PpuSetWsWindowUnclamped(0, true, kaos_body_left, kaos_body_right,
+                                kaos_body_reg_left, kaos_body_reg_right);
+  if (room_windows) {
+    Dkc3PpuSetWsWindowUnclamped(0, true, room_w1_left, room_w1_right,
+                                g_ppu->window1left, g_ppu->window1right);
+    Dkc3PpuSetWsWindowUnclamped(1, true, room_w2_left, room_w2_right,
+                                g_ppu->window2left, g_ppu->window2right);
+  }
   Dkc3SyncWidescreenObjPalettes(Dkc3InLevel());
 
   dma_startDma(g_dma, g_snesrecomp_last_hdmaen, true);

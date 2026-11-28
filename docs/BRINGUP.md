@@ -3770,3 +3770,250 @@ equal to the monitor; the menu item and Escape restored the bar and
   - The live desktop app was rebuilt but not played. The saved-scene
     corpus, cave replay, and macOS are not checked.
   - The overlay checkbox was not exercised in a window.
+
+## 2026-11-27 - Fix world-map crash with Show hidden objects on
+
+- **Symptom:** after finishing a level, once the world-map icons start
+  flashing, the runtime stopped with `FATAL: native runtime stopped
+  unexpectedly` (`resume_pc = $8089a0` / `$8089a3`; diagnostic bundles
+  `diagnostic_bundle_20261128_004643_26796`, `..._010916_27536`, and
+  `..._011308_13872`). The owner reproduced it from a fresh release quick save.
+- **Measurement (headless, private ROM, Windows Release):**
+  - The quick save fails at host frame 390 with `DKC3_SHOW_HIDDEN_OBJECTS=1`
+    in 4:3 and 16:9, with or without the crate spawner. With the option off
+    it completes 1,800 frames.
+  - Every frame ends in `$80:8992`, which reads the OAM write pointer from
+    DP `$82`, stores `$F0FF` and steps X by 4 until X equals `$0400`. Both
+    resume PCs lie in that loop, so `$82` was left past `$0400` or
+    misaligned and the loop never ends.
+  - On the map (main loop vector DP `$4E` = `$B4:B179`) the reveal unhid
+    three slots: two type `$00A4` icons (`+$1E` = `$0920`, graphics `+$24` =
+    `$0596`/`$059B`) and the controller in slot `$1034`, type `$0198`, with
+    `+$1E` = `$3000` (priority only: tile base 0, palette 0) and `+$24`
+    counting `$0001`, `$0101`, `$0201`, ... . `+$24` is the graphic id the
+    renderer reads at `$B7:8885`, so the controller was drawn from frame
+    data that was never a graphic.
+  - The bear coin this option was made for has `+$1E` = `$2760` and real
+    graphic ids `$2733`-`$2747`, in a level (`$4E` = `$B3:8076`).
+- **Change:**
+  - `Dkc3ShowHiddenSlotEligible` (`runner/dkc3_show_hidden.c`) allows a
+    reveal only when the main loop vector is `$B3:8076` (the level check the
+    crate spawner also uses) and the slot's OAM attribute `+$1E` has a
+    nonzero tile base or palette (`& $0FFF`). `Dkc3RevealHiddenSpriteFlags`
+    returns the word unchanged otherwise.
+  - `test_dkc3_show_hidden` covers the level, world-map, priority-only,
+    empty, palette-only, and tile-only cases.
+- **Verified (headless, private ROM, Windows Release):**
+  - The owner's crash quick save, 1,800 frames, 16:9 with the crate spawner
+    and 4:3 without: completes, and frame, WRAM, VRAM, CGRAM, and OAM hashes
+    are identical with the option on and off.
+  - The cliff quick save, 30 frames, 4:3: option on still draws the silver
+    bear coin (the only frame difference is the box x 157-180, y 22-50).
+  - Python unit tests 31/31; Windows Release CTest 33/33.
+- **Unverified:**
+  - Other hidden types inside levels are still not surveyed. A level slot
+    that holds a tile base or palette but no real graphic would still be
+    drawn. The saved-scene corpus and cave replay are not on this host.
+  - The live desktop app was rebuilt but not played through this map
+    transition. macOS is not checked.
+
+## 2026-11-27 - KAOS arena (level `$23`) stayed pillarboxed
+
+- **Symptom:** the owner's release quick save (SHA-256
+  `dcf29db3504b0c86b0ba610132a1a633fb96617b84082013770e879d29c46fd0`)
+  shows the KAOS arena with black margins at every wide aspect (app at
+  16:9, glide edges).
+- **Measurement (headless, private ROM, Windows Release):**
+  - Level `$23`, Mode 1, maps BG1 `$78` (32x32), BG2 `$71` (64x32), BG3
+    `$7C` (32x32), camera `$0170,$0100`, region 1, terrain stream base
+    `$1969` = `$7800`.
+  - Layer isolation: BG2 is the whole room, one static 512-pixel plane the
+    band classifier already accepts (`P71` on every frame). BG1 is KAOS's
+    body, scrolled independently. BG3 is the bounded sky.
+  - The stream base points at BG1's 32-column map, which is not a wide
+    layer, so `Dkc3VideoTerrainLayer` finds no owner, terrain readiness stays
+    false, and the not-ready path blacks out both margins.
+  - KAOS's body reaches the native left edge (BG1 scroll `$67`). HDMA
+    channel 2 writes window 1 (`$2126/$2127`, mode 1, direct) per scanline,
+    and BG1 uses window 1 inverted on the main screen (`W12SEL` low nibble
+    `$3`, `TMW` bit 0). On the body's lines the window is the body map's
+    256-pixel extent clamped to the screen: `[6,255]` at scroll 250,
+    `[0,153]` at scroll 103. The cartridge clips the body's wrap with it.
+- **Change:**
+  - `Dkc3VideoUsesKaosArenaPlane` gates on level `$23`, Mode 1, maps
+    `$78/$71/$7C`, every band of BG2 classified as a plane, and
+    `DKC3_CULL_WIDEN`. On the not-ready path the arena draws BG2 raw over the
+    physical span (plane band policy), repeats BG3 at its hardware period,
+    and does not blank the margins. Readiness stays false, so culling,
+    camera, and bias are native.
+  - `Dkc3VideoKaosArenaMargins` limits each margin to BG2's 512-pixel map,
+    so the view never shows the plane's wrap. Beyond it is black: up to
+    25 px at 21:9 at the west end of the fight.
+  - `Dkc3VideoKaosBodyWindow` scans the window-1 HDMA table for the pair
+    that matches BG1's scroll (within 2 px) and returns the unclamped
+    extent. The PPU then gets it through `Dkc3PpuSetWsWindowUnclamped`
+    (applied after the trunk-window reset) and BG1 joins the wide mask, so
+    the body continues into a margin and its wrap stays hidden. With no
+    match, BG1 stays inside the native window.
+  - `test_dkc3_video` covers the scene gate, the margins at both plane ends,
+    and the window scan, including rejection.
+- **Verified (headless, private ROM, Windows Release):**
+  - 1,803-frame replay (Start, walk right and left, jump, idle), sampled
+    every 6 frames against the previous binary: 4:3 frames and final frame,
+    WRAM, VRAM, CGRAM, and OAM hashes are identical. At 16:10, 16:9, and
+    21:9 only the frame hash changes. Every sampled wide frame's native
+    256 columns equal the 4:3 frame. With `DKC3_CULL_WIDEN=0`, every sampled
+    frame and every hash equals the previous binary.
+  - Margin oracle, 600-frame replay at 21:9: for 10,120 BG2 margin columns,
+    each one equals a native column showing the same plane x on another
+    frame. The 214 residual columns all come from frames with the camera
+    moving, where the band trace's scroll trails the rendered one by 1 to 2
+    px. With that shift every one matches.
+  - BG1-only render over the 1,803 frames: the body forms a single run of at
+    most 256 columns in every frame (no copy). In 413 of 451 samples it
+    extends into a margin.
+  - The Squeals on Wheels quick save and an older release state are
+    bit-identical, old vs new, at 16:9 and 21:9 over 601 frames.
+  - Windows Release CTest 33/33.
+- **Unverified:**
+  - Only this save and a 30-second segment of the fight were checked, not
+    later phases or the fight's end. A phase with other maps or no matching
+    window pair falls back to black margins or a native-only body.
+  - The live desktop app was rebuilt but not played. The saved-scene corpus,
+    cave replay, and macOS are not on this host.
+  - The Windows smoke tests (`supplied_rom_windows_*_smoke`, save/load on)
+    wrote over `build-windows/Release/saves/dkc3s0.sav`, because the SDL host
+    anchors saves to the executable's folder. The owner's save was restored
+    from a copy taken first. Those tests still need an isolated save
+    directory.
+
+## 2026-11-27 - Windows smoke tests isolated from the release saves
+
+- **Problem:** the `supplied_rom_windows_*_smoke` tests run the release
+  `dkc3_snesrecomp_sdl.exe` with save/load on. The SDL host anchors its
+  working directory to the executable's folder, so each run rewrote
+  `build-windows/Release/saves/dkc3s0.sav`, and also `launcher.cfg` and
+  `rom.cfg` there.
+- **Change:** on Windows and Linux the SDL host now honours `DKC3_USER_DIR`,
+  as the macOS host already did. When it is set, the host creates that one
+  directory (its parent must exist), enters it instead of the executable
+  folder, and keeps reading launcher assets from the executable folder.
+  When it is unset, nothing changes. Each Windows smoke test sets its own
+  `build-windows/windows-test-user-<aspect>` directory.
+- **Verified:** Release rebuilt; CTest 33/33 passed. SHA-256 of every file
+  in `Release/saves` plus `Release/launcher.cfg` and `Release/rom.cfg` is
+  identical before and after the run, and the quick state, config and
+  diagnostics land in the per-aspect test directories.
+- **Unverified:** the Linux build of this path; nothing tests the
+  `DKC3_USER_DIR` failure messages.
+
+## 2026-11-27 - KAOS arena, K. Roolenstein phase, back to 4:3
+
+- **Symptom:** a later release quick save of the level `$23` fight (K.
+  Roolenstein on foot) was pillarboxed again.
+- **Measured:** Mode 1, `bgXsc=[71,7c,7c]`, main `$15`; the band classifier
+  proves BG1 a static `$71` plane on every band; `$1969` is still `$7800`,
+  so no layer owns a terrain stream. The room plane moved from BG2 to BG1 and
+  BG2/BG3 now share the 32-column map `$7C`. The first gate required
+  `[78,71,7c]`, so it rejected this phase. Over a 1,100-frame replay, BG1
+  scroll stayed in 41..137 (the plane never wraps), and whenever the window
+  left edge was non-zero, BG1 scroll + W1/W2 left = 75 exactly. The
+  cartridge's own windows keep BG2/BG3 off the room's west wall, and the
+  runtime's pinned-edge expansion carries them into the margins.
+- **Change:** `Dkc3VideoKaosArenaPlaneLayer` replaces the boolean gate and
+  returns the room's layer: 1 for `[78,71,7c]`, 0 for `[71,7c,7c]`, and only
+  when that layer's plane count equals the band count. For layer 0 the host
+  draws BG1 raw, bounded to the plane's `[0,512)` from BG1's scroll, and
+  repeats BG2 and BG3 at their hardware period. The KAOS branch is
+  unchanged.
+- **Verified** (headless, 183 frames sampled every 6 over 1,100, against the
+  previous binary):
+  - 4:3 frames are identical.
+  - The native centre of 16:10, 16:9, and 21:9 equals 4:3 in all 732
+    checks.
+  - WRAM/VRAM/CGRAM/OAM are identical across aspects.
+  - `DKC3_CULL_WIDEN=0` at 21:9 is identical.
+  - The KAOS-phase save replay is identical at 16:9 and 21:9.
+  - Unit tests and CTest 33/33 pass; release saves are unchanged.
+- **Limits:** at the west end (BG1 scroll 41), 21:9 shows 54 black columns
+  left of plane column 0 (16:9: 2), by the same plane-end rule as the KAOS
+  phase.
+- **Unverified:** the live app; any later phase or defeat sequence with
+  other maps.
+
+## 2026-11-27 - K. Roolenstein phase: floor effects cut off in the left margin
+
+- **Symptom:** the owner's release quick save (SHA-256
+  `fde3da52cd78dc2eb20ed6132a76d537751df88f221fac48313634aa46f1b8da`, level
+  `$23`, K. Roolenstein phase, camera `$01F8`) shows the left side cut off
+  at 16:9: the floor electricity and haze stop at native x 0.
+- **Measured (headless, private ROM, Windows Release):**
+  - Layer isolation (`SNESRECOMP_LAYER_MASK`): BG2 (subscreen, added) is the
+    electricity, BG3 (main) the haze and sky. At 16:9 the left margin has
+    neither, and BG2 leaves a stray 8-column sliver in the right margin.
+  - `W12SEL` = `$0C30`: BG2 uses window 1 inverted (sub only), BG3 window 2
+    inverted (main only). No HDMA writes the window registers in this phase.
+  - The previous change repeated BG2/BG3 at 256 pixels. The left margin was
+    copied from native columns 213..255, which window 1 (`[0,188]`) and
+    window 2 (`[0,100]`) hide, so it came out empty; the right margin copied
+    columns 0..7, which the windows show, past the window's own east edge.
+  - Over a 900-frame replay (walk left, right, left), camera + right edge is
+    692 (W1) and 604 (W2) on 741 of 764 windowed frames, 1-3 px less on the
+    rest while the camera moves. With BG1 scroll = camera - 256, the windows
+    are room x `[75, 436]` (W1) and `[75, 348]` (W2), matching the earlier
+    measurement BG1 scroll + left = 75.
+- **Change:**
+  - `Dkc3VideoKaosRoomWindow` (`runner/dkc3_video.c`) returns a window's
+    unclamped span from its registers and BG1 scroll. A register pinned at 0
+    or 255 takes the room edge (`75 - s`, `east - s`), only if that lies at
+    or past the same screen edge; an unpinned register must be within 2 px
+    of the room edge. Otherwise it returns false.
+  - In the layer-0 arena branch, when both windows pass, BG2 and BG3 join the
+    wide mask (BG3 widened from line 1) and are drawn into the margins from
+    their 32-column map, the hardware wrap; the repeat is off. Both
+    unclamped spans go to `Dkc3PpuSetWsWindowUnclamped` after the trunk
+    window reset. If either fails, BG2/BG3 stay inside the native window.
+  - `test_dkc3_video` covers pinned left, pinned right, the 2 px tolerance,
+    and rejection.
+- **Verified** (900-frame replay from the save, sampled every 6 frames,
+  against the previous binary):
+  - 4:3 frames and all hashes are identical.
+  - At 16:10, 16:9, and 21:9, 127 of 150 sampled frames change (the
+    others are the closing transition). WRAM/VRAM/CGRAM/OAM hashes are
+    identical, and the native centre equals 4:3 in 450/450 checks.
+  - `DKC3_CULL_WIDEN=0` at 21:9 is identical.
+  - At 16:9 and 21:9 the electricity and haze now run unbroken across the
+    left margin.
+  - Windows Release CTest 33/33. Release saves unchanged.
+- **Unverified:** the replay never brings the west wall into a margin
+  (camera stayed in `$01D1..$01F8`), so the pinned-left case with the wall
+  on screen in a margin is covered only by the unit test. The KAOS-phase
+  save is not on this host, but that branch is unchanged. The live app was
+  rebuilt but not played.
+
+## 2026-11-27 - Show hidden objects drew the defeated K. Rool in the floor
+
+- **Symptom:** in a release quick save at the end of the level `$23` fight,
+  K. Rool stood half inside the floor.
+- **Measured (headless):** `launcher.cfg` had `ShowHiddenObjects=1`. K.
+  Rool is slot `$09C2`, type `$0118`, `+$1E` = `$26C0`, graphic `$8019`.
+  The game hides him after the fight with `+$26` = `$C000` and leaves his
+  last frame and position in place. With the option off, his 16 OAM
+  entries (palette 3, priority 2, y 176-227) are gone from the second
+  frame after the load. With it on, they are still drawn at frame 59. The
+  priority-2 sprite sits over the low-priority floor tiles below row 191,
+  as Mode 1 orders them. This is not a widescreen effect: 4:3 and the
+  native centre of 16:9 match.
+- **Change:** `Dkc3ShowHiddenTypeEligible` (`runner/dkc3_show_hidden.c`)
+  refuses type `$0118`, and `Dkc3RevealHiddenSpriteFlags` checks the slot's
+  `+$00` type after the existing level and attribute checks.
+- **Verified:**
+  - With the option on, frame 60 of the save is byte-identical to the
+    option-off frame and has no K. Rool sprites; the previous build drew 16.
+  - With the option off, 600 frames match the previous build at 16:9.
+  - `test_dkc3_show_hidden` covers both types; CTest 33/33 passes; release
+    saves are unchanged.
+- **Unverified:** the bear-coin reveal was not replayed (no coin save at
+  hand; only the unit test covers type `$0284`). Other hidden types are
+  still not surveyed, so another object hidden after leaving play could be
+  drawn the same way.

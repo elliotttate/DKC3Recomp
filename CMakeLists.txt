@@ -358,6 +358,7 @@ if(DKC3_BUILD_SNESRECOMP)
                     DKC3_DESKTOP_TEST_FASTFORWARD=1
                     DKC3_DESKTOP_TEST_SAVELOAD=1
                     DKC3_DESKTOP_DISABLE_SRAM=1
+                    DKC3_USER_DIR=${CMAKE_CURRENT_BINARY_DIR}/windows-test-user-${aspect_id}
                     DKC3_ASPECT=${aspect}
                     DKC3_UPSCALER=reconstruct
                     SNESRECOMP_NO_LAUNCHER=1

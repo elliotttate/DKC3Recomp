@@ -96,6 +96,50 @@ bool Dkc3VideoUsesSnowArenaPlanes(bool in_level, uint16_t level,
                                  uint16_t character_bases, uint8_t hdma,
                                  const uint16_t *vram, size_t vram_words);
 
+/* The KAOS arena of level $23 has no terrain stream: one static 64-column
+ * plane ($71) holds the whole 512-pixel room. While KAOS fights, BG1 ($78)
+ * is his 32-column body, BG2 the room and BG3 ($7C) the bounded sky; once
+ * K. Roolenstein appears, BG1 is the room and BG2/BG3 share $7C. Requires
+ * Mode 1, one of those map sets, and every scanline band of the room layer
+ * verified as a static plane (plane_bands[layer] == band_count). Returns
+ * the room's layer (1 or 0), or -1. */
+int Dkc3VideoKaosArenaPlaneLayer(bool in_level, uint16_t level,
+                                 uint8_t mode, const uint8_t maps[4],
+                                 const int plane_bands[2], int band_count);
+
+/* Margins that keep the arena plane inside its 512-pixel map: the view
+ * never crosses the map's own wrap at either end. h_scroll is the room
+ * layer's. */
+void Dkc3VideoKaosArenaMargins(uint16_t h_scroll, int extra, int *left,
+                               int *right);
+
+/* In the K. Roolenstein phase, windows 1 (BG2) and 2 (BG3) are room-anchored
+ * spans clamped to the screen: room x [west, east] at BG1 scroll s is
+ * [west - s, east - s]. A register at 0 or 255 hides how far the span runs
+ * past the screen edge. Returns the unclamped span in native screen x when
+ * every unpinned register is within two pixels of the room-anchored edge and
+ * every pinned one is consistent with it; false otherwise. */
+enum {
+  kDkc3KaosRoomWindowWest = 75,
+  kDkc3KaosRoomWindow1East = 436,
+  kDkc3KaosRoomWindow2East = 348,
+};
+bool Dkc3VideoKaosRoomWindow(uint8_t reg_left, uint8_t reg_right,
+                             uint16_t room_h_scroll, int west, int east,
+                             int *left, int *right);
+
+/* KAOS's BG1 body is shown through window 1, inverted, which the arena's
+ * HDMA sets per scanline ($2126/$2127, mode 1, direct). On the body's lines
+ * the window is the body map's 256-pixel extent clamped to the screen:
+ * [0, r] when the map starts left of the screen, [l, 255] when it starts
+ * inside it. Scan the table (count bytes, bit 7 repeat, zero ends) for the
+ * first pair consistent with BG1's scroll within two pixels (the latched
+ * scroll can trail the WRAM copy), and return its registers and the
+ * unclamped extent [*left, *right] in native screen x. */
+bool Dkc3VideoKaosBodyWindow(const uint8_t *table, size_t length,
+                             uint16_t bg1_h_scroll, uint8_t *reg_left,
+                             uint8_t *reg_right, int *left, int *right);
+
 /*
  * The Northern Kremisphere overworld (main-loop vector $B4:B179) keeps its
  * whole picture resident: a 64x32 BG1 map spans world x [$100, $300), the

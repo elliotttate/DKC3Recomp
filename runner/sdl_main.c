@@ -56,6 +56,7 @@
 #include "windows_menu.h"
 #define DKC3_MKDIR(path) _mkdir(path)
 #else
+#include <unistd.h>
 #define DKC3_MKDIR(path) mkdir(path, 0755)
 #endif
 
@@ -240,6 +241,36 @@ static bool EnsureSaveDirectory(void) {
   if (DKC3_MKDIR("saves") == 0) return true;
   return errno == EEXIST;
 }
+
+#ifndef __APPLE__
+/* DKC3_USER_DIR gives automation an isolated directory for config, quick
+ * states and SRAM; otherwise they stay beside the executable. Launcher assets
+ * are still read from the executable directory. The directory's parent must
+ * already exist. */
+static bool PrepareRuntimeDirectory(char *assets_path, size_t capacity) {
+  const char *user_dir = getenv("DKC3_USER_DIR");
+  if (!user_dir || !*user_dir) {
+    (void)snesrecomp_anchor_to_exe_dir();
+    return true;
+  }
+  if (!snesrecomp_exe_dir_path("assets", assets_path, capacity))
+    (void)snprintf(assets_path, capacity, "%s", "assets");
+  if (DKC3_MKDIR(user_dir) != 0 && errno != EEXIST) {
+    fprintf(stderr, "Unable to create DKC3_USER_DIR '%s'\n", user_dir);
+    return false;
+  }
+#ifdef _WIN32
+  if (_chdir(user_dir) != 0) {
+#else
+  if (chdir(user_dir) != 0) {
+#endif
+    fprintf(stderr, "Unable to enter DKC3_USER_DIR '%s'\n", user_dir);
+    return false;
+  }
+  fprintf(stdout, "User data: %s\n", user_dir);
+  return true;
+}
+#endif
 
 static void ShowError(const char *message) {
   fprintf(stderr, "%s\n", message ? message : "Unknown error");
@@ -2057,7 +2088,9 @@ int main(int argc, char **argv) {
   }
   Dkc3LauncherSetAssetsPath(assets_path);
 #else
-  (void)snesrecomp_anchor_to_exe_dir();
+  char assets_path[kPathCapacity] = {0};
+  if (!PrepareRuntimeDirectory(assets_path, sizeof assets_path)) return 2;
+  if (assets_path[0]) Dkc3LauncherSetAssetsPath(assets_path);
 #endif
   if (!Dkc3DiagnosticsInit("sdl2", DKC3_RELEASE_VERSION))
     fprintf(stderr, "warning: diagnostics could not be initialized\n");
